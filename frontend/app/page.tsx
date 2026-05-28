@@ -226,6 +226,31 @@ export default function Page() {
     return () => { mounted = false; };
   }, []);
 
+  // 開新專案（thread）：呼叫 /api/projects 建新 → 切換 localStorage → reset 所有 stage state
+  const onNewThread = useCallback(async () => {
+    const name = window.prompt("新專案名稱：", "新需求") ?? "";
+    if (!name.trim()) return;
+    setErr(null);
+    setBusy(false);
+    try {
+      const p = await apiFetch<{ thread_id: string }>("/api/projects", {
+        method: "POST", body: JSON.stringify({ name: name.trim() }),
+      });
+      window.localStorage.setItem("lodestar.thread", p.thread_id);
+      // 切換 thread；既有的 useEffect chain 會自動 refetch PRD state / attachments
+      setThread(p.thread_id);
+      // 立即清掉 stale state（避免新 thread fetch 完成前還顯示舊 PRD 內容）
+      setPrdArtifact("");
+      setPrdStatus("draft");
+      setAttachments([]);
+      // 切回 workspace + PRD selected（user 預期從 PRD 開始）
+      setNav("workspace");
+      setSelected("prd");
+    } catch (e) {
+      setErr(`開新專案失敗：${(e as Error).message}`);
+    }
+  }, []);
+
   // 拿 PRD state（artifact + status）
   const refreshPrd = useCallback(async (tid: string) => {
     try {
@@ -336,10 +361,17 @@ export default function Page() {
   }, [thread, busy]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDocFs(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDocFs(false);
+      // ⌘N / Ctrl+N → 開新專案（與 sidebar 按鈕標籤一致）
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        onNewThread();
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [onNewThread]);
 
   const showSidebar = nav === "workspace";
 
@@ -354,7 +386,7 @@ export default function Page() {
           </div>
         )}
         <div className="flex min-h-0 flex-1">
-          {showSidebar && <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen((o) => !o)} />}
+          {showSidebar && <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen((o) => !o)} onNewThread={onNewThread} />}
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             {nav === "workspace" && (
               <>
@@ -467,7 +499,11 @@ function LodestarBrand() {
 }
 
 // ============================== Sidebar ==============================
-function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+function Sidebar({ open, onToggle, onNewThread }: {
+  open: boolean;
+  onToggle: () => void;
+  onNewThread: () => void;
+}) {
   if (!open) {
     return (
       <aside className="rise-2 flex w-14 shrink-0 flex-col items-center border-r border-[var(--rule-dark)] bg-[var(--bg-elev)]/40 py-3">
@@ -488,6 +524,13 @@ function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
             </button>
           );
         })}
+        <button
+          onClick={onNewThread}
+          title="開新專案"
+          className="mt-2 grid h-9 w-9 place-items-center border border-dashed border-[var(--rule-dark)] font-[family-name:var(--font-display)] text-[18px] leading-none text-[#5e6878] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
+        >
+          ＋
+        </button>
       </aside>
     );
   }
@@ -524,7 +567,10 @@ function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
           );
         })}
       </div>
-      <button className="m-3 flex items-center justify-between border border-dashed border-[var(--rule-dark)] px-4 py-2.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#5e6878] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
+      <button
+        onClick={onNewThread}
+        className="m-3 flex items-center justify-between border border-dashed border-[var(--rule-dark)] px-4 py-2.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#5e6878] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
+      >
         <span>＋ new thread</span>
         <span className="text-[var(--ink-muted)]">⌘N</span>
       </button>
