@@ -55,3 +55,100 @@ class PluginListResponse(BaseModel):
 
 class PluginToggleRequest(BaseModel):
     enabled: bool
+
+
+# ============================================================
+#  Projects / threads（M1）
+# ============================================================
+class CreateProjectRequest(BaseModel):
+    name: str
+    workflow_id: Optional[str] = None   # None → lazy default
+
+
+class ProjectResponse(BaseModel):
+    thread_id: str
+    name: str
+    workflow_id: Optional[str] = None
+    created_at: float
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectResponse]
+
+
+# ============================================================
+#  Stage operations（spec 附錄 B；對應 POST/PUT /api/stage/*）
+# ============================================================
+class StageGenerateRequest(BaseModel):
+    thread_id: str
+    model_choice: str = "claude-cli"
+
+
+class StageRefineRequest(BaseModel):
+    thread_id: str
+    model_choice: str = "claude-cli"
+    instruction: str
+    preview_only: bool = False
+
+
+class StageChatRequest(BaseModel):
+    thread_id: str
+    user_input: str
+    model_choice: str = "claude-cli"
+    preview_only: bool = False
+    focus_section: Optional[str] = None
+
+
+class StageManualEditRequest(BaseModel):
+    content: str
+    change_source: str = "manual_edit"
+    reviewed: bool = False
+    instruction: str = ""
+    change_context: str = ""
+
+
+class StageActionResponse(BaseModel):
+    stage_id: str
+    artifact: str
+    state_extra: dict = {}              # 如 prd 的 {"is_ready": true}
+    downstream_reset: list[str] = []    # 被連帶 reset 的下游 stage_id
+
+
+class StageChatResponse(BaseModel):
+    ai_response: str
+    updated_content: Optional[str] = None
+
+
+class StageHistoryMessage(BaseModel):
+    role: str
+    content: str
+    created_at: Optional[float] = None
+
+
+class StageHistoryResponse(BaseModel):
+    messages: list[StageHistoryMessage]
+
+
+# ============================================================
+#  Stage state / status / summary（讀取）
+# ============================================================
+class StageStateResponse(BaseModel):
+    """thread × stage 的當前完整狀態（artifact + status + meta）。"""
+    stage_id: str
+    status: str
+    artifact: str
+    has_content: bool
+    last_updated_at: Optional[float] = None
+
+
+class StageStatusItem(BaseModel):
+    stage_id: str
+    status: str                         # draft / approved / needs_revision
+
+
+class StageStatusesResponse(BaseModel):
+    statuses: list[StageStatusItem]     # 依 active workflow 順序
+
+
+class SetStageStatusRequest(BaseModel):
+    status: str

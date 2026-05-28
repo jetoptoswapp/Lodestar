@@ -178,6 +178,7 @@ def load_all(registry: Registry | None = None) -> Registry:
                 raise AttributeError(f"entry_module '{p.manifest.entry_module}' 缺 register(host)")
             register(PluginHost(p.manifest.id, registry))
             info[p.manifest.id].loaded = True
+            registry.plugin_dirs[p.manifest.id] = p.directory  # 給 HarnessRunner.render_prompt 找 prompts/ 用
             log.info("loaded plugin: %s v%s (%s)", p.manifest.id, p.manifest.version, p.manifest.name)
         except Exception as e:
             log.warning("plugin '%s' 載入失敗，已隔離（不影響其他）：%s", p.manifest.id, e)

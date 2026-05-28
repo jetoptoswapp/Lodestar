@@ -95,3 +95,180 @@ def plugin_states() -> dict[str, bool]:
     with connect() as conn:
         rows = conn.execute("SELECT plugin_id, enabled FROM plugin_state").fetchall()
     return {r["plugin_id"]: bool(r["enabled"]) for r in rows}
+
+
+# ============================================================
+#  Projects（thread = project entry）
+# ============================================================
+def create_project(thread_id: str, name: str, workflow_id: Optional[str] = None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (thread_id, name, workflow_id) VALUES (?, ?, ?)",
+            (thread_id, name, workflow_id),
+        )
+
+
+def get_project(thread_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT thread_id, name, workflow_id, created_at FROM projects WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_projects() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT thread_id, name, workflow_id, created_at FROM projects ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_project_workflow(thread_id: str, workflow_id: Optional[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE projects SET workflow_id = ? WHERE thread_id = ?",
+            (workflow_id, thread_id),
+        )
+
+
+# ============================================================
+#  Stage artifacts（artifact 正文直接存表 —— 取代 ver2 checkpoint blob）
+# ============================================================
+def get_artifact(thread_id: str, stage_id: str) -> Optional[str]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT content FROM stage_artifacts WHERE thread_id = ? AND stage_id = ?",
+            (thread_id, stage_id),
+        ).fetchone()
+    return row["content"] if row else None
+
+
+def upsert_artifact(thread_id: str, stage_id: str, content: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO stage_artifacts (thread_id, stage_id, content) VALUES (?, ?, ?) "
+            "ON CONFLICT(thread_id, stage_id) DO UPDATE SET "
+            "content = excluded.content, updated_at = strftime('%s','now')",
+            (thread_id, stage_id, content),
+        )
+
+
+def get_artifact_meta(thread_id: str, stage_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT updated_at, length(content) AS content_length FROM stage_artifacts "
+            "WHERE thread_id = ? AND stage_id = ?",
+            (thread_id, stage_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ============================================================
+#  Stage status（draft / approved / needs_revision）
+# ============================================================
+def get_stage_status(thread_id: str, stage_id: str) -> str:
+    """未設過 → 預設 'draft'。"""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM stage_status WHERE thread_id = ? AND stage_id = ?",
+            (thread_id, stage_id),
+        ).fetchone()
+    return row["status"] if row else "draft"
+
+
+def set_stage_status(thread_id: str, stage_id: str, status: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO stage_status (thread_id, stage_id, status) VALUES (?, ?, ?) "
+            "ON CONFLICT(thread_id, stage_id) DO UPDATE SET "
+            "status = excluded.status, updated_at = strftime('%s','now')",
+            (thread_id, stage_id, status),
+        )
+
+
+def list_stage_statuses(thread_id: str) -> dict[str, str]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT stage_id, status FROM stage_status WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+    return {r["stage_id"]: r["status"] for r in rows}
+
+
+# ============================================================
+#  Stage revisions（每次 artifact 變更記一筆 + downstream_reset JSON）
+# ============================================================
+def add_revision(
+    thread_id: str, stage_id: str, source: str,
+    *, instruction: str = "", summary: str = "",
+    downstream_reset: Optional[list[str]] = None,
+    content_length: int = 0, reviewed: bool = False,
+) -> int:
+    import json as _json
+    payload = _json.dumps(downstream_reset or [], ensure_ascii=False)
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO stage_revisions (thread_id, stage_id, source, summary, "
+            "instruction, reviewed, downstream_reset, content_length) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (thread_id, stage_id, source, summary, instruction,
+             1 if reviewed else 0, payload, content_length),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def list_revisions(thread_id: str, stage_id: str, limit: int = 50) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, source, summary, instruction, reviewed, downstream_reset, "
+            "content_length, created_at FROM stage_revisions "
+            "WHERE thread_id = ? AND stage_id = ? ORDER BY id DESC LIMIT ?",
+            (thread_id, stage_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ============================================================
+#  Stage events（SSE 進度事件來源）
+# ============================================================
+def append_event(thread_id: str, stage_id: str, event_type: str, detail: str = "") -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO stage_events (thread_id, stage_id, event_type, detail) "
+            "VALUES (?, ?, ?, ?)",
+            (thread_id, stage_id, event_type, detail),
+        )
+
+
+def list_events(thread_id: str, since_id: int = 0, limit: int = 100) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, stage_id, event_type, detail, created_at FROM stage_events "
+            "WHERE thread_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+            (thread_id, since_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ============================================================
+#  Stage messages（chat 對話歷史）
+# ============================================================
+def append_message(thread_id: str, stage_id: str, role: str, content: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO stage_messages (thread_id, stage_id, role, content) "
+            "VALUES (?, ?, ?, ?)",
+            (thread_id, stage_id, role, content),
+        )
+
+
+def list_messages(thread_id: str, stage_id: str, limit: int = 200) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM stage_messages "
+            "WHERE thread_id = ? AND stage_id = ? ORDER BY id ASC LIMIT ?",
+            (thread_id, stage_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]

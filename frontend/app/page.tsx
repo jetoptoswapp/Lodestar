@@ -4,7 +4,33 @@
 // Aesthetic：Industrial Cobalt × Drafting Dusk。
 // Mock views：Workspace（PRD / Architecture / Stories）+ Workflows / Agents / Plugins。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+
+// ============================== M1：接後端 API ==============================
+// 後端 base URL（同主機 8723）；前端 mock-only view 不依賴此。
+const API_BASE =
+  (typeof window !== "undefined" && (window as Window & { __LODESTAR_API__?: string }).__LODESTAR_API__) ||
+  "http://localhost:8723";
+
+type PrdBusy = false | "generate" | "refine" | "chat";
+
+async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+  });
+  if (!r.ok) {
+    let msg: string = r.statusText;
+    try {
+      const body = await r.json();
+      msg = body?.detail?.message ?? body?.detail ?? JSON.stringify(body);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return r.json();
+}
 
 // ============================== Mock data ==============================
 type StageStatus = "approved" | "draft" | "locked";
@@ -225,6 +251,88 @@ export default function Page() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [docFs, setDocFs] = useState(false);
 
+  // ===== M1：thread + PRD 真實 state =====
+  const [thread, setThread] = useState<string | null>(null);
+  const [prdArtifact, setPrdArtifact] = useState<string>("");
+  const [prdStatus, setPrdStatus] = useState<string>("draft");
+  const [busy, setBusy] = useState<PrdBusy>(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // bootstrap thread：localStorage 取舊；無則建新（setAndPersist pattern，spec §11 陷阱）
+  useEffect(() => {
+    let mounted = true;
+    const stored = typeof window !== "undefined" ? window.localStorage.getItem("lodestar.thread") : null;
+    if (stored) {
+      setThread(stored);
+      return;
+    }
+    apiFetch<{ thread_id: string }>("/api/projects", {
+      method: "POST", body: JSON.stringify({ name: "新需求" }),
+    })
+      .then((p) => {
+        if (!mounted) return;
+        window.localStorage.setItem("lodestar.thread", p.thread_id);
+        setThread(p.thread_id);
+      })
+      .catch((e: Error) => mounted && setErr(`建立 thread 失敗：${e.message}`));
+    return () => { mounted = false; };
+  }, []);
+
+  // 拿 PRD state（artifact + status）
+  const refreshPrd = useCallback(async (tid: string) => {
+    try {
+      const s = await apiFetch<{ artifact: string; status: string }>(`/api/stage/prd/${tid}`);
+      setPrdArtifact(s.artifact || "");
+      setPrdStatus(s.status);
+    } catch (e) {
+      setErr(`讀取 PRD 失敗：${(e as Error).message}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!thread) return;
+    refreshPrd(thread);
+  }, [thread, refreshPrd]);
+
+  // actions
+  const onGenerate = useCallback(async () => {
+    if (!thread || busy) return;
+    setErr(null);
+    setBusy("generate");
+    try {
+      const data = await apiFetch<{ artifact: string }>("/api/stage/prd/generate", {
+        method: "POST",
+        body: JSON.stringify({ thread_id: thread, model_choice: "claude-cli" }),
+      });
+      setPrdArtifact(data.artifact || "");
+      setPrdStatus("draft");
+    } catch (e) {
+      setErr(`生成 PRD 失敗：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [thread, busy]);
+
+  const onRefine = useCallback(async () => {
+    if (!thread || busy) return;
+    const instruction = window.prompt("輸入修訂指令（例：加上 OAuth 登入、提高並發到 10k）：");
+    if (!instruction || !instruction.trim()) return;
+    setErr(null);
+    setBusy("refine");
+    try {
+      const data = await apiFetch<{ artifact: string }>("/api/stage/prd/refine", {
+        method: "POST",
+        body: JSON.stringify({ thread_id: thread, model_choice: "claude-cli", instruction }),
+      });
+      setPrdArtifact(data.artifact || "");
+      setPrdStatus("draft");
+    } catch (e) {
+      setErr(`修訂 PRD 失敗：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [thread, busy]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDocFs(false); };
     window.addEventListener("keydown", onKey);
@@ -236,7 +344,13 @@ export default function Page() {
   return (
     <>
       <div className="relative z-10 flex h-full flex-col overflow-hidden">
-        <TopBar nav={nav} onNav={setNav} />
+        <TopBar nav={nav} onNav={setNav} thread={thread} />
+        {err && (
+          <div className="border-b border-[color-mix(in_oklab,#f59e0b_40%,transparent)] bg-[color-mix(in_oklab,#f59e0b_12%,transparent)] px-6 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#f59e0b]">
+            ⚠ {err}
+            <button onClick={() => setErr(null)} className="ml-3 underline">關閉</button>
+          </div>
+        )}
         <div className="flex min-h-0 flex-1">
           {showSidebar && <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen((o) => !o)} />}
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -244,7 +358,17 @@ export default function Page() {
               <>
                 <StageHeader selected={selected} onSelect={setSelected} />
                 <div className="flex min-h-0 flex-1">
-                  {selected === "prd"          && <PrdWorkspace onOpenFs={() => setDocFs(true)} />}
+                  {selected === "prd" && (
+                    <PrdWorkspace
+                      onOpenFs={() => setDocFs(true)}
+                      thread={thread}
+                      artifact={prdArtifact}
+                      status={prdStatus}
+                      busy={busy}
+                      onGenerate={onGenerate}
+                      onRefine={onRefine}
+                    />
+                  )}
                   {selected === "architecture" && <ArchWorkspace />}
                   {selected === "stories"      && <StoriesWorkspace />}
                   {selected === "implement"    && <ImplementWorkspace />}
@@ -258,13 +382,13 @@ export default function Page() {
           </main>
         </div>
       </div>
-      {docFs && <DocFullscreen onClose={() => setDocFs(false)} />}
+      {docFs && <DocFullscreen onClose={() => setDocFs(false)} prdArtifact={prdArtifact} />}
     </>
   );
 }
 
 // ============================== TopBar ==============================
-function TopBar({ nav, onNav }: { nav: string; onNav: (n: string) => void }) {
+function TopBar({ nav, onNav, thread }: { nav: string; onNav: (n: string) => void; thread: string | null }) {
   return (
     <header className="rise-1 relative flex h-14 shrink-0 items-center justify-between border-b border-[var(--rule-dark)] px-6">
       <div className="flex items-center gap-10">
@@ -291,14 +415,19 @@ function TopBar({ nav, onNav }: { nav: string; onNav: (n: string) => void }) {
       </div>
       <div className="flex items-center gap-4 font-[family-name:var(--font-mono)] text-[11px]">
         <div className="flex items-center gap-1.5">
+          <span className="text-[var(--ink-muted)]">THREAD</span>
+          <code className="text-[#cdd4df]">{thread ?? "—"}</code>
+        </div>
+        <div className="h-3 w-px bg-[var(--rule-dark)]" />
+        <div className="flex items-center gap-1.5">
           <span className="text-[var(--ink-muted)]">MODEL</span>
           <span className="text-[#b8c0cf]">claude-cli</span>
         </div>
         <div className="h-3 w-px bg-[var(--rule-dark)]" />
         <div className="flex items-center gap-2">
           <span className="glow-approved relative inline-block h-1.5 w-1.5 rounded-full bg-[var(--approved)]" />
-          <span className="text-[#b8c0cf]">1</span>
-          <span className="text-[var(--ink-muted)]">PLUGIN LOADED</span>
+          <span className="text-[#b8c0cf]">3</span>
+          <span className="text-[var(--ink-muted)]">PLUGINS LOADED</span>
         </div>
       </div>
     </header>
@@ -436,26 +565,104 @@ function StageHeader({ selected, onSelect }: { selected: string; onSelect: (s: s
   );
 }
 
-// ============================== PRD workspace ==============================
-function PrdWorkspace({ onOpenFs }: { onOpenFs: () => void }) {
+// ============================== PRD workspace (M1：真實 API) ==============================
+function PrdWorkspace({
+  onOpenFs, thread, artifact, status, busy, onGenerate, onRefine,
+}: {
+  onOpenFs: () => void;
+  thread: string | null;
+  artifact: string;
+  status: string;
+  busy: PrdBusy;
+  onGenerate: () => void;
+  onRefine: () => void;
+}) {
+  const hasContent = artifact.trim().length > 0;
+  const isApproved = status === "approved";
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
         <ArtifactBar artifact="prd" stage="specify" op="generate_prd" right={
           <>
-            <ApprovedSeal />
+            {hasContent && (isApproved ? <ApprovedSeal /> : <DraftPill />)}
             <IconBtn onClick={onOpenFs} title="全螢幕閱讀"><ExpandIcon /></IconBtn>
           </>
         } />
         <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <Article title={PRD_TITLE} sub={PRD_SUB} kind="PRODUCT REQUIREMENTS · V1" sections={PRD_SECTIONS} />
+            {hasContent ? (
+              <PrdArtifactView artifact={artifact} />
+            ) : (
+              <PrdEmptyState busy={busy} thread={thread} onGenerate={onGenerate} />
+            )}
           </div>
         </article>
-        <BottomMeta left="10 reqs · 2 paragraphs · charted 5 min ago · sha · a7f3e2c" right={<>depends_on <span className="text-[#5e6878]">(root)</span> · downstream <span className="text-[#b8c0cf]">architecture, stories</span></>} />
-        <OperationsRow approved />
+        <BottomMeta
+          left={
+            <>
+              {hasContent
+                ? <>{Array.from(artifact.matchAll(/`?FR-\d+/gi)).length} FR · {Array.from(artifact.matchAll(/`?NFR-\d+/gi)).length} NFR · {artifact.length} chars · charted by system_analyst</>
+                : <>empty · awaiting generation</>}
+            </>
+          }
+          right={<>thread <code className="text-[#cdd4df]">{thread ?? "(bootstrapping…)"}</code> · depends_on <span className="text-[#5e6878]">(root)</span></>}
+        />
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <ToolBtn onClick={onRefine} disabled={!thread || !hasContent || !!busy}>
+            {busy === "refine" ? "Refining…" : "Refine…"}
+          </ToolBtn>
+          <ToolBtn onClick={onGenerate} disabled={!thread || !!busy}>
+            {busy === "generate" ? "Generating…" : hasContent ? "重新生成" : "生成 PRD"}
+          </ToolBtn>
+          <ToolBtn primary disabled={!hasContent || !!busy}>
+            {isApproved ? "已核准 ✓" : "核准"}
+          </ToolBtn>
+        </div>
       </section>
       <ChatPanel />
+    </div>
+  );
+}
+
+function PrdEmptyState({ busy, thread, onGenerate }: { busy: PrdBusy; thread: string | null; onGenerate: () => void }) {
+  return (
+    <div className="flex h-full items-center justify-center px-10 py-12">
+      <div className="max-w-md text-center">
+        <div className="mx-auto mb-5 grid h-14 w-14 place-items-center border-2 border-[var(--polaris)] font-[family-name:var(--font-display)] text-[22px] font-semibold text-[var(--polaris)]">
+          01
+        </div>
+        <h3 className="font-[family-name:var(--font-display)] text-[26px] font-semibold text-[#e6ecf5]">
+          尚未標繪
+        </h3>
+        <p className="mt-2 text-[13px] leading-6 text-[#7a8499]">
+          PRD 是 pipeline 的起點。點下方按鈕，
+          <br />
+          系統分析師（claude-cli）會與你對話／生成完整 PRD。
+        </p>
+        <div className="mx-auto my-6 h-px w-20 bg-[var(--rule-dark)]" />
+        <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          agent: system_analyst · model: claude-cli
+        </div>
+        <button
+          onClick={onGenerate}
+          disabled={!thread || !!busy}
+          className="border-2 border-[var(--polaris)] bg-[var(--polaris)] px-8 py-3 font-[family-name:var(--font-mono)] text-[12px] uppercase tracking-[0.22em] text-white transition hover:bg-[var(--polaris-hi)] disabled:opacity-50"
+        >
+          {busy === "generate" ? "★  charting…（30–60s）" : "✦  chart PRD"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PrdArtifactView({ artifact }: { artifact: string }) {
+  // M1：直接渲染原始 markdown（preserve whitespace）。
+  // M2+：可換成 react-markdown 或自製 lightweight renderer。
+  return (
+    <div className="mx-auto px-10 py-10 max-w-none">
+      <pre className="whitespace-pre-wrap font-[family-name:var(--font-mono)] text-[13px] leading-[1.8] text-[#cdd4df]">
+        {artifact}
+      </pre>
     </div>
   );
 }
@@ -1275,14 +1482,13 @@ function ReplyChip({ label, selected, multi }: { label: string; selected?: boole
 }
 
 // ============================== Doc fullscreen ==============================
-function DocFullscreen({ onClose }: { onClose: () => void }) {
+function DocFullscreen({ onClose, prdArtifact }: { onClose: () => void; prdArtifact: string }) {
+  const hasContent = (prdArtifact || "").trim().length > 0;
   return (
     <div className="rise-1 fixed inset-0 z-50 flex flex-col bg-[var(--bg)]/96 backdrop-blur-sm">
       <header className="flex items-center justify-between border-b border-[var(--rule-dark)] bg-[var(--bg-elev)]/60 px-8 py-3">
         <div className="flex items-baseline gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
           <span>artifact</span><span className="text-[#cdd4df]">prd</span><span>·</span><span>specify · generate_prd</span>
-          <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
-          <span className="text-[var(--approved)]">charted · approved</span>
         </div>
         <div className="flex items-center gap-3">
           <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">esc · 關閉</span>
@@ -1290,9 +1496,17 @@ function DocFullscreen({ onClose }: { onClose: () => void }) {
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <article className="paper-texture shadow-anvil mx-auto my-10 max-w-3xl bg-[var(--paper)]">
-          <Article title={PRD_TITLE} sub={PRD_SUB} kind="PRODUCT REQUIREMENTS · V1" sections={PRD_SECTIONS} wide />
-        </article>
+        {hasContent ? (
+          <article className="paper-texture shadow-anvil mx-auto my-10 max-w-3xl bg-[var(--paper)]">
+            <pre className="whitespace-pre-wrap px-10 py-12 font-[family-name:var(--font-mono)] text-[13px] leading-[1.85] text-[#cdd4df]">
+              {prdArtifact}
+            </pre>
+          </article>
+        ) : (
+          <div className="grid h-full place-items-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            PRD 尚未生成
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1387,12 +1601,24 @@ function CollabModePill({ mode }: { mode: CollabMode }) {
   );
 }
 
-function ToolBtn({ children, primary }: { children: React.ReactNode; primary?: boolean }) {
+function ToolBtn({
+  children, primary, onClick, disabled,
+}: {
+  children: React.ReactNode;
+  primary?: boolean;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <button className={`border px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] transition ${
-      primary ? "border-[var(--approved)] bg-[var(--approved)] text-[#0a0d12] hover:bg-[#85e5b4]"
-              : "border-[var(--rule-dark)] bg-transparent text-[#cdd4df] hover:border-[#404a5b] hover:bg-[var(--bg-elev)]"
-    }`}>
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`border px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+        primary
+          ? "border-[var(--approved)] bg-[var(--approved)] text-[#0a0d12] hover:bg-[#85e5b4]"
+          : "border-[var(--rule-dark)] bg-transparent text-[#cdd4df] hover:border-[#404a5b] hover:bg-[var(--bg-elev)]"
+      }`}
+    >
       {children}
     </button>
   );

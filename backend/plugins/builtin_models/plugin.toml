@@ -1,0 +1,13 @@
+[plugin]
+id = "builtin_models"
+name = "Built-in Model Adapters"
+version = "1.0.0"
+description = "Sync one-shot ModelAdapter via CLI（M1：claude-cli；M5+ 加 codex-cli / Ollama）"
+host_api = ">=1.0,<2.0"
+entry_module = "plugins.builtin_models.register"
+requires_plugins = []
+
+# 只宣告貢獻，供 loader 預檢 + UI 預覽；真正的 ModelAdapter 在 register() 建構
+[[contributes.model_adapter]]
+id = "claude-cli"
+label = "Claude (claude-cli)"

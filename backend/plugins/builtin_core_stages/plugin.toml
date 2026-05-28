@@ -1,0 +1,17 @@
+[plugin]
+id = "builtin_core_stages"
+name = "Core Requirement Stages"
+version = "1.0.0"
+description = "PRD / Architecture / Stories 內建 stages（M1：先做 PRD；M2 補 Architecture / Stories）"
+host_api = ">=1.0,<2.0"
+entry_module = "plugins.builtin_core_stages.register"
+requires_plugins = []
+
+# 只宣告貢獻供 loader 預檢 + UI 預覽；真正的 spec 在 register() 建構。
+[[contributes.stage]]
+id = "prd"
+label = "PRD"
+
+[[contributes.workflow]]
+id = "default"
+label = "Standard Pipeline"

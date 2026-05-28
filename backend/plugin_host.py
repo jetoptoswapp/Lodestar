@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from harness_runner import HarnessRunner  # type: ignore
 
 from plugin_api.harness import ValidatorFn
 from plugin_api.host import PluginManifest
@@ -45,12 +49,15 @@ class Registry:
     integrations: dict[str, IntegrationSpec] = field(default_factory=dict)
     model_adapters: dict[str, ModelAdapter] = field(default_factory=dict)
     runners: dict[str, type] = field(default_factory=dict)
-    validators: dict[tuple[str, str], ValidatorFn] = field(default_factory=dict)
+    # validator 是 chain：同 (stage, op) 可多個 validator
+    validators: dict[tuple[str, str], list[ValidatorFn]] = field(default_factory=dict)
     hooks: dict[str, list] = field(default_factory=lambda: defaultdict(list))
     # ownership：(plugin_id, capability_type, capability_id)，供 GUI 顯示來源 + 清理
     contributions: list[tuple[str, str, str]] = field(default_factory=list)
     # 每個 discovered plugin 的載入結果（供 GET /api/plugins）
     loaded_plugins: list["PluginLoadInfo"] = field(default_factory=list)
+    # plugin_id → plugin 根目錄（HarnessRunner.render_prompt 從此找 prompts/ 子目錄）
+    plugin_dirs: dict[str, Path] = field(default_factory=dict)
 
     _CAP_TABLES = (
         (CAP_STAGE, "stages"), (CAP_WORKFLOW, "workflows"), (CAP_AGENT, "agents"),
@@ -105,11 +112,16 @@ class PluginHost:
         self._own(CAP_RUNNER, choice)
 
     def register_validator(self, telemetry_stage: str, operation: str, fn: ValidatorFn) -> None:
-        self._reg.validators[(telemetry_stage, operation)] = fn
+        # multi-validator per (stage, op)：append（registry 端 chain，HarnessRunner 依序跑）
+        self._reg.validators.setdefault((telemetry_stage, operation), []).append(fn)
 
     def register_hook(self, event: str, fn) -> None:
         self._reg.hooks[event].append(fn)
 
-    def make_harness_runner(self, thread_id: str):
-        # sync-AI 門面在 M1 實作；M0 只接 integration capability。
-        raise NotImplementedError("HarnessRunner 在 M1 實作")
+    def make_harness_runner(
+        self, thread_id: str, stage_id: str = "", model_choice: str = "claude-cli"
+    ) -> "HarnessRunner":
+        # sync-AI 門面（M1）。WorkflowEngine 在 dispatch 時 per (thread, stage) 建立。
+        # lazy import 避免 circular（harness_runner 需要 Registry）。
+        from harness_runner import HarnessRunner as _HR
+        return _HR(self._reg, thread_id, stage_id, model_choice)
