@@ -1,0 +1,20 @@
+[plugin]
+id = "builtin_agents"
+name = "Built-in Seed Agents"
+version = "1.0.0"
+description = "PRD / Architect / PM seed agents（M2）；M3 後使用者可覆蓋"
+host_api = ">=1.0,<2.0"
+entry_module = "plugins.builtin_agents.register"
+requires_plugins = ["builtin_core_stages"]
+
+[[contributes.agent]]
+id = "seed_prd"
+label = "SA Agent (PRD)"
+
+[[contributes.agent]]
+id = "seed_architect"
+label = "Architect Agent"
+
+[[contributes.agent]]
+id = "seed_pm"
+label = "PM Agent (Stories)"

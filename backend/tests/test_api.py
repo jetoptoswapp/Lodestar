@@ -1,4 +1,4 @@
-"""通用 API endpoint（M0）：health / stages（空 catalog）/ plugins / integrations。"""
+"""通用 API endpoint（M0 / M1 / M2）：health / stages / plugins / integrations / workflow statuses。"""
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -10,28 +10,49 @@ def test_endpoints(tmp_db):
     with TestClient(appmod.app) as client:
         assert client.get("/api/health").json() == {"status": "ok"}
 
-        # M1+：PRD stage 已註冊；catalog 至少含 prd（catalog-driven，非硬編碼）
+        # M2：catalog 含 prd / architecture / stories 三個 builtin stage
         stages = client.get("/api/stages").json()["stages"]
-        prd = next((s for s in stages if s["id"] == "prd"), None)
-        assert prd is not None, f"expected 'prd' in catalog, got {stages}"
+        by_id = {s["id"]: s for s in stages}
+        assert {"prd", "architecture", "stories"}.issubset(by_id), \
+            f"expected prd/architecture/stories, got {sorted(by_id)}"
+
+        prd = by_id["prd"]
         assert prd["supports_chat"] is True
         assert {"generate", "refine", "chat"}.issubset(set(prd["operations"]))
         assert prd["source"] == "builtin" and prd["plugin_id"] == "builtin_core_stages"
         assert prd["telemetry_stage"] == "specify"
+        assert prd["depends_on"] == []
+
+        arch = by_id["architecture"]
+        assert arch["telemetry_stage"] == "design"
+        assert arch["depends_on"] == ["prd"]
+        assert arch["downstream"] == ["stories"]
+        assert arch["supports_chat"] is True
+
+        sto = by_id["stories"]
+        assert sto["telemetry_stage"] == "deliver"
+        assert sto["depends_on"] == ["architecture"]
+        assert sto["downstream"] == []
+        assert sto["supports_chat"] is True
 
         plugins = client.get("/api/plugins").json()["plugins"]
         bi = next(p for p in plugins if p["id"] == "builtin_integrations")
         assert bi["enabled"] is True and bi["load_error"] is None
         assert set(bi["provides"]["integrations"]) == {"github", "jira", "gitlab"}
         core = next(p for p in plugins if p["id"] == "builtin_core_stages")
-        assert core["enabled"] is True and "prd" in core["provides"]["stages"]
+        assert core["enabled"] is True
+        assert {"prd", "architecture", "stories"}.issubset(set(core["provides"]["stages"]))
 
         integ = client.get("/api/integrations").json()["integrations"]
         assert {i["target"] for i in integ} == {"github", "jira", "gitlab"}
         gh = next(i for i in integ if i["target"] == "github")
         assert "fields" in gh["config_schema"]
 
-        # M1：default workflow 含 prd；新 thread → statuses 回 prd:draft
+        # M2：default workflow = (prd, architecture, stories)；新 thread → 三個 stage 全 draft
         tid = client.post("/api/projects", json={"name": "test"}).json()["thread_id"]
         statuses = client.get(f"/api/stage/statuses/{tid}").json()["statuses"]
-        assert statuses == [{"stage_id": "prd", "status": "draft"}]
+        assert statuses == [
+            {"stage_id": "prd", "status": "draft"},
+            {"stage_id": "architecture", "status": "draft"},
+            {"stage_id": "stories", "status": "draft"},
+        ]
