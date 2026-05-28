@@ -52,6 +52,7 @@ from api_models import (  # noqa: E402
     StageStateResponse,
     StageStatusItem,
     StageStatusesResponse,
+    UpdateProjectRequest,
 )
 from parsers import parse as parse_attachment  # noqa: E402
 from persistence import dal, migrations  # noqa: E402
@@ -235,6 +236,46 @@ async def get_project(thread_id: str):
     return ProjectResponse(**project)
 
 
+@app.patch("/api/projects/{thread_id}", response_model=ProjectResponse)
+async def update_project(thread_id: str, req: UpdateProjectRequest):
+    """目前只支援改 name；workflow_id 等留待 M3 編輯器一起做。"""
+    if req.name is None or not req.name.strip():
+        raise HTTPException(400, detail=error_detail("invalid_name", "name 不可為空"))
+    ok = dal.update_project_name(thread_id, req.name.strip())
+    if not ok:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    project = dal.get_project(thread_id)
+    if project is None:  # defensive
+        raise HTTPException(500, detail=error_detail("project_read_failed", "thread 改名後讀取失敗"))
+    return ProjectResponse(**project)
+
+
+@app.delete("/api/projects/{thread_id}")
+async def delete_project(thread_id: str):
+    """刪 thread + cascade（artifacts / status / messages / events / revisions /
+    attachments / harness_runs / harness_validation_results）+ 對應 uploads/ 檔案。"""
+    paths = dal.delete_project_cascade(thread_id)
+    if paths is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    # best-effort 清檔案；DB 已刪、檔案殘留不致命
+    uploads_root = dal.uploads_dir()
+    removed = 0
+    for rel in paths:
+        try:
+            (uploads_root / rel).unlink(missing_ok=True)
+            removed += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("delete attachment file failed for %s: %s", rel, exc)
+    # 順手把 uploads/<thread_id>/ 空目錄清掉
+    thread_dir = uploads_root / thread_id
+    try:
+        if thread_dir.exists() and not any(thread_dir.iterdir()):
+            thread_dir.rmdir()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rmdir %s failed: %s", thread_dir, exc)
+    return {"deleted": thread_id, "files_removed": removed}
+
+
 # ============================================================
 #  Stage operations（generate / refine / chat / manual edit）
 # ============================================================
@@ -297,6 +338,29 @@ async def stage_chat(stage_id: str, req: StageChatRequest):
     return StageChatResponse(
         ai_response=out["reply"] or "",
         updated_content=out["artifact"] or None,
+    )
+
+
+@app.post("/api/stage/{stage_id}/{thread_id}/approve", response_model=StageStateResponse)
+async def stage_approve(stage_id: str, thread_id: str):
+    """把 stage 標為 approved（要求 artifact 非空）。回傳更新後完整 state。"""
+    reg: Registry = _registry()
+    if stage_id not in reg.stages:
+        raise HTTPException(404, detail=error_detail("stage_not_found", f"stage '{stage_id}' 未註冊"))
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    artifact = dal.get_artifact(thread_id, stage_id) or ""
+    if not artifact.strip():
+        raise HTTPException(
+            400,
+            detail=error_detail("artifact_empty", f"stage '{stage_id}' 還沒生成內容，不能核准"),
+        )
+    dal.set_stage_status(thread_id, stage_id, "approved")
+    dal.append_event(thread_id, stage_id, event_type="approved", detail="")
+    meta = dal.get_artifact_meta(thread_id, stage_id) or {}
+    return StageStateResponse(
+        stage_id=stage_id, status="approved", artifact=artifact,
+        has_content=True, last_updated_at=meta.get("updated_at"),
     )
 
 
