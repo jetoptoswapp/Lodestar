@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Next
+node_modules/
+.next/
+out/
+dist/
+build/
+npm-debug.log*
+yarn-error.log*
+.turbo/
+
+# Database (SQLite WAL)
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
