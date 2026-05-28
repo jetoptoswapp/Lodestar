@@ -102,6 +102,21 @@ type ModalState =
   | { kind: "confirmDeleteThread"; threadId: string; threadName: string }
   | { kind: "refinePrd" };
 
+// ============================== ModelAdapter（GET /api/models）==============================
+type ModelAdapterInfo = {
+  model_choice: string;
+  description: string;
+  is_available: boolean;
+  supports_multimodal: boolean;
+  max_context_tokens: number;
+  prompt_budget_tokens: number;
+  response_budget_tokens: number;
+  source_plugin: string | null;
+};
+
+const MODEL_STORAGE_KEY = "lodestar.model_choice";
+const DEFAULT_MODEL = "claude-cli";
+
 const NAV = [
   { id: "workspace", label: "WORKSPACE" },
   { id: "workflows", label: "WORKFLOWS" },
@@ -225,9 +240,15 @@ export default function Page() {
   // ===== M1.1：PRD attachments =====
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
   const [uploading, setUploading] = useState<boolean>(false);
-  // ===== M2 baseline：真實 thread list + plugin count + modal state =====
+  // ===== M2 baseline：真實 thread list + plugin count + model list + modal state =====
   const [threadList, setThreadList] = useState<Project[]>([]);
   const [pluginCount, setPluginCount] = useState<number | null>(null);
+  const [modelList, setModelList] = useState<ModelAdapterInfo[]>([]);
+  // modelChoice：preference 來源是 localStorage；fetch model list 後若 invalid 會 fallback
+  const [modelChoice, setModelChoice] = useState<string>(() => {
+    if (typeof window === "undefined") return DEFAULT_MODEL;
+    return window.localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL;
+  });
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
 
   // 清掉所有 per-thread 衍生狀態（切 thread / 刪除後重置 UI 用）
@@ -305,6 +326,34 @@ export default function Page() {
       })
       .catch(() => {/* silent：plugin 端點失敗不致命 */});
     return () => { mounted = false; };
+  }, []);
+
+  // 拉 model list；fetch 完若 localStorage 存的 model 不在 registry 內 → fallback 第一個可用
+  useEffect(() => {
+    let mounted = true;
+    apiFetch<{ models: ModelAdapterInfo[] }>("/api/models")
+      .then((r) => {
+        if (!mounted) return;
+        setModelList(r.models);
+        const choices = new Set(r.models.map((m) => m.model_choice));
+        setModelChoice((prev) => {
+          if (choices.has(prev)) return prev;
+          const firstAvailable = r.models.find((m) => m.is_available);
+          const fallback = firstAvailable?.model_choice
+            ?? r.models[0]?.model_choice
+            ?? DEFAULT_MODEL;
+          window.localStorage.setItem(MODEL_STORAGE_KEY, fallback);
+          return fallback;
+        });
+      })
+      .catch(() => {/* silent：model 端點失敗時用預設 claude-cli */});
+    return () => { mounted = false; };
+  }, []);
+
+  // 切 model：localStorage + state（後續 generate/refine 自動套用）
+  const onSelectModel = useCallback((choice: string) => {
+    window.localStorage.setItem(MODEL_STORAGE_KEY, choice);
+    setModelChoice(choice);
   }, []);
 
   // ===== Thread CRUD callbacks（打開 modal；submit 才呼 API）=====
@@ -454,7 +503,7 @@ export default function Page() {
     try {
       const data = await apiFetch<{ artifact: string }>("/api/stage/prd/generate", {
         method: "POST",
-        body: JSON.stringify({ thread_id: thread, model_choice: "claude-cli" }),
+        body: JSON.stringify({ thread_id: thread, model_choice: modelChoice }),
       });
       setPrdArtifact(data.artifact || "");
       setPrdStatus("draft");
@@ -463,7 +512,7 @@ export default function Page() {
     } finally {
       setBusy(false);
     }
-  }, [thread, busy]);
+  }, [thread, busy, modelChoice]);
 
   // PRD refine：開 modal 收指令，submit 才打 API
   const onRefine = useCallback(() => {
@@ -479,7 +528,7 @@ export default function Page() {
     try {
       const data = await apiFetch<{ artifact: string }>("/api/stage/prd/refine", {
         method: "POST",
-        body: JSON.stringify({ thread_id: thread, model_choice: "claude-cli", instruction }),
+        body: JSON.stringify({ thread_id: thread, model_choice: modelChoice, instruction }),
       });
       setPrdArtifact(data.artifact || "");
       setPrdStatus("draft");
@@ -488,7 +537,7 @@ export default function Page() {
     } finally {
       setBusy(false);
     }
-  }, [thread]);
+  }, [thread, modelChoice]);
 
   // PRD 核准 —— 呼叫 approve endpoint，更新 status
   const onApprovePrd = useCallback(async () => {
@@ -522,7 +571,15 @@ export default function Page() {
   return (
     <>
       <div className="relative z-10 flex h-full flex-col overflow-hidden">
-        <TopBar nav={nav} onNav={setNav} thread={thread} pluginCount={pluginCount} />
+        <TopBar
+          nav={nav}
+          onNav={setNav}
+          thread={thread}
+          pluginCount={pluginCount}
+          modelChoice={modelChoice}
+          modelList={modelList}
+          onSelectModel={onSelectModel}
+        />
         {err && (
           <div className="border-b border-[color-mix(in_oklab,#f59e0b_40%,transparent)] bg-[color-mix(in_oklab,#f59e0b_12%,transparent)] px-6 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#f59e0b]">
             ⚠ {err}
@@ -577,7 +634,8 @@ export default function Page() {
             {nav === "workflows" && <WorkflowsView />}
             {nav === "agents"    && <AgentsView />}
             {nav === "plugins"   && <PluginsView />}
-            <BuildSeal />
+            {/* BuildSeal 只在無 ChatPanel 的 view 顯示，避免跟 footer 的「↵ send · ⌘↵ refine」overlap */}
+            <BuildSeal visible={nav !== "workspace"} />
           </main>
         </div>
       </div>
@@ -636,11 +694,14 @@ export default function Page() {
 }
 
 // ============================== TopBar ==============================
-function TopBar({ nav, onNav, thread, pluginCount }: {
+function TopBar({ nav, onNav, thread, pluginCount, modelChoice, modelList, onSelectModel }: {
   nav: string;
   onNav: (n: string) => void;
   thread: string | null;
   pluginCount: number | null;
+  modelChoice: string;
+  modelList: ModelAdapterInfo[];
+  onSelectModel: (choice: string) => void;
 }) {
   return (
     <header className="rise-1 relative flex h-14 shrink-0 items-center justify-between border-b border-[var(--rule-dark)] px-6">
@@ -672,10 +733,7 @@ function TopBar({ nav, onNav, thread, pluginCount }: {
           <code className="text-[#cdd4df]">{thread ?? "—"}</code>
         </div>
         <div className="h-3 w-px bg-[var(--rule-dark)]" />
-        <div className="flex items-center gap-1.5">
-          <span className="text-[var(--ink-muted)]">MODEL</span>
-          <span className="text-[#b8c0cf]">claude-cli</span>
-        </div>
+        <ModelSelector value={modelChoice} options={modelList} onChange={onSelectModel} />
         <div className="h-3 w-px bg-[var(--rule-dark)]" />
         <div className="flex items-center gap-2">
           <span className="glow-approved relative inline-block h-1.5 w-1.5 rounded-full bg-[var(--approved)]" />
@@ -684,6 +742,111 @@ function TopBar({ nav, onNav, thread, pluginCount }: {
         </div>
       </div>
     </header>
+  );
+}
+
+// ============================== ModelSelector（TopBar popover）==============================
+function ModelSelector({ value, options, onChange }: {
+  value: string;
+  options: ModelAdapterInfo[];
+  onChange: (choice: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // 點 popover 外面收起來
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("mousedown", onClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onClick);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const currentMeta = options.find((m) => m.model_choice === value);
+  const hasOptions = options.length > 0;
+
+  return (
+    <div ref={wrapRef} className="relative flex items-center gap-1.5">
+      <span className="text-[var(--ink-muted)]">MODEL</span>
+      <button
+        type="button"
+        onClick={() => hasOptions && setOpen((o) => !o)}
+        disabled={!hasOptions}
+        className="flex items-center gap-1 border border-transparent px-1 text-[#b8c0cf] transition hover:border-[var(--rule-dark)] hover:bg-[var(--bg-elev)] disabled:opacity-60"
+      >
+        <span>{value}</span>
+        {currentMeta && !currentMeta.is_available && (
+          <span title="adapter 自報 unavailable（如 cli 不在 PATH）" className="text-[#f59e0b]">⚠</span>
+        )}
+        <svg viewBox="0 0 10 10" width="9" height="9" className={`transition ${open ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.4">
+          <path d="M2 4 L5 7 L8 4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && hasOptions && (
+        <div className="absolute right-0 top-[calc(100%+8px)] z-40 min-w-[280px] border border-[var(--paper-edge)] bg-[var(--paper)] shadow-anvil">
+          <div className="border-b border-[var(--rule)] px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            選擇 model adapter
+          </div>
+          <ul className="max-h-[60vh] overflow-y-auto">
+            {options.map((m) => {
+              const selected = m.model_choice === value;
+              return (
+                <li key={m.model_choice}>
+                  <button
+                    type="button"
+                    onClick={() => { onChange(m.model_choice); setOpen(false); }}
+                    className={`group flex w-full items-start gap-2.5 border-l-2 px-3 py-2.5 text-left transition ${
+                      selected
+                        ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)]"
+                        : "border-transparent hover:bg-[var(--bg-elev)] hover:border-[#404a5b]"
+                    }`}
+                  >
+                    <span className={`mt-0.5 grid h-3 w-3 shrink-0 place-items-center border ${
+                      selected ? "border-[var(--polaris)] bg-[var(--polaris)]" : "border-[var(--rule-dark)]"
+                    }`}>
+                      {selected && <span className="text-[8px] leading-none text-white">●</span>}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <code className={`font-[family-name:var(--font-mono)] text-[12px] ${selected ? "text-[var(--polaris)]" : "text-[#e6ecf5]"}`}>
+                          {m.model_choice}
+                        </code>
+                        {!m.is_available && (
+                          <span className="border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-1.5 py-px font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[#f59e0b]">
+                            unavailable
+                          </span>
+                        )}
+                        {m.supports_multimodal && (
+                          <span className="border border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] px-1.5 py-px font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[var(--polaris)]">
+                            multimodal
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 font-[family-name:var(--font-sans)] text-[11.5px] leading-[1.5] text-[#97a0b3]">
+                        {m.description || "—"}
+                      </div>
+                      <div className="mt-1 font-[family-name:var(--font-mono)] text-[9.5px] uppercase tracking-wider text-[var(--ink-muted)]">
+                        ctx {m.max_context_tokens.toLocaleString()} ·
+                        {" "}prompt {m.prompt_budget_tokens.toLocaleString()} ·
+                        {" "}reply {m.response_budget_tokens.toLocaleString()}
+                        {m.source_plugin && <> · {m.source_plugin}</>}
+                      </div>
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2490,10 +2653,18 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function BuildSeal() {
+/**
+ * BuildSeal —— 「印章」浮水印，顯示版本資訊。
+ *
+ * 問題：原本固定 right-5 bottom-3，會跟 ChatPanel footer 的「↵ send · ⌘↵ refine」
+ * 與「tokens 1,234 / 200k」overlap（兩個都 absolute 在右下）。
+ * 修法：workspace（有 ChatPanel）時不顯示；其他 view（workflows/agents/plugins）顯示。
+ */
+function BuildSeal({ visible }: { visible: boolean }) {
+  if (!visible) return null;
   return (
     <div className="pointer-events-none absolute right-5 bottom-3 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)] opacity-60">
-      build · m0.2026.05 · feat/m0-plugin-foundation
+      build · m2.2026.05 · fix/baseline-cleanup
     </div>
   );
 }
