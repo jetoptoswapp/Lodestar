@@ -8,6 +8,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import {
   MOCK_ARCH_MARKDOWN,
   MOCK_STORIES_MARKDOWN,
@@ -66,21 +67,40 @@ async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<
   return r.json();
 }
 
-// ============================== Mock data ==============================
-type StageStatus = "approved" | "draft" | "locked";
+// ============================== Stage stepper static catalog（M2.2：UI 標示用；M2.3 改 catalog-driven）==============================
+// status 是 fallback —— Page 會把真實 prdStatus 傳給 Stepper，其他 stage 用此處 default。
+type StageStatus = "approved" | "draft" | "needs_revision" | "locked";
 
-const STAGES = [
-  { id: "prd",          n: "01", label: "PRD",            caption: "PRODUCT REQUIREMENTS", status: "approved" as StageStatus, badge: "CHARTED",   agent: "3 agents · discussion" },
-  { id: "architecture", n: "02", label: "Architecture",   caption: "SYSTEM DESIGN",        status: "draft" as StageStatus,    badge: "CHARTING", agent: "software_architect"     },
-  { id: "stories",      n: "03", label: "Stories",        caption: "DELIVERABLE STORIES",  status: "draft" as StageStatus,    badge: "DRAFTED",  agent: "product_owner"          },
-  { id: "implement",    n: "04", label: "Implementation", caption: "AUTO-CODE · M5",       status: "draft" as StageStatus,    badge: "DISPATCH", agent: "3 agents · dispatch"    },
+const STAGES: Array<{
+  id: string; n: string; label: string; caption: string; status: StageStatus; badge: string; agent: string;
+}> = [
+  { id: "prd",          n: "01", label: "PRD",            caption: "PRODUCT REQUIREMENTS", status: "draft",   badge: "CHARTING", agent: "system_analyst"     },
+  { id: "architecture", n: "02", label: "Architecture",   caption: "SYSTEM DESIGN",        status: "draft",   badge: "CHARTING", agent: "software_architect" },
+  { id: "stories",      n: "03", label: "Stories",        caption: "DELIVERABLE STORIES",  status: "draft",   badge: "DRAFTED",  agent: "product_owner"      },
+  { id: "implement",    n: "04", label: "Implementation", caption: "AUTO-CODE · M5",       status: "locked",  badge: "DISPATCH", agent: "3 agents · dispatch"},
 ];
 
-const THREADS = [
-  { id: "t1", name: "電商結帳重構",       workflow: "default",  glyph: "C" },
-  { id: "t2", name: "行動 App 登入升級", workflow: "default",  glyph: "M" },
-  { id: "t3", name: "內部營運儀表板",     workflow: "prd→arch", glyph: "O" },
-];
+// ============================== Project（M1 / M2 baseline）==============================
+type Project = {
+  thread_id: string;
+  name: string;
+  workflow_id: string | null;
+  created_at: number;
+};
+
+// 用於 sidebar 顯示的縮寫 glyph：取 name 第一個非空白字元
+function projectGlyph(p: Project): string {
+  const ch = p.name.trim()[0];
+  return ch ?? "?";
+}
+
+// ============================== Modal state（取代 window.prompt / window.confirm）==============================
+type ModalState =
+  | { kind: "none" }
+  | { kind: "newThread" }
+  | { kind: "renameThread"; threadId: string; currentName: string }
+  | { kind: "confirmDeleteThread"; threadId: string; threadName: string }
+  | { kind: "refinePrd" };
 
 const NAV = [
   { id: "workspace", label: "WORKSPACE" },
@@ -205,51 +225,156 @@ export default function Page() {
   // ===== M1.1：PRD attachments =====
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
   const [uploading, setUploading] = useState<boolean>(false);
+  // ===== M2 baseline：真實 thread list + plugin count + modal state =====
+  const [threadList, setThreadList] = useState<Project[]>([]);
+  const [pluginCount, setPluginCount] = useState<number | null>(null);
+  const [modal, setModal] = useState<ModalState>({ kind: "none" });
 
-  // bootstrap thread：localStorage 取舊；無則建新（setAndPersist pattern，spec §11 陷阱）
+  // 清掉所有 per-thread 衍生狀態（切 thread / 刪除後重置 UI 用）
+  const resetThreadDerivedState = useCallback(() => {
+    setPrdArtifact("");
+    setPrdStatus("draft");
+    setAttachments([]);
+    setBusy(false);
+  }, []);
+
+  // 切換 active thread —— 同時寫 localStorage、清衍生狀態、回到 workspace / PRD
+  const switchThread = useCallback((tid: string) => {
+    window.localStorage.setItem("lodestar.thread", tid);
+    setThread(tid);
+    resetThreadDerivedState();
+    setNav("workspace");
+    setSelected("prd");
+  }, [resetThreadDerivedState]);
+
+  // 拉真實 thread list
+  const refreshThreadList = useCallback(async () => {
+    try {
+      const r = await apiFetch<{ projects: Project[] }>("/api/projects");
+      setThreadList(r.projects);
+      return r.projects;
+    } catch (e) {
+      setErr(`讀取專案列表失敗：${(e as Error).message}`);
+      return [];
+    }
+  }, []);
+
+  // bootstrap：取 list → localStorage 對得到就用，對不到就用第一個，list 空就建新
   useEffect(() => {
     let mounted = true;
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem("lodestar.thread") : null;
-    if (stored) {
-      setThread(stored);
-      return;
-    }
-    apiFetch<{ thread_id: string }>("/api/projects", {
-      method: "POST", body: JSON.stringify({ name: "新需求" }),
-    })
-      .then((p) => {
+    (async () => {
+      const projects = await refreshThreadList();
+      if (!mounted) return;
+      const stored = typeof window !== "undefined"
+        ? window.localStorage.getItem("lodestar.thread")
+        : null;
+      const matched = stored && projects.find((p) => p.thread_id === stored);
+      if (matched) {
+        setThread(matched.thread_id);
+        return;
+      }
+      if (projects.length > 0) {
+        const first = projects[0];
+        window.localStorage.setItem("lodestar.thread", first.thread_id);
+        setThread(first.thread_id);
+        return;
+      }
+      // 空 list → 建一個 default thread
+      try {
+        const p = await apiFetch<{ thread_id: string }>("/api/projects", {
+          method: "POST", body: JSON.stringify({ name: "新需求" }),
+        });
         if (!mounted) return;
         window.localStorage.setItem("lodestar.thread", p.thread_id);
         setThread(p.thread_id);
+        await refreshThreadList();
+      } catch (e) {
+        if (mounted) setErr(`建立 thread 失敗：${(e as Error).message}`);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [refreshThreadList]);
+
+  // 拉 plugin count（給 TopBar 顯示）
+  useEffect(() => {
+    let mounted = true;
+    apiFetch<{ plugins: Array<{ enabled: boolean; load_error: string | null }> }>("/api/plugins")
+      .then((r) => {
+        if (!mounted) return;
+        setPluginCount(r.plugins.filter((p) => p.enabled && !p.load_error).length);
       })
-      .catch((e: Error) => mounted && setErr(`建立 thread 失敗：${e.message}`));
+      .catch(() => {/* silent：plugin 端點失敗不致命 */});
     return () => { mounted = false; };
   }, []);
 
-  // 開新專案（thread）：呼叫 /api/projects 建新 → 切換 localStorage → reset 所有 stage state
-  const onNewThread = useCallback(async () => {
-    const name = window.prompt("新專案名稱：", "新需求") ?? "";
-    if (!name.trim()) return;
+  // ===== Thread CRUD callbacks（打開 modal；submit 才呼 API）=====
+  const onNewThread = useCallback(() => setModal({ kind: "newThread" }), []);
+  const onRenameThread = useCallback((tid: string, currentName: string) => {
+    setModal({ kind: "renameThread", threadId: tid, currentName });
+  }, []);
+  const onDeleteThread = useCallback((tid: string, name: string) => {
+    setModal({ kind: "confirmDeleteThread", threadId: tid, threadName: name });
+  }, []);
+
+  // Modal submit handlers
+  const submitNewThread = useCallback(async (name: string) => {
+    setModal({ kind: "none" });
     setErr(null);
-    setBusy(false);
     try {
       const p = await apiFetch<{ thread_id: string }>("/api/projects", {
-        method: "POST", body: JSON.stringify({ name: name.trim() }),
+        method: "POST", body: JSON.stringify({ name }),
       });
-      window.localStorage.setItem("lodestar.thread", p.thread_id);
-      // 切換 thread；既有的 useEffect chain 會自動 refetch PRD state / attachments
-      setThread(p.thread_id);
-      // 立即清掉 stale state（避免新 thread fetch 完成前還顯示舊 PRD 內容）
-      setPrdArtifact("");
-      setPrdStatus("draft");
-      setAttachments([]);
-      // 切回 workspace + PRD selected（user 預期從 PRD 開始）
-      setNav("workspace");
-      setSelected("prd");
+      await refreshThreadList();
+      switchThread(p.thread_id);
     } catch (e) {
       setErr(`開新專案失敗：${(e as Error).message}`);
     }
-  }, []);
+  }, [refreshThreadList, switchThread]);
+
+  const submitRenameThread = useCallback(async (tid: string, newName: string) => {
+    setModal({ kind: "none" });
+    setErr(null);
+    try {
+      await apiFetch(`/api/projects/${tid}`, {
+        method: "PATCH", body: JSON.stringify({ name: newName }),
+      });
+      await refreshThreadList();
+    } catch (e) {
+      setErr(`重新命名失敗：${(e as Error).message}`);
+    }
+  }, [refreshThreadList]);
+
+  const submitDeleteThread = useCallback(async (tid: string) => {
+    setModal({ kind: "none" });
+    setErr(null);
+    try {
+      await apiFetch(`/api/projects/${tid}`, { method: "DELETE" });
+      const remaining = await refreshThreadList();
+      // 如果刪掉的是當前 thread → 切到剩下的第一個；沒剩下就清空（bootstrap 會建新）
+      if (tid === thread) {
+        if (remaining.length > 0) {
+          switchThread(remaining[0].thread_id);
+        } else {
+          window.localStorage.removeItem("lodestar.thread");
+          setThread(null);
+          resetThreadDerivedState();
+          // 重跑 bootstrap 邏輯：建新 thread
+          try {
+            const p = await apiFetch<{ thread_id: string }>("/api/projects", {
+              method: "POST", body: JSON.stringify({ name: "新需求" }),
+            });
+            window.localStorage.setItem("lodestar.thread", p.thread_id);
+            setThread(p.thread_id);
+            await refreshThreadList();
+          } catch (e) {
+            setErr(`建立替代 thread 失敗：${(e as Error).message}`);
+          }
+        }
+      }
+    } catch (e) {
+      setErr(`刪除失敗：${(e as Error).message}`);
+    }
+  }, [thread, refreshThreadList, switchThread, resetThreadDerivedState]);
 
   // 拿 PRD state（artifact + status）
   const refreshPrd = useCallback(async (tid: string) => {
@@ -340,10 +465,15 @@ export default function Page() {
     }
   }, [thread, busy]);
 
-  const onRefine = useCallback(async () => {
+  // PRD refine：開 modal 收指令，submit 才打 API
+  const onRefine = useCallback(() => {
     if (!thread || busy) return;
-    const instruction = window.prompt("輸入修訂指令（例：加上 OAuth 登入、提高並發到 10k）：");
-    if (!instruction || !instruction.trim()) return;
+    setModal({ kind: "refinePrd" });
+  }, [thread, busy]);
+
+  const submitRefinePrd = useCallback(async (instruction: string) => {
+    setModal({ kind: "none" });
+    if (!thread) return;
     setErr(null);
     setBusy("refine");
     try {
@@ -358,7 +488,21 @@ export default function Page() {
     } finally {
       setBusy(false);
     }
-  }, [thread, busy]);
+  }, [thread]);
+
+  // PRD 核准 —— 呼叫 approve endpoint，更新 status
+  const onApprovePrd = useCallback(async () => {
+    if (!thread || busy || !prdArtifact.trim()) return;
+    setErr(null);
+    try {
+      const r = await apiFetch<{ status: string }>(`/api/stage/prd/${thread}/approve`, {
+        method: "POST",
+      });
+      setPrdStatus(r.status);
+    } catch (e) {
+      setErr(`核准失敗：${(e as Error).message}`);
+    }
+  }, [thread, busy, prdArtifact]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -378,7 +522,7 @@ export default function Page() {
   return (
     <>
       <div className="relative z-10 flex h-full flex-col overflow-hidden">
-        <TopBar nav={nav} onNav={setNav} thread={thread} />
+        <TopBar nav={nav} onNav={setNav} thread={thread} pluginCount={pluginCount} />
         {err && (
           <div className="border-b border-[color-mix(in_oklab,#f59e0b_40%,transparent)] bg-[color-mix(in_oklab,#f59e0b_12%,transparent)] px-6 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#f59e0b]">
             ⚠ {err}
@@ -386,11 +530,27 @@ export default function Page() {
           </div>
         )}
         <div className="flex min-h-0 flex-1">
-          {showSidebar && <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen((o) => !o)} onNewThread={onNewThread} />}
+          {showSidebar && (
+            <Sidebar
+              open={sidebarOpen}
+              onToggle={() => setSidebarOpen((o) => !o)}
+              threadList={threadList}
+              activeThread={thread}
+              onSelectThread={switchThread}
+              onNewThread={onNewThread}
+              onRenameThread={onRenameThread}
+              onDeleteThread={onDeleteThread}
+            />
+          )}
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             {nav === "workspace" && (
               <>
-                <StageHeader selected={selected} onSelect={setSelected} />
+                <StageHeader
+                  selected={selected}
+                  onSelect={setSelected}
+                  prdStatus={prdStatus}
+                  threadName={threadList.find((p) => p.thread_id === thread)?.name ?? null}
+                />
                 <div className="flex min-h-0 flex-1">
                   {selected === "prd" && (
                     <PrdWorkspace
@@ -401,6 +561,7 @@ export default function Page() {
                       busy={busy}
                       onGenerate={onGenerate}
                       onRefine={onRefine}
+                      onApprove={onApprovePrd}
                       attachments={attachments}
                       uploading={uploading}
                       onUploadAttachment={onUploadAttachment}
@@ -421,12 +582,66 @@ export default function Page() {
         </div>
       </div>
       {docFs && <DocFullscreen onClose={() => setDocFs(false)} prdArtifact={prdArtifact} />}
+
+      {/* ========== Dialogs（取代 window.prompt / window.confirm）========== */}
+      <PromptDialog
+        open={modal.kind === "newThread"}
+        title="開新專案"
+        subtitle="POST /api/projects"
+        label="專案名稱"
+        placeholder="例：電商結帳重構"
+        defaultValue="新需求"
+        onSubmit={submitNewThread}
+        onCancel={() => setModal({ kind: "none" })}
+      />
+      <PromptDialog
+        open={modal.kind === "renameThread"}
+        title="重新命名專案"
+        subtitle={modal.kind === "renameThread" ? `PATCH /api/projects/${modal.threadId}` : ""}
+        label="新名稱"
+        defaultValue={modal.kind === "renameThread" ? modal.currentName : ""}
+        onSubmit={(name) => modal.kind === "renameThread" && submitRenameThread(modal.threadId, name)}
+        onCancel={() => setModal({ kind: "none" })}
+      />
+      <ConfirmDialog
+        open={modal.kind === "confirmDeleteThread"}
+        destructive
+        title="刪除專案？"
+        subtitle="此動作無法復原"
+        message={
+          modal.kind === "confirmDeleteThread" ? (
+            <>
+              即將刪除「<span className="font-semibold text-[#e6ecf5]">{modal.threadName}</span>
+              」與其 PRD / 架構 / 故事 artifact、對話、附件與遙測紀錄。
+            </>
+          ) : null
+        }
+        confirmLabel="刪除"
+        onConfirm={() => modal.kind === "confirmDeleteThread" && submitDeleteThread(modal.threadId)}
+        onCancel={() => setModal({ kind: "none" })}
+      />
+      <PromptDialog
+        open={modal.kind === "refinePrd"}
+        title="修訂 PRD"
+        subtitle="POST /api/stage/prd/refine"
+        label="修訂指令"
+        placeholder="例：加上 OAuth 登入；NFR 並發提到 10k；補充 OPS 監控指標……"
+        multiline
+        submitLabel="送出修訂"
+        onSubmit={submitRefinePrd}
+        onCancel={() => setModal({ kind: "none" })}
+      />
     </>
   );
 }
 
 // ============================== TopBar ==============================
-function TopBar({ nav, onNav, thread }: { nav: string; onNav: (n: string) => void; thread: string | null }) {
+function TopBar({ nav, onNav, thread, pluginCount }: {
+  nav: string;
+  onNav: (n: string) => void;
+  thread: string | null;
+  pluginCount: number | null;
+}) {
   return (
     <header className="rise-1 relative flex h-14 shrink-0 items-center justify-between border-b border-[var(--rule-dark)] px-6">
       <div className="flex items-center gap-10">
@@ -464,7 +679,7 @@ function TopBar({ nav, onNav, thread }: { nav: string; onNav: (n: string) => voi
         <div className="h-3 w-px bg-[var(--rule-dark)]" />
         <div className="flex items-center gap-2">
           <span className="glow-approved relative inline-block h-1.5 w-1.5 rounded-full bg-[var(--approved)]" />
-          <span className="text-[#b8c0cf]">3</span>
+          <span className="text-[#b8c0cf]">{pluginCount ?? "—"}</span>
           <span className="text-[var(--ink-muted)]">PLUGINS LOADED</span>
         </div>
       </div>
@@ -499,10 +714,18 @@ function LodestarBrand() {
 }
 
 // ============================== Sidebar ==============================
-function Sidebar({ open, onToggle, onNewThread }: {
+function Sidebar({
+  open, onToggle, threadList, activeThread,
+  onSelectThread, onNewThread, onRenameThread, onDeleteThread,
+}: {
   open: boolean;
   onToggle: () => void;
+  threadList: Project[];
+  activeThread: string | null;
+  onSelectThread: (tid: string) => void;
   onNewThread: () => void;
+  onRenameThread: (tid: string, currentName: string) => void;
+  onDeleteThread: (tid: string, name: string) => void;
 }) {
   if (!open) {
     return (
@@ -512,15 +735,20 @@ function Sidebar({ open, onToggle, onNewThread }: {
           <ChevronDouble dir="right" />
         </button>
         <div className="mb-3 h-px w-6 bg-[var(--rule-dark)]" />
-        {THREADS.map((t, i) => {
-          const active = i === 0;
+        {threadList.map((p) => {
+          const active = p.thread_id === activeThread;
           return (
-            <button key={t.id} title={t.name}
+            <button
+              key={p.thread_id}
+              title={p.name}
+              onClick={() => onSelectThread(p.thread_id)}
               className={`mb-1.5 grid h-9 w-9 place-items-center border font-[family-name:var(--font-display)] text-[15px] transition ${
-                active ? "glow-star border-[var(--polaris)] text-[var(--polaris)]"
-                       : "border-[var(--rule-dark)] text-[#7a8499] hover:border-[#404a5b] hover:text-[#b8c0cf]"
-              }`}>
-              {t.glyph}
+                active
+                  ? "glow-star border-[var(--polaris)] text-[var(--polaris)]"
+                  : "border-[var(--rule-dark)] text-[#7a8499] hover:border-[#404a5b] hover:text-[#b8c0cf]"
+              }`}
+            >
+              {projectGlyph(p)}
             </button>
           );
         })}
@@ -538,7 +766,7 @@ function Sidebar({ open, onToggle, onNewThread }: {
     <aside className="rise-2 flex w-72 shrink-0 flex-col border-r border-[var(--rule-dark)] bg-[var(--bg-elev)]/40">
       <div className="flex items-center justify-between border-b border-[var(--rule-dark)] px-5 py-3.5">
         <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
-          / threads · {THREADS.length}
+          / threads · {threadList.length}
         </span>
         <button onClick={onToggle} title="收合側欄"
           className="grid h-6 w-6 place-items-center text-[var(--ink-muted)] transition hover:text-[#b8c0cf]">
@@ -546,26 +774,21 @@ function Sidebar({ open, onToggle, onNewThread }: {
         </button>
       </div>
       <div className="flex-1 overflow-y-auto py-1">
-        {THREADS.map((t, i) => {
-          const active = i === 0;
-          return (
-            <button key={t.id}
-              className={`group relative flex w-full items-center gap-3 px-5 py-3 text-left transition ${
-                active ? "bg-[var(--anvil)]/60" : "hover:bg-[var(--bg-elev)]"
-              }`}>
-              {active && <span className="absolute top-3 bottom-3 left-0 w-[3px] bg-[var(--polaris)]" />}
-              <span className={`grid h-9 w-9 shrink-0 place-items-center border font-[family-name:var(--font-display)] text-[15px] ${
-                  active ? "border-[var(--polaris)] text-[var(--polaris)]" : "border-[var(--rule-dark)] text-[#7a8499] group-hover:border-[#404a5b]"
-                }`}>
-                {t.glyph}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className={`truncate text-[13px] ${active ? "text-[#e6ecf5]" : "text-[#97a0b3]"}`}>{t.name}</div>
-                <div className="mt-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{t.workflow}</div>
-              </div>
-            </button>
-          );
-        })}
+        {threadList.length === 0 && (
+          <div className="px-5 py-6 text-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            尚無專案
+          </div>
+        )}
+        {threadList.map((p) => (
+          <ThreadRow
+            key={p.thread_id}
+            project={p}
+            active={p.thread_id === activeThread}
+            onSelect={() => onSelectThread(p.thread_id)}
+            onRename={() => onRenameThread(p.thread_id, p.name)}
+            onDelete={() => onDeleteThread(p.thread_id, p.name)}
+          />
+        ))}
       </div>
       <button
         onClick={onNewThread}
@@ -578,13 +801,116 @@ function Sidebar({ open, onToggle, onNewThread }: {
   );
 }
 
+function ThreadRow({ project, active, onSelect, onRename, onDelete }: {
+  project: Project;
+  active: boolean;
+  onSelect: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className={`group relative flex w-full items-center gap-3 px-5 py-3 transition ${
+        active ? "bg-[var(--anvil)]/60" : "hover:bg-[var(--bg-elev)]"
+      }`}
+    >
+      {active && <span className="absolute top-3 bottom-3 left-0 w-[3px] bg-[var(--polaris)]" />}
+      <button
+        onClick={onSelect}
+        className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        title={`切換到「${project.name}」`}
+      >
+        <span
+          className={`grid h-9 w-9 shrink-0 place-items-center border font-[family-name:var(--font-display)] text-[15px] ${
+            active
+              ? "border-[var(--polaris)] text-[var(--polaris)]"
+              : "border-[var(--rule-dark)] text-[#7a8499] group-hover:border-[#404a5b]"
+          }`}
+        >
+          {projectGlyph(project)}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className={`truncate text-[13px] ${active ? "text-[#e6ecf5]" : "text-[#97a0b3]"}`}>
+            {project.name}
+          </div>
+          <div className="mt-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+            {project.workflow_id ?? "default"}
+          </div>
+        </div>
+      </button>
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+        <button
+          onClick={(e) => { e.stopPropagation(); onRename(); }}
+          title="重新命名"
+          className="grid h-6 w-6 place-items-center text-[var(--ink-muted)] transition hover:text-[var(--polaris)]"
+        >
+          <RenameIcon />
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          title="刪除專案"
+          className="grid h-6 w-6 place-items-center text-[var(--ink-muted)] transition hover:text-[#f47171]"
+        >
+          <TrashIcon />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RenameIcon() {
+  return (
+    <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 10.5 L2 12 L3.5 12 L10.5 5 L9 3.5 Z" />
+      <path d="M8.5 4 L10 5.5" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 4 L11 4" />
+      <path d="M5 4 L5 3 L9 3 L9 4" />
+      <path d="M4 4 L4.5 12 L9.5 12 L10 4" />
+      <path d="M6 6.5 L6 10" />
+      <path d="M8 6.5 L8 10" />
+    </svg>
+  );
+}
+
 // ============================== Stage header ==============================
-function StageHeader({ selected, onSelect }: { selected: string; onSelect: (s: string) => void }) {
+function StageHeader({ selected, onSelect, prdStatus, threadName }: {
+  selected: string;
+  onSelect: (s: string) => void;
+  prdStatus: string;            // M2 baseline：PRD 從真實 state 來
+  threadName: string | null;    // 從 thread list 找對應名稱
+}) {
+  // 把 stage id 的 status 投映到 stepper（PRD 用 prop 的真實 status；其他用 STAGES default）
+  const statusOf = (sid: string): StageStatus => {
+    if (sid === "prd") {
+      if (prdStatus === "approved" || prdStatus === "needs_revision" || prdStatus === "draft") {
+        return prdStatus;
+      }
+      return "draft";
+    }
+    return STAGES.find((s) => s.id === sid)?.status ?? "draft";
+  };
+
+  const badgeOf = (sid: string, status: StageStatus): string => {
+    if (sid === "prd") {
+      return status === "approved" ? "CHARTED"
+        : status === "needs_revision" ? "REVISE"
+        : "CHARTING";
+    }
+    return STAGES.find((s) => s.id === sid)?.badge ?? "";
+  };
+
   return (
     <div className="rise-3 border-b border-[var(--rule-dark)] px-10 pt-6 pb-4">
       <div className="mb-3 flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
         <span>thread</span><span className="text-[#2a3041]">/</span>
-        <span className="text-[#b8c0cf]">電商結帳重構</span><span className="text-[#2a3041]">·</span>
+        <span className="text-[#b8c0cf]">{threadName ?? "—"}</span><span className="text-[#2a3041]">·</span>
         <span>workflow</span><span className="text-[#2a3041]">/</span><span className="text-[var(--polaris)]">default</span>
         <span className="ml-auto">stages by <span className="text-[#b8c0cf]">builtin_core_stages</span></span>
       </div>
@@ -593,17 +919,27 @@ function StageHeader({ selected, onSelect }: { selected: string; onSelect: (s: s
       </h1>
       <ol className="flex items-stretch">
         {STAGES.map((s, i) => {
+          const status = statusOf(s.id);
+          const badge = badgeOf(s.id, status);
           const isSelected = s.id === selected;
-          const isLocked = s.status === "locked";
-          const topBorder = isSelected ? "border-t-[var(--polaris)]" : s.status === "approved" ? "border-t-[var(--approved)]" : isLocked ? "border-t-[var(--locked)]" : "border-t-[var(--rule-dark)]";
-          const badgeColor = s.status === "approved" ? "text-[var(--approved)]" : isLocked ? "text-[var(--locked)]" : isSelected ? "text-[var(--polaris)]" : "text-[var(--ink-muted)]";
+          const isLocked = status === "locked";
+          const topBorder = isSelected ? "border-t-[var(--polaris)]"
+            : status === "approved" ? "border-t-[var(--approved)]"
+            : status === "needs_revision" ? "border-t-[#f59e0b]"
+            : isLocked ? "border-t-[var(--locked)]"
+            : "border-t-[var(--rule-dark)]";
+          const badgeColor = status === "approved" ? "text-[var(--approved)]"
+            : status === "needs_revision" ? "text-[#f59e0b]"
+            : isLocked ? "text-[var(--locked)]"
+            : isSelected ? "text-[var(--polaris)]"
+            : "text-[var(--ink-muted)]";
           return (
             <li key={s.id} className="flex flex-1 items-stretch">
               <button disabled={isLocked} onClick={() => !isLocked && onSelect(s.id)}
                 className={`group relative w-full border-t-[2px] ${topBorder} py-3 pr-6 text-left transition ${isLocked ? "cursor-not-allowed opacity-55" : ""} ${isSelected ? "" : "hover:border-t-[#2e3441]"}`}>
                 <div className="flex items-baseline gap-3">
                   <span className={`font-[family-name:var(--font-display)] text-[26px] font-semibold leading-none ${isLocked ? "text-[#404a5b]" : "text-[#e6ecf5]"}`}>{s.n}</span>
-                  <span className={`font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] ${badgeColor} ${s.status === "draft" && s.id !== selected ? "pulse-star" : ""}`}>{s.badge}</span>
+                  <span className={`font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] ${badgeColor} ${status === "draft" && !isSelected ? "pulse-star" : ""}`}>{badge}</span>
                 </div>
                 <div className={`mt-1.5 font-[family-name:var(--font-display)] text-[16px] ${isLocked ? "text-[#5e6878]" : "text-[#cdd4df]"}`}>{s.label}</div>
                 <div className="mt-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{s.caption} · {s.agent}</div>
@@ -619,7 +955,7 @@ function StageHeader({ selected, onSelect }: { selected: string; onSelect: (s: s
 
 // ============================== PRD workspace (M1：真實 API) ==============================
 function PrdWorkspace({
-  onOpenFs, thread, artifact, status, busy, onGenerate, onRefine,
+  onOpenFs, thread, artifact, status, busy, onGenerate, onRefine, onApprove,
   attachments, uploading, onUploadAttachment, onDeleteAttachment,
 }: {
   onOpenFs: () => void;
@@ -629,6 +965,7 @@ function PrdWorkspace({
   busy: PrdBusy;
   onGenerate: () => void;
   onRefine: () => void;
+  onApprove: () => void;
   attachments: AttachmentInfo[];
   uploading: boolean;
   onUploadAttachment: (f: File) => void;
@@ -688,7 +1025,7 @@ function PrdWorkspace({
           <ToolBtn onClick={onGenerate} disabled={!thread || !!busy}>
             {busy === "generate" ? "Generating…" : hasContent ? "重新生成" : "生成 PRD"}
           </ToolBtn>
-          <ToolBtn primary disabled={!hasContent || !!busy}>
+          <ToolBtn primary onClick={onApprove} disabled={!hasContent || !!busy || isApproved}>
             {isApproved ? "已核准 ✓" : "核准"}
           </ToolBtn>
         </div>

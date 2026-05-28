@@ -65,6 +65,11 @@ class CreateProjectRequest(BaseModel):
     workflow_id: Optional[str] = None   # None → lazy default
 
 
+class UpdateProjectRequest(BaseModel):
+    """PATCH /api/projects/{tid} —— 改 name（之後可加 workflow_id 等）。"""
+    name: Optional[str] = None
+
+
 class ProjectResponse(BaseModel):
     thread_id: str
     name: str

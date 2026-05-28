@@ -138,6 +138,69 @@ def set_project_workflow(thread_id: str, workflow_id: Optional[str]) -> None:
         )
 
 
+def update_project_name(thread_id: str, name: str) -> bool:
+    """改 project 顯示名稱。回傳是否真的更新到（False = 找不到 thread）。"""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE projects SET name = ? WHERE thread_id = ?",
+            (name, thread_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_project_cascade(thread_id: str) -> Optional[list[str]]:
+    """刪 project + 全部相關 row（attachments / artifacts / status / messages / events /
+    revisions / comments / harness_runs / harness_validation_results）。
+    SQLite 無 declared FK CASCADE，這裡手動掃。
+
+    回傳被刪掉的 attachment content_path（caller 用來清磁碟檔案）；
+    project 不存在 → 回 None。
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT thread_id FROM projects WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        if row is None:
+            return None
+
+        # 收 attachment 檔案路徑供 caller 清檔案
+        attach_paths = [
+            r["content_path"]
+            for r in conn.execute(
+                "SELECT content_path FROM stage_attachments WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+        ]
+
+        # harness_validation_results 透過 harness_runs.run_id 關聯
+        conn.execute(
+            "DELETE FROM harness_validation_results WHERE run_id IN "
+            "(SELECT run_id FROM harness_runs WHERE thread_id = ?)",
+            (thread_id,),
+        )
+        conn.execute(
+            "DELETE FROM harness_events WHERE run_id IN "
+            "(SELECT run_id FROM harness_runs WHERE thread_id = ?)",
+            (thread_id,),
+        )
+
+        # 其餘表直接以 thread_id 砍
+        for table in (
+            "harness_runs",
+            "stage_attachments",
+            "stage_comments",
+            "stage_revisions",
+            "stage_events",
+            "stage_messages",
+            "stage_status",
+            "stage_artifacts",
+        ):
+            conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,))
+
+        conn.execute("DELETE FROM projects WHERE thread_id = ?", (thread_id,))
+        return attach_paths
+
+
 # ============================================================
 #  Stage artifacts（artifact 正文直接存表 —— 取代 ver2 checkpoint blob）
 # ============================================================
