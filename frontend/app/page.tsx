@@ -1,10 +1,34 @@
 "use client";
 
-// M0 mock — 靜態假資料；M1 起改吃 /api/stages（catalog-driven）+ /api/stage/{id}/generate|refine|chat。
+// M0 mock — 靜態假資料；M1 起 PRD 改吃 /api/stages（catalog-driven）+ /api/stage/{id}/generate|refine|chat。
+// M2.2 mock review：Architecture / Stories 用 M2.1 E2E 真實 claude-cli 生成內容當靜態假資料，
+//   先給看 UI 結構與排版；M2.3 才 wire 真實 API。
 // Aesthetic：Industrial Cobalt × Drafting Dusk。
-// Mock views：Workspace（PRD / Architecture / Stories）+ Workflows / Agents / Plugins。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  MOCK_ARCH_MARKDOWN,
+  MOCK_STORIES_MARKDOWN,
+} from "@/lib/mocks";
+import {
+  countRequirements,
+  countStoriesAndEstimate,
+  parseArchitecture,
+  parseStories,
+  type Story as ParsedStory,
+} from "@/lib/parse";
+
+// next/dynamic({ssr:false}) —— mermaid 套件依賴 window / document，不能 SSR
+const MermaidDiagram = dynamic(() => import("@/components/MermaidDiagram"), {
+  ssr: false,
+  loading: () => (
+    <div className="grid place-items-center py-8 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+      loading mermaid…
+    </div>
+  ),
+});
 
 type AttachmentInfo = {
   file_id: string;
@@ -63,95 +87,6 @@ const NAV = [
   { id: "workflows", label: "WORKFLOWS" },
   { id: "agents",    label: "AGENTS" },
   { id: "plugins",   label: "PLUGINS" },
-];
-
-// ---------- PRD ----------
-type PrdReq = { code: string; text: string };
-type DocSection =
-  | { id: string; num: string; heading: string; kind: "paragraphs"; body: string[] }
-  | { id: string; num: string; heading: string; kind: "items"; body: string[] }
-  | { id: string; num: string; heading: string; kind: "reqs"; body: PrdReq[] };
-
-const PRD_TITLE = "電商結帳重構";
-const PRD_SUB = "Product Requirements · charted by system_analyst";
-
-const PRD_SECTIONS: DocSection[] = [
-  { id: "overview", num: "1", heading: "概述", kind: "paragraphs", body: [
-    "重構現有結帳流程，提升 mobile 轉換率與並發承載能力，並補足 PCI-DSS 合規。",
-    "本次重點放在 client/server 兩端的資料一致性、金流抽象層，以及尖峰時段的可用性。",
-  ]},
-  { id: "goals", num: "2", heading: "目標", kind: "items", body: [
-    "結帳完成率 +15%（base 62% → 72%）",
-    "尖峰並發 5,000 → 不掉單",
-    "全鏈路 p95 < 800 ms",
-  ]},
-  { id: "fr", num: "3", heading: "功能需求", kind: "reqs", body: [
-    { code: "FR-1", text: "訪客結帳（不強制註冊）" },
-    { code: "FR-2", text: "多金流：信用卡 / Apple Pay / LINE Pay / 街口" },
-    { code: "FR-3", text: "即時庫存校驗（避免超賣）" },
-    { code: "FR-4", text: "訂單分割與部分退款" },
-  ]},
-  { id: "nfr", num: "4", heading: "非功能需求", kind: "reqs", body: [
-    { code: "NFR-1", text: "尖峰 5,000 並發、p95 < 800 ms、p99 < 1.5 s" },
-    { code: "NFR-2", text: "PCI-DSS Level 1；信用卡資料不入庫（tokenization）" },
-    { code: "NFR-3", text: "99.95% 可用性（月度）" },
-    { code: "NFR-4", text: "跨區資料一致性 ≤ 2 s" },
-  ]},
-  { id: "ops", num: "5", heading: "運維 / 安全", kind: "reqs", body: [
-    { code: "OPS-1", text: "金鑰由 Secret Manager 管理；30 天輪替" },
-    { code: "OPS-2", text: "所有交易事件保留 7 年（稅務合規）" },
-  ]},
-];
-
-// ---------- Architecture ----------
-const ARCH_TITLE = "電商結帳重構 · 系統架構";
-const ARCH_SUB = "System Architecture · charted by software_architect";
-
-const ARCH_SECTIONS: DocSection[] = [
-  { id: "overview", num: "1", heading: "系統概觀", kind: "paragraphs", body: [
-    "整體採 BFF + 微服務拆分。Web/Mobile 透過 API Gateway 進入，下游分 Checkout / Payment / Inventory 三個獨立部署的 service。",
-    "金流抽象在 Payment Service 內，用 strategy pattern 支援多家金流商；其他服務不感知金流商差異。",
-  ]},
-  { id: "layering", num: "2", heading: "服務分層", kind: "items", body: [
-    "Edge（API Gateway）：TLS 終止、WAF、rate-limit、JWT 驗證",
-    "Services：Checkout / Payment / Inventory，各自獨立 DB、事件驅動解耦",
-    "Data：PostgreSQL（orders、payments）+ Redis（庫存鎖、session）",
-    "External：Stripe / Apple Pay / LINE Pay，全部隔離在 Payment Service 後",
-  ]},
-  { id: "capacity", num: "3", heading: "容量規劃", kind: "items", body: [
-    "尖峰 5,000 QPS → Checkout 6 instances × 1,000 QPS（30% headroom）",
-    "Payment 受外部 API rate-limit → 內部 queue + retry with jitter",
-    "DB 讀寫分離：1 主 + 2 讀；replication lag SLO ≤ 2s",
-    "Redis Cluster 3 主 3 從，記憶體 32 GB，TTL 10 min 自動釋放鎖",
-  ]},
-  { id: "data", num: "4", heading: "資料模型", kind: "reqs", body: [
-    { code: "T-ORDER", text: "orders、order_items、refunds（PostgreSQL）" },
-    { code: "T-PAY",   text: "payment_attempts、payment_tokens（PostgreSQL；敏感欄位 KMS 加密）" },
-    { code: "T-STOCK", text: "stock_locks、stock_levels（Redis；SETNX + TTL）" },
-    { code: "T-EVENT", text: "outbox（PostgreSQL）→ Kafka topic（事件驅動下游）" },
-  ]},
-  { id: "security", num: "5", heading: "安全 / 合規", kind: "reqs", body: [
-    { code: "S-1", text: "金鑰 30 天輪替（Secret Manager + rotation lambda）" },
-    { code: "S-2", text: "PCI-DSS L1：卡號完全 tokenization；不入庫" },
-    { code: "S-3", text: "稽核日誌寫到不可變儲存（S3 Object Lock，7 年）" },
-    { code: "S-4", text: "金流外部 API 走專用 egress NAT；IP allowlist 鎖定" },
-  ]},
-];
-
-// ---------- Stories ----------
-type Story = {
-  code: string; title: string; estimate: number; group: string;
-  labels: string[]; reqs: string[]; ac: string[];
-};
-const STORIES: Story[] = [
-  { code: "US-1", title: "訪客結帳流程",          estimate: 3, group: "Phase 1", labels: ["checkout", "guest"],   reqs: ["FR-1"],          ac: ["未登入可結帳", "完成後 email 收據", "可選綁定帳號"] },
-  { code: "US-2", title: "信用卡 + 3DS 流程",     estimate: 5, group: "Phase 1", labels: ["payment", "card"],     reqs: ["FR-2", "NFR-2"], ac: ["Stripe tokenization", "3DS challenge flow", "錯誤訊息 i18n"] },
-  { code: "US-3", title: "Apple Pay 整合",        estimate: 3, group: "Phase 1", labels: ["payment", "wallet"],   reqs: ["FR-2"],          ac: ["Safari 顯示按鈕", "成功率 > 95%", "fallback to 信用卡"] },
-  { code: "US-4", title: "LINE Pay 整合",         estimate: 3, group: "Phase 1", labels: ["payment", "wallet"],   reqs: ["FR-2"],          ac: ["重導流程", "未付款 reconcile job"] },
-  { code: "US-5", title: "即時庫存校驗 + 鎖庫存", estimate: 5, group: "Phase 2", labels: ["inventory"],            reqs: ["FR-3"],          ac: ["Redis SETNX 鎖", "10 min TTL 釋放", "超賣 < 0.1%"] },
-  { code: "US-6", title: "訂單部分退款",          estimate: 5, group: "Phase 2", labels: ["order", "refund"],     reqs: ["FR-4"],          ac: ["逐項退款", "partial-capture", "退款憑證"] },
-  { code: "US-7", title: "尖峰壓測 + p95 監控",   estimate: 5, group: "Phase 2", labels: ["perf", "obs"],         reqs: ["NFR-1", "NFR-3"], ac: ["k6 5k vu", "p95 dashboard", "alert rule"] },
-  { code: "US-8", title: "跨區資料一致",          estimate: 8, group: "Phase 3", labels: ["infra", "data"],       reqs: ["NFR-4"],         ac: ["lag < 2s 指標", "讀寫分離文件", "切流 runbook"] },
 ];
 
 // ---------- Workflows / Agents / Plugins ----------
@@ -952,9 +887,14 @@ function AttachmentChip({ a, onDelete }: { a: AttachmentInfo; onDelete: () => vo
 }
 
 // ============================== Architecture workspace ==============================
+//
+// M2.2 mock review：解析 M2.1 真實 claude-cli E2E 輸出（含 tier line / Mermaid / sections），
+// 直接渲染 markdown 結構。M2.3 會把 markdown 來源換成 /api/stage/architecture/{thread}。
 function ArchWorkspace() {
+  const parsed = useMemo(() => parseArchitecture(MOCK_ARCH_MARKDOWN), []);
   const [view, setView] = useState<"document" | "diagram">("document");
-  const [zoom, setZoom] = useState(1);
+  const [activeDiagram, setActiveDiagram] = useState(0);
+
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
@@ -962,37 +902,295 @@ function ArchWorkspace() {
           <>
             <ViewToggle value={view} onChange={setView} />
             <DraftPill />
-            {view === "diagram" && (
-              <>
-                <ZoomControls zoom={zoom} onZoom={setZoom} />
-                <IconBtn title="重置縮放" onClick={() => setZoom(1)}><ResetIcon /></IconBtn>
-              </>
-            )}
           </>
         } />
         <div className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
           {view === "document" ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
-              <Article title={ARCH_TITLE} sub={ARCH_SUB} kind="SYSTEM ARCHITECTURE · V0.3 (DRAFT)" sections={ARCH_SECTIONS} />
+              <ArchDocument parsed={parsed} />
             </div>
           ) : (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col">
               <div className="flex items-center justify-between border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[#7a8499]">
-                <span>{"// architecture.mmd · service topology"}</span>
-                <span>generated 2 min ago · in revision</span>
+                <span>{`// architecture · ${parsed.mermaids.length} diagram${parsed.mermaids.length === 1 ? "" : "s"}`}</span>
+                {parsed.mermaids.length > 1 && (
+                  <div className="flex items-center gap-1">
+                    {parsed.mermaids.map((_, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setActiveDiagram(i)}
+                        className={`border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] transition ${
+                          i === activeDiagram
+                            ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] text-[var(--polaris)]"
+                            : "border-[var(--rule-dark)] bg-transparent text-[var(--ink-muted)] hover:text-[#cdd4df]"
+                        }`}
+                      >
+                        diagram {i + 1}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <span>tier <span className="text-[var(--polaris)]">{parsed.tier ?? "—"}</span></span>
               </div>
-              <div className="relative min-h-0 flex-1 overflow-auto">
-                <MermaidCanvas zoom={zoom} />
+              <div className="relative min-h-0 flex-1 overflow-auto p-6">
+                {parsed.mermaids.length === 0 ? (
+                  <div className="grid h-full place-items-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                    no mermaid diagrams in this architecture
+                  </div>
+                ) : (
+                  <MermaidDiagram code={parsed.mermaids[activeDiagram]} idPrefix={`arch-${activeDiagram}`} />
+                )}
               </div>
-            </>
+            </div>
           )}
         </div>
-        <BottomMeta left="6 services · 3 datastores · 4 external APIs · sha · b8e1d4f" right={<>depends_on <span className="text-[#b8c0cf]">prd</span> · downstream <span className="text-[#b8c0cf]">stories</span></>} />
+        <BottomMeta
+          left={
+            <>
+              tier <span className="text-[var(--polaris)]">{parsed.tier ?? "—"}</span> ·{" "}
+              {parsed.sections.length} sections · {parsed.mermaids.length} mermaid ·{" "}
+              {parsed.raw.length} chars · charted by software_architect
+            </>
+          }
+          right={<>depends_on <span className="text-[#b8c0cf]">prd</span> · downstream <span className="text-[#b8c0cf]">stories</span></>}
+        />
         <OperationsRow primaryLabel="核准架構" />
       </section>
       <ChatPanel />
     </div>
   );
+}
+
+// ---- Architecture renderers ----
+function ArchDocument({ parsed }: { parsed: ReturnType<typeof parseArchitecture> }) {
+  return (
+    <div className="mx-auto max-w-none px-10 py-10">
+      <header className="mb-9 border-b border-[var(--rule)] pb-5">
+        <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          SYSTEM ARCHITECTURE · V0.3 (DRAFT)
+        </div>
+        <div className="mt-3 flex flex-wrap items-baseline gap-3">
+          <TierBadge tier={parsed.tier} />
+          {parsed.tierJustification && (
+            <p className="font-[family-name:var(--font-sans)] text-[14px] leading-[1.6] text-[#cdd4df]">
+              {parsed.tierJustification}
+            </p>
+          )}
+        </div>
+        <div className="mt-3 flex items-center gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
+          <span>charted by software_architect</span>
+          <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
+          <span>2 min ago</span>
+          <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
+          <span>{parsed.sections.length} sections · {parsed.mermaids.length} mermaid</span>
+        </div>
+      </header>
+      <div className="space-y-9">
+        {parsed.sections.map((sec, i) => (
+          <ArchSectionView key={sec.id + i} heading={sec.heading} body={sec.body} num={String(i + 1)} />
+        ))}
+      </div>
+      {parsed.mermaids.length > 0 && (
+        <section className="mt-10 border-t border-[var(--rule)] pt-6">
+          <h2 className="mb-3 flex items-baseline gap-3 font-[family-name:var(--font-display)] text-[19px] font-semibold leading-none text-[#e6ecf5]">
+            <span className="font-[family-name:var(--font-mono)] text-[12px] font-normal tracking-[0.2em] text-[var(--polaris)]">
+              §diagrams
+            </span>
+            Architecture Diagrams
+          </h2>
+          <div className="space-y-6">
+            {parsed.mermaids.map((code, i) => (
+              <div key={i} className="border border-[var(--rule)] bg-[var(--bg)] p-4">
+                <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                  diagram {i + 1}
+                </div>
+                <MermaidDiagram code={code} idPrefix={`arch-doc-${i}`} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function TierBadge({ tier }: { tier: "T0" | "T1" | "T2" | null }) {
+  if (!tier) {
+    return (
+      <span className="inline-flex items-center gap-1 border border-dashed border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-wider text-[var(--ink-muted)]">
+        tier · unset
+      </span>
+    );
+  }
+  const accent =
+    tier === "T0" ? "var(--ink-muted)"
+    : tier === "T1" ? "var(--approved)"
+    : "var(--polaris)";
+  return (
+    <span
+      className="inline-flex items-baseline gap-2 border-2 px-3 py-1 font-[family-name:var(--font-display)] font-semibold tracking-tight"
+      style={{ borderColor: accent, color: accent }}
+    >
+      <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em]">tier</span>
+      <span className="text-[20px] leading-none">{tier}</span>
+    </span>
+  );
+}
+
+function ArchSectionView({ heading, body, num }: { heading: string; body: string; num: string }) {
+  // Body 可能含表格、code block、list；用 MarkdownBlock 渲染。
+  return (
+    <section>
+      <h2 className="mb-4 flex items-baseline gap-3 font-[family-name:var(--font-display)] text-[19px] font-semibold leading-none text-[#e6ecf5]">
+        <span className="font-[family-name:var(--font-mono)] text-[12px] font-normal tracking-[0.2em] text-[var(--polaris)]">
+          §{num}
+        </span>
+        {heading}
+      </h2>
+      <MarkdownBlock text={body} />
+    </section>
+  );
+}
+
+// 輕量 markdown 渲染：表格、code fence、unordered list、paragraph。
+// 不引 react-markdown 避免 bundle 變大；對 LLM 生成的內容夠用。
+function MarkdownBlock({ text }: { text: string }) {
+  const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
+  return (
+    <div className="space-y-4 font-[family-name:var(--font-sans)] text-[14px] leading-[1.7] text-[#cdd4df]">
+      {blocks.map((b, i) => {
+        if (b.kind === "code") {
+          return (
+            <pre
+              key={i}
+              className="overflow-x-auto border border-[var(--rule)] bg-[var(--bg)] px-3 py-2.5 font-[family-name:var(--font-mono)] text-[12px] leading-[1.6] text-[#cdd4df]"
+            >
+              <code>{b.body}</code>
+            </pre>
+          );
+        }
+        if (b.kind === "table") {
+          return <MarkdownTable key={i} src={b.body} />;
+        }
+        if (b.kind === "list") {
+          return (
+            <ul key={i} className="space-y-1.5">
+              {b.items.map((item, j) => (
+                <li key={j} className="flex items-start gap-2.5">
+                  <span className="mt-[10px] inline-block h-1 w-1 shrink-0 rounded-full bg-[var(--polaris)]" />
+                  <span dangerouslySetInnerHTML={{ __html: renderInline(item) }} />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p key={i} dangerouslySetInnerHTML={{ __html: renderInline(b.body) }} />
+        );
+      })}
+    </div>
+  );
+}
+
+type MdBlock =
+  | { kind: "paragraph"; body: string }
+  | { kind: "code"; body: string; lang?: string }
+  | { kind: "list"; items: string[] }
+  | { kind: "table"; body: string };
+
+function splitMarkdownBlocks(md: string): MdBlock[] {
+  const lines = md.split(/\r?\n/);
+  const out: MdBlock[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    // code fence
+    const fence = /^```(\w*)\s*$/.exec(ln);
+    if (fence) {
+      const lang = fence[1];
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++; // skip closing fence
+      out.push({ kind: "code", body: buf.join("\n"), lang });
+      continue;
+    }
+    // table（含 |、下一行是 |---）
+    if (ln.includes("|") && i + 1 < lines.length && /^\s*\|?\s*[-:|\s]+\|/.test(lines[i + 1])) {
+      const buf: string[] = [];
+      while (i < lines.length && lines[i].includes("|")) { buf.push(lines[i]); i++; }
+      out.push({ kind: "table", body: buf.join("\n") });
+      continue;
+    }
+    // list
+    if (/^\s*[-*]\s+/.test(ln)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+        i++;
+      }
+      out.push({ kind: "list", items });
+      continue;
+    }
+    // paragraph：到下一個空行或結尾
+    const pbuf: string[] = [];
+    while (i < lines.length && lines[i].trim() !== "" && !/^```/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i])) {
+      pbuf.push(lines[i]); i++;
+    }
+    if (pbuf.length > 0) out.push({ kind: "paragraph", body: pbuf.join(" ") });
+    // skip empty line(s)
+    while (i < lines.length && lines[i].trim() === "") i++;
+  }
+  return out;
+}
+
+function MarkdownTable({ src }: { src: string }) {
+  const lines = src.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return null;
+  const split = (l: string) => l.split("|").map((c) => c.trim()).filter((_, i, arr) => i !== 0 || arr[0] !== "").filter((_, i, arr) => i !== arr.length - 1 || arr[arr.length - 1] !== "");
+  const header = split(lines[0]);
+  const rows = lines.slice(2).map(split);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-[13px]">
+        <thead>
+          <tr>
+            {header.map((h, i) => (
+              <th key={i} className="border-b-2 border-[var(--polaris-dim)] bg-[var(--bg)] px-3 py-2 text-left font-[family-name:var(--font-display)] font-semibold text-[#e6ecf5]" dangerouslySetInnerHTML={{ __html: renderInline(h) }} />
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className={i % 2 === 1 ? "bg-[var(--bg)]/30" : ""}>
+              {r.map((c, j) => (
+                <td key={j} className="border-b border-[var(--rule)] px-3 py-2 align-top text-[#cdd4df]" dangerouslySetInnerHTML={{ __html: renderInline(c) }} />
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// inline：bold / inline-code / requirement chip
+function renderInline(s: string): string {
+  // escape HTML
+  let out = s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  // requirement chip：FR-N / NFR-N / OPS-N
+  out = out.replace(
+    /(?:`)?(FR-\d+|NFR-\d+|OPS-\d+|AC-\d+)(?:`)?/g,
+    '<code class="inline-flex items-center border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] text-[var(--polaris)]">$1</code>',
+  );
+  // bold
+  out = out.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-[#e6ecf5]">$1</strong>');
+  // inline code
+  out = out.replace(/`([^`]+)`/g, '<code class="border border-[var(--paper-edge)] bg-[var(--bg)] px-1 py-0.5 font-[family-name:var(--font-mono)] text-[12px] text-[#cdd4df]">$1</code>');
+  return out;
 }
 
 function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChange: (v: "document" | "diagram") => void }) {
@@ -1010,90 +1208,32 @@ function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChan
   );
 }
 
-function ZoomControls({ zoom, onZoom }: { zoom: number; onZoom: (z: number) => void }) {
-  return (
-    <div className="flex items-center gap-0.5 border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-0.5 py-0.5">
-      <IconBtn small onClick={() => onZoom(Math.max(0.4, +(zoom - 0.2).toFixed(2)))} title="縮小"><span className="text-[14px] leading-none">−</span></IconBtn>
-      <span className="grid min-w-[3.5em] place-items-center px-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">{Math.round(zoom * 100)}%</span>
-      <IconBtn small onClick={() => onZoom(Math.min(2.5, +(zoom + 0.2).toFixed(2)))} title="放大"><span className="text-[14px] leading-none">+</span></IconBtn>
-    </div>
-  );
-}
-
-function MermaidCanvas({ zoom }: { zoom: number }) {
-  return (
-    <div className="grid h-full w-full place-items-center p-8">
-      <svg viewBox="0 0 900 560" width="900" height="560"
-        style={{ transform: `scale(${zoom})`, transformOrigin: "center center", transition: "transform 220ms cubic-bezier(0.2,0.7,0.2,1)" }}
-        className="max-w-full">
-        <defs>
-          <marker id="arrow" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a5468" />
-          </marker>
-          <marker id="arrow-chart" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b8cff" />
-          </marker>
-        </defs>
-        <ArchLane y={30}  label="CLIENTS" />
-        <ArchLane y={170} label="EDGE" />
-        <ArchLane y={300} label="SERVICES" />
-        <ArchLane y={430} label="DATA / EXTERNAL" />
-        <ArchBox x={200} y={20}  w={160} h={56} title="Web"        sub="NEXT.JS · TS" />
-        <ArchBox x={540} y={20}  w={160} h={56} title="Mobile"     sub="iOS / ANDROID" />
-        <ArchBox x={370} y={160} w={160} h={56} title="API Gateway" sub="EDGE / TLS / WAF" accent />
-        <ArchBox x={100} y={290} w={170} h={56} title="Checkout"    sub="FR-1 · FR-3 · FR-4" accent />
-        <ArchBox x={365} y={290} w={170} h={56} title="Payment"     sub="FR-2 · tokenization" />
-        <ArchBox x={630} y={290} w={170} h={56} title="Inventory"   sub="FR-3 stock guard" />
-        <ArchBox x={100} y={420} w={170} h={56} title="PostgreSQL"  sub="orders · users" muted />
-        <ArchBox x={365} y={420} w={170} h={56} title="Redis"       sub="stock · sessions" muted />
-        <ArchBox x={630} y={420} w={170} h={56} title="External"    sub="Stripe / ApplePay / LINE Pay" muted />
-        <line x1="280" y1="76"  x2="430" y2="160" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="620" y1="76"  x2="470" y2="160" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="430" y1="216" x2="200" y2="290" stroke="#5b8cff" strokeWidth="1.4" markerEnd="url(#arrow-chart)" />
-        <line x1="450" y1="216" x2="445" y2="290" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="470" y1="216" x2="715" y2="290" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="185" y1="346" x2="185" y2="420" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="450" y1="346" x2="450" y2="420" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="715" y1="346" x2="715" y2="420" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="270" y1="318" x2="365" y2="318" stroke="#5b8cff" strokeWidth="1.4" markerEnd="url(#arrow-chart)" strokeDasharray="2 3" />
-        <line x1="535" y1="332" x2="630" y2="440" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-      </svg>
-    </div>
-  );
-}
-
-function ArchLane({ y, label }: { y: number; label: string }) {
-  return (
-    <g>
-      <text x={28} y={y + 18} fontFamily="var(--font-mono)" fontSize="10" letterSpacing="3" fill="#5b6479">{label}</text>
-      <line x1={28} y1={y + 26} x2={870} y2={y + 26} stroke="#1c222e" strokeWidth="1" strokeDasharray="2 4" />
-    </g>
-  );
-}
-
-function ArchBox({ x, y, w, h, title, sub, accent, muted }: {
-  x: number; y: number; w: number; h: number; title: string; sub: string; accent?: boolean; muted?: boolean;
-}) {
-  const fill = muted ? "#11151c" : "#161c26";
-  const stroke = accent ? "#5b8cff" : muted ? "#2a3242" : "#3a4054";
-  return (
-    <g transform={`translate(${x},${y})`}>
-      <rect width={w} height={h} rx={2} fill={fill} stroke={stroke} strokeWidth={accent ? "1.3" : "1"} />
-      <text x={w / 2} y={24} textAnchor="middle" fontFamily="var(--font-display)" fontWeight="600" fontSize="14" fill="#e6ecf5">{title}</text>
-      <text x={w / 2} y={42} textAnchor="middle" fontFamily="var(--font-mono)" fontSize="9" letterSpacing="1.2" fill="#7a8499">{sub}</text>
-    </g>
-  );
-}
-
 // ============================== Stories workspace ==============================
+//
+// M2.2 mock review：解析 M2.1 E2E 真實 stories markdown（10 epics / 44 stories）。
+// M2.3 wire API 後改吃 /api/stage/stories/{thread}。
 function StoriesWorkspace() {
-  const [picked, setPicked] = useState<string | null>("US-2");
-  const groups = Array.from(new Set(STORIES.map((s) => s.group)));
-  const detail: Story | null = picked ? STORIES.find((s) => s.code === picked) ?? null : null;
+  const parsed = useMemo(() => parseStories(MOCK_STORIES_MARKDOWN), []);
+  const counts = useMemo(() => countStoriesAndEstimate(parsed.raw), [parsed.raw]);
+  const allStories = useMemo(() => parsed.epics.flatMap((e) => e.stories.map((s) => ({ epicNum: e.num, story: s }))), [parsed.epics]);
+  const initialPick = allStories[0]?.story.num ?? null;
+  const [picked, setPicked] = useState<string | null>(initialPick);
+  const [openEpics, setOpenEpics] = useState<Set<string>>(() => new Set(parsed.epics.slice(0, 3).map((e) => e.num)));
+
+  const toggleEpic = (n: string) => setOpenEpics((prev) => {
+    const next = new Set(prev);
+    if (next.has(n)) next.delete(n); else next.add(n);
+    return next;
+  });
+
+  const detail = picked
+    ? allStories.find(({ story }) => story.num === picked)?.story ?? null
+    : null;
+
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
-        <ArtifactBar artifact="stories" stage="deliver" op="generate_stories" right={
+        <ArtifactBar artifact="stories" stage="deliver" op="generate_user_stories" right={
           <>
             <DraftPill />
             <button className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
@@ -1103,76 +1243,135 @@ function StoriesWorkspace() {
         } />
         <div className="shadow-anvil paper-texture min-h-0 flex-1 overflow-y-auto bg-[var(--paper)] px-8 py-7">
           <div className="mb-7 border-b border-[var(--rule)] pb-5">
-            <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">DELIVERABLE STORIES · V1</div>
-            <h2 className="mt-2 font-[family-name:var(--font-display)] text-[26px] font-semibold leading-tight text-[#e6ecf5]">{STORIES.length} stories · {STORIES.reduce((s, x) => s + x.estimate, 0)} pts</h2>
-            <div className="mt-3 flex items-center gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
+            <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+              DELIVERABLE STORIES · V1
+            </div>
+            <h2 className="mt-2 font-[family-name:var(--font-display)] text-[26px] font-semibold leading-tight text-[#e6ecf5]">
+              {parsed.title ?? "User Stories"}
+            </h2>
+            <div className="mt-3 flex flex-wrap items-center gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
               <span>charted by product_owner</span>
               <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
-              <span>2 min ago</span>
-              <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
-              <span>3 phases</span>
+              <span>{counts.epics} epics · {counts.stories} stories · {counts.hours.toFixed(1)} hrs</span>
+              {parsed.milestones.length > 0 && (
+                <>
+                  <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
+                  <span>{parsed.milestones.length} milestones</span>
+                </>
+              )}
             </div>
-          </div>
-          {groups.map((g) => (
-            <div key={g} className="mb-7 last:mb-0">
-              <div className="mb-3 flex items-baseline gap-3">
-                <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--polaris)]">{g}</span>
-                <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                  {STORIES.filter((s) => s.group === g).length} stories · {STORIES.filter((s) => s.group === g).reduce((sum, x) => sum + x.estimate, 0)} pts
-                </span>
-                <span className="h-px flex-1 bg-[var(--rule)]" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {STORIES.filter((s) => s.group === g).map((s) => (
-                  <button key={s.code} onClick={() => setPicked(s.code)}
-                    className={`flex flex-col items-stretch border bg-[var(--bg-elev)] p-4 text-left transition ${
-                      picked === s.code ? "border-[var(--polaris)] glow-star" : "border-[var(--paper-edge)] hover:border-[#4a5468]"
-                    }`}>
-                    <div className="mb-2 flex items-center justify-between">
-                      <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{s.code}</code>
-                      <span className="border border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[#cdd4df]">
-                        {s.estimate} pts
-                      </span>
-                    </div>
-                    <div className="mb-2 font-[family-name:var(--font-display)] text-[15px] font-semibold text-[#e6ecf5]">{s.title}</div>
-                    <div className="mb-3 flex flex-wrap gap-1">
-                      {s.labels.map((l) => (
-                        <span key={l} className="border border-[var(--rule-dark)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[#7a8499]">
-                          {l}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                      <span>links</span>
-                      {s.reqs.map((r) => (
-                        <code key={r} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[var(--polaris)]">{r}</code>
-                      ))}
-                    </div>
-                  </button>
+            {parsed.milestones.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {parsed.milestones.map((m) => (
+                  <span key={m.num} className="border border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_8%,transparent)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--polaris)]">
+                    M{m.num} · {m.title}
+                  </span>
                 ))}
               </div>
-            </div>
-          ))}
+            )}
+          </div>
+          {parsed.epics.map((epic) => {
+            const epicHours = epic.stories.reduce((acc, s) => acc + (parseFloat(s.estimate ?? "0") || 0), 0);
+            const isOpen = openEpics.has(epic.num);
+            return (
+              <div key={epic.num} className="mb-7 last:mb-0">
+                <button
+                  onClick={() => toggleEpic(epic.num)}
+                  className="group mb-3 flex w-full items-baseline gap-3 text-left"
+                >
+                  <span className={`grid h-5 w-5 shrink-0 place-items-center border font-[family-name:var(--font-mono)] text-[10px] transition ${
+                    isOpen ? "border-[var(--polaris)] bg-[var(--polaris)] text-white" : "border-[var(--rule-dark)] text-[var(--ink-muted)]"
+                  }`}>
+                    {isOpen ? "−" : "+"}
+                  </span>
+                  <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--polaris)]">
+                    Epic {epic.num}
+                  </span>
+                  <span className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">
+                    {epic.title}
+                  </span>
+                  <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+                    {epic.stories.length} stories · {epicHours.toFixed(1)} hrs
+                  </span>
+                  <span className="h-px flex-1 bg-[var(--rule)]" />
+                </button>
+                {isOpen && (
+                  <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                    {epic.stories.map((s) => (
+                      <button
+                        key={s.num}
+                        onClick={() => setPicked(s.num)}
+                        className={`flex flex-col items-stretch border bg-[var(--bg-elev)] p-4 text-left transition ${
+                          picked === s.num
+                            ? "border-[var(--polaris)] glow-star"
+                            : "border-[var(--paper-edge)] hover:border-[#4a5468]"
+                        }`}
+                      >
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">
+                            Story {s.num}
+                          </code>
+                          {s.estimate && (
+                            <span className="border border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[#cdd4df]">
+                              {s.estimate}h
+                            </span>
+                          )}
+                        </div>
+                        <div className="mb-2 font-[family-name:var(--font-display)] text-[15px] font-semibold leading-snug text-[#e6ecf5]">
+                          {s.title}
+                        </div>
+                        {s.iWant && (
+                          <p className="mb-3 line-clamp-2 font-[family-name:var(--font-sans)] text-[12px] leading-[1.55] text-[var(--ink-muted)]">
+                            {s.iWant}
+                          </p>
+                        )}
+                        <div className="mt-auto flex flex-wrap items-center gap-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+                          {s.ac.length > 0 && <span>{s.ac.length} AC</span>}
+                          {s.requirements.length > 0 && (
+                            <>
+                              <span>·</span>
+                              {s.requirements.map((r) => (
+                                <code key={r} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[var(--polaris)]">
+                                  {r}
+                                </code>
+                              ))}
+                            </>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-        <BottomMeta left={`${STORIES.length} stories · ${STORIES.reduce((s, x) => s + x.estimate, 0)} story points · 3 phases · sha · c2f9a18`} right={<>depends_on <span className="text-[#b8c0cf]">architecture</span> · publish to <span className="text-[#b8c0cf]">github / jira</span></>} />
+        <BottomMeta
+          left={`${counts.stories} stories · ${counts.epics} epics · ${counts.hours.toFixed(1)} hrs · ${parsed.raw.length} chars`}
+          right={<>depends_on <span className="text-[#b8c0cf]">architecture</span> · publish to <span className="text-[#b8c0cf]">github / jira</span></>}
+        />
         <div className="mt-4 flex items-center justify-end gap-2">
           <ToolBtn>Refine…</ToolBtn>
           <ToolBtn>手動編輯</ToolBtn>
           <ToolBtn primary>發佈到 GitHub</ToolBtn>
         </div>
       </section>
-      <StoryDetail story={detail} />
+      <StoryDetail story={detail} epicNum={picked ? allStories.find(({ story }) => story.num === picked)?.epicNum ?? null : null} />
     </div>
   );
 }
 
-function StoryDetail({ story }: { story: Story | null }) {
+function StoryDetail({ story, epicNum }: { story: ParsedStory | null; epicNum: string | null }) {
   return (
-    <aside className="rise-4 flex w-[400px] shrink-0 flex-col border-l border-[var(--rule-dark)] bg-[var(--bg-elev)]/40">
+    <aside className="rise-4 flex w-[420px] shrink-0 flex-col border-l border-[var(--rule-dark)] bg-[var(--bg-elev)]/40">
       <div className="flex items-center justify-between border-b border-[var(--rule-dark)] px-6 py-4">
         <div className="flex items-baseline gap-3">
           <h3 className="font-[family-name:var(--font-display)] text-[17px] font-semibold text-[#e6ecf5]">Story Detail</h3>
-          {story && <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--polaris)]">{story.code}</span>}
+          {story && (
+            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--polaris)]">
+              Story {story.num}
+            </span>
+          )}
         </div>
         <span className="grid h-7 w-7 place-items-center border border-[var(--rule-dark)] font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">⋯</span>
       </div>
@@ -1180,25 +1379,48 @@ function StoryDetail({ story }: { story: Story | null }) {
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
           <div>
             <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">TITLE</div>
-            <div className="mt-1 font-[family-name:var(--font-display)] text-[20px] font-semibold leading-tight text-[#e6ecf5]">{story.title}</div>
+            <div className="mt-1 font-[family-name:var(--font-display)] text-[19px] font-semibold leading-tight text-[#e6ecf5]">{story.title}</div>
           </div>
           <div className="grid grid-cols-2 gap-3 border-y border-[var(--rule-dark)] py-3 text-[12px]">
-            <KV k="ESTIMATE" v={`${story.estimate} pts`} />
-            <KV k="PHASE" v={story.group} />
-            <KV k="LABELS" v={story.labels.join(", ")} />
-            <KV k="REQS" v={story.reqs.join(", ")} />
+            <KV k="ESTIMATE" v={story.estimate ? `${story.estimate} hrs` : "—"} />
+            <KV k="EPIC" v={epicNum ? `Epic ${epicNum}` : "—"} />
+            <KV k="DEPENDS ON" v={story.dependsOn || "—"} />
+            <KV k="AC COUNT" v={`${story.ac.length}`} />
           </div>
-          <div>
-            <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">ACCEPTANCE CRITERIA</div>
-            <ul className="space-y-2">
-              {story.ac.map((a, i) => (
-                <li key={i} className="flex items-start gap-2.5 text-[13px] leading-6 text-[#cdd4df]">
-                  <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center border border-[var(--paper-edge)] font-[family-name:var(--font-mono)] text-[9px] text-[var(--polaris)]">AC{i + 1}</span>
-                  <span>{a}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          {(story.asA || story.iWant || story.soThat) && (
+            <div className="border-l-2 border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_5%,transparent)] py-2 pl-4 pr-3 font-[family-name:var(--font-sans)] text-[13px] leading-[1.7] text-[#cdd4df]">
+              {story.asA && <><strong className="text-[#e6ecf5]">As a</strong> {story.asA}</>}
+              {story.iWant && <><br /><strong className="text-[#e6ecf5]">I want</strong> {story.iWant}</>}
+              {story.soThat && <><br /><strong className="text-[#e6ecf5]">so that</strong> {story.soThat}</>}
+            </div>
+          )}
+          {story.requirements.length > 0 && (
+            <div>
+              <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">REQUIREMENT IDS</div>
+              <div className="flex flex-wrap gap-1.5">
+                {story.requirements.map((r) => (
+                  <code key={r} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-1 font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">
+                    {r}
+                  </code>
+                ))}
+              </div>
+            </div>
+          )}
+          {story.ac.length > 0 && (
+            <div>
+              <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">ACCEPTANCE CRITERIA</div>
+              <ul className="space-y-2.5">
+                {story.ac.map((a, i) => (
+                  <li key={i} className="flex items-start gap-2.5 text-[12.5px] leading-[1.6] text-[#cdd4df]">
+                    <span className="mt-0.5 inline-flex shrink-0 items-center border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px] tracking-wider text-[var(--polaris)]">
+                      {a.code ?? `AC${i + 1}`}
+                    </span>
+                    <span dangerouslySetInnerHTML={{ __html: renderInline(a.text) }} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="border-t border-[var(--rule-dark)] pt-4">
             <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">DELIVERY TARGET</div>
             <div className="flex flex-wrap gap-1.5">
@@ -1608,60 +1830,6 @@ function PluginsView() {
   );
 }
 
-// ============================== Article (shared by PRD / Architecture) ==============================
-function Article({ title, sub, kind, sections, wide = false }: {
-  title: string; sub: string; kind: string; sections: DocSection[]; wide?: boolean;
-}) {
-  return (
-    <div className={`mx-auto ${wide ? "max-w-3xl px-10 py-12" : "max-w-none px-10 py-10"}`}>
-      <header className="mb-9 border-b border-[var(--rule)] pb-5">
-        <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">{kind}</div>
-        <h1 className="mt-2 font-[family-name:var(--font-display)] text-[28px] font-semibold leading-tight text-[#e6ecf5]">{title}</h1>
-        <div className="mt-3 flex items-center gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-          <span>{sub}</span>
-          <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
-          <span>5 min ago</span>
-        </div>
-      </header>
-      <div className="space-y-9">
-        {sections.map((sec) => (
-          <section key={sec.id}>
-            <h2 className="mb-4 flex items-baseline gap-3 font-[family-name:var(--font-display)] text-[19px] font-semibold leading-none text-[#e6ecf5]">
-              <span className="font-[family-name:var(--font-mono)] text-[12px] font-normal tracking-[0.2em] text-[var(--polaris)]">§{sec.num}</span>
-              {sec.heading}
-            </h2>
-            {sec.kind === "paragraphs" && (
-              <div className="space-y-2.5 font-[family-name:var(--font-sans)] text-[14.5px] leading-[1.75] text-[#cdd4df]">
-                {sec.body.map((p, i) => <p key={i}>{p}</p>)}
-              </div>
-            )}
-            {sec.kind === "items" && (
-              <ul className="space-y-2 font-[family-name:var(--font-sans)] text-[14.5px] leading-[1.7] text-[#cdd4df]">
-                {sec.body.map((item, i) => (
-                  <li key={i} className="flex items-start gap-3">
-                    <span className="mt-[10px] inline-block h-1 w-1 shrink-0 rounded-full bg-[var(--polaris)]" />
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {sec.kind === "reqs" && (
-              <ul className="space-y-2.5">
-                {sec.body.map((r) => (
-                  <li key={r.code} className="flex items-start gap-3.5">
-                    <code className="mt-0.5 inline-flex shrink-0 items-center border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] font-medium tracking-wider text-[var(--polaris)]">{r.code}</code>
-                    <span className="font-[family-name:var(--font-sans)] text-[14.5px] leading-[1.65] text-[#cdd4df]">{r.text}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ============================== Chat panel ==============================
 function ChatPanel() {
   return (
@@ -1960,14 +2128,6 @@ function ExpandIcon() {
   return (
     <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4">
       <path d="M2 5 V2 H5" /><path d="M12 5 V2 H9" /><path d="M2 9 V12 H5" /><path d="M12 9 V12 H9" />
-    </svg>
-  );
-}
-
-function ResetIcon() {
-  return (
-    <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3">
-      <path d="M3 7 a4 4 0 1 0 1.5 -3" /><path d="M3 3 V5 H5" />
     </svg>
   );
 }
