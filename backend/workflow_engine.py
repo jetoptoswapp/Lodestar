@@ -165,7 +165,10 @@ class WorkflowEngine:
             msgs = dal.list_messages(thread_id, stage_id, limit=50)
             conv = tuple((m["role"], m["content"]) for m in msgs)
 
-        # 4. StageContext + HarnessRunner
+        # 4. 附件（M1.1：放進 metadata.attachments；plugin 自己決定要不要 inline 進 prompt）
+        attachments = dal.list_attachments(thread_id, stage_id)
+
+        # 5. StageContext + HarnessRunner
         ctx = StageContext(
             thread_id=thread_id,
             stage_id=stage_id,
@@ -175,7 +178,7 @@ class WorkflowEngine:
             current_artifact=current,
             conversation=conv,
             focus_section=focus_section,
-            metadata={},
+            metadata={"attachments": attachments},
         )
         runner = HarnessRunner(self._reg, thread_id, stage_id, model_choice)
 

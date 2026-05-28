@@ -152,3 +152,20 @@ class StageStatusesResponse(BaseModel):
 
 class SetStageStatusRequest(BaseModel):
     status: str
+
+
+# ============================================================
+#  Stage attachments（M1.1：上傳檔案 inline 進 SA prompt）
+# ============================================================
+class AttachmentResponse(BaseModel):
+    file_id: str
+    filename: str
+    mime: str = ""
+    size_bytes: int = 0
+    has_parsed_text: bool = False
+    parse_error: Optional[str] = None
+    created_at: Optional[float] = None
+
+
+class AttachmentListResponse(BaseModel):
+    attachments: list[AttachmentResponse]

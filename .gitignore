@@ -26,6 +26,9 @@ yarn-error.log*
 *.db-wal
 *.db-shm
 
+# Backend runtime data（DB / 上傳的附件原檔）
+backend/data/
+
 # Env / secrets
 .env
 .env.*

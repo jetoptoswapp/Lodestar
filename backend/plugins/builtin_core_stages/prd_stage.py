@@ -96,6 +96,27 @@ def _format_conversation(conv: tuple) -> str:
     return "\n\n".join(lines)
 
 
+def _format_attachments(attachments: list) -> str:
+    """把 ctx.metadata['attachments'] 渲染成 prompt 可讀的 block。
+
+    每個附件用 marker 包：
+        <<< attachment: filename (mime, size) >>>
+        <parsed text 或「未解析」原因>
+        <<< end of filename >>>
+    """
+    if not attachments:
+        return "(no attached files)"
+    blocks: list[str] = []
+    for a in attachments:
+        fname = a.get("filename", "(unnamed)")
+        mime = a.get("mime") or "unknown"
+        size = a.get("size_bytes", 0)
+        header = f"<<< attachment: {fname}  ·  mime={mime}  ·  {size} bytes >>>"
+        body = a.get("parsed_text") or f"[未解析：{a.get('parse_error') or 'unsupported'}]"
+        blocks.append(f"{header}\n{body}\n<<< end of {fname} >>>")
+    return "\n\n".join(blocks)
+
+
 # ============================================================
 #  Handlers
 # ============================================================
@@ -109,6 +130,7 @@ def _prd_generate(ctx: StageContext, run) -> StageResult:
         "SYSTEM_PROMPT": sa_system,
         "CONVERSATION_TEXT": conversation_text,
         "FOCUS_SECTION": focus_block,
+        "ATTACHMENTS": _format_attachments(ctx.metadata.get("attachments", [])),
     })
     result = run.harnessed_step(
         telemetry_stage="specify", operation="generate_prd",
@@ -128,6 +150,7 @@ def _prd_refine(ctx: StageContext, run) -> StageResult:
     prompt = run.render_prompt("prd_refine.md", {
         "PRD_DRAFT": ctx.current_artifact or "(empty)",
         "INSTRUCTION": ctx.instruction or "",
+        "ATTACHMENTS": _format_attachments(ctx.metadata.get("attachments", [])),
     })
     result = run.harnessed_step(
         telemetry_stage="specify", operation="refine_prd",
@@ -160,6 +183,7 @@ def _prd_chat(ctx: StageContext, run) -> StageChatResult:
         "SYSTEM_PROMPT": sa_system,
         "CONVERSATION_TEXT": conversation_text,
         "FOCUS_SECTION": focus_block,
+        "ATTACHMENTS": _format_attachments(ctx.metadata.get("attachments", [])),
     })
     result = run.harnessed_step(
         telemetry_stage="specify", operation="chat_prd",

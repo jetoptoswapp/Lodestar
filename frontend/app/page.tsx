@@ -4,7 +4,17 @@
 // Aesthetic：Industrial Cobalt × Drafting Dusk。
 // Mock views：Workspace（PRD / Architecture / Stories）+ Workflows / Agents / Plugins。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+type AttachmentInfo = {
+  file_id: string;
+  filename: string;
+  mime: string;
+  size_bytes: number;
+  has_parsed_text: boolean;
+  parse_error: string | null;
+  created_at: number | null;
+};
 
 // ============================== M1：接後端 API ==============================
 // 後端 base URL（同主機 8723）；前端 mock-only view 不依賴此。
@@ -257,6 +267,9 @@ export default function Page() {
   const [prdStatus, setPrdStatus] = useState<string>("draft");
   const [busy, setBusy] = useState<PrdBusy>(false);
   const [err, setErr] = useState<string | null>(null);
+  // ===== M1.1：PRD attachments =====
+  const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
+  const [uploading, setUploading] = useState<boolean>(false);
 
   // bootstrap thread：localStorage 取舊；無則建新（setAndPersist pattern，spec §11 陷阱）
   useEffect(() => {
@@ -293,6 +306,60 @@ export default function Page() {
     if (!thread) return;
     refreshPrd(thread);
   }, [thread, refreshPrd]);
+
+  // 拿 attachments
+  const refreshAttachments = useCallback(async (tid: string) => {
+    try {
+      const r = await apiFetch<{ attachments: AttachmentInfo[] }>(`/api/stage/prd/${tid}/attachments`);
+      setAttachments(r.attachments);
+    } catch {
+      /* silent: 端點未啟動或暫時失敗時不影響主流程 */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!thread) return;
+    refreshAttachments(thread);
+  }, [thread, refreshAttachments]);
+
+  // upload 附件（不走 apiFetch，因為 multipart FormData）
+  const onUploadAttachment = useCallback(async (file: File) => {
+    if (!thread || uploading) return;
+    setErr(null);
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch(`${API_BASE}/api/stage/prd/${thread}/attachments`, {
+        method: "POST",
+        body: fd,
+      });
+      if (!r.ok) {
+        let msg = r.statusText;
+        try {
+          const body = await r.json();
+          msg = body?.detail?.message ?? body?.detail ?? JSON.stringify(body);
+        } catch { /* ignore */ }
+        throw new Error(msg);
+      }
+      await refreshAttachments(thread);
+    } catch (e) {
+      setErr(`上傳附件失敗：${(e as Error).message}`);
+    } finally {
+      setUploading(false);
+    }
+  }, [thread, uploading, refreshAttachments]);
+
+  // delete 附件
+  const onDeleteAttachment = useCallback(async (fileId: string) => {
+    if (!thread) return;
+    try {
+      await apiFetch(`/api/stage/prd/${thread}/attachments/${fileId}`, { method: "DELETE" });
+      setAttachments((prev) => prev.filter((a) => a.file_id !== fileId));
+    } catch (e) {
+      setErr(`刪除附件失敗：${(e as Error).message}`);
+    }
+  }, [thread]);
 
   // actions
   const onGenerate = useCallback(async () => {
@@ -367,6 +434,10 @@ export default function Page() {
                       busy={busy}
                       onGenerate={onGenerate}
                       onRefine={onRefine}
+                      attachments={attachments}
+                      uploading={uploading}
+                      onUploadAttachment={onUploadAttachment}
+                      onDeleteAttachment={onDeleteAttachment}
                     />
                   )}
                   {selected === "architecture" && <ArchWorkspace />}
@@ -568,6 +639,7 @@ function StageHeader({ selected, onSelect }: { selected: string; onSelect: (s: s
 // ============================== PRD workspace (M1：真實 API) ==============================
 function PrdWorkspace({
   onOpenFs, thread, artifact, status, busy, onGenerate, onRefine,
+  attachments, uploading, onUploadAttachment, onDeleteAttachment,
 }: {
   onOpenFs: () => void;
   thread: string | null;
@@ -576,6 +648,10 @@ function PrdWorkspace({
   busy: PrdBusy;
   onGenerate: () => void;
   onRefine: () => void;
+  attachments: AttachmentInfo[];
+  uploading: boolean;
+  onUploadAttachment: (f: File) => void;
+  onDeleteAttachment: (fileId: string) => void;
 }) {
   const hasContent = artifact.trim().length > 0;
   const isApproved = status === "approved";
@@ -588,6 +664,13 @@ function PrdWorkspace({
             <IconBtn onClick={onOpenFs} title="全螢幕閱讀"><ExpandIcon /></IconBtn>
           </>
         } />
+        <AttachmentZone
+          thread={thread}
+          attachments={attachments}
+          uploading={uploading}
+          onUpload={onUploadAttachment}
+          onDelete={onDeleteAttachment}
+        />
         <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
           <div className="min-h-0 flex-1 overflow-y-auto">
             {hasContent ? (
@@ -664,6 +747,113 @@ function PrdArtifactView({ artifact }: { artifact: string }) {
         {artifact}
       </pre>
     </div>
+  );
+}
+
+// ============================== Attachment zone（M1.1）==============================
+function AttachmentZone({
+  thread, attachments, uploading, onUpload, onDelete,
+}: {
+  thread: string | null;
+  attachments: AttachmentInfo[];
+  uploading: boolean;
+  onUpload: (f: File) => void;
+  onDelete: (fileId: string) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  if (!thread) return null;
+
+  const handleSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) onUpload(f);
+    e.target.value = "";  // allow re-selecting same file
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const f = e.dataTransfer.files[0];
+    if (f) onUpload(f);
+  };
+
+  return (
+    <div
+      className={`mb-3 border ${
+        dragging
+          ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_8%,transparent)]"
+          : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40"
+      }`}
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={handleDrop}
+    >
+      <div className="flex items-center justify-between border-b border-[var(--rule-dark)] px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+        <span>attachments · {attachments.length}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[var(--ink-muted)]">md · pdf · docx · txt · image</span>
+          <button
+            onClick={() => fileInput.current?.click()}
+            disabled={uploading}
+            className="border border-dashed border-[var(--rule-dark)] px-3 py-0.5 transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:opacity-50"
+          >
+            {uploading ? "uploading…" : "📎 add file"}
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            onChange={handleSelect}
+            className="hidden"
+            accept=".md,.markdown,.txt,.csv,.tsv,.json,.xml,.yaml,.yml,.html,.log,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,.bmp"
+          />
+        </div>
+      </div>
+      {attachments.length === 0 ? (
+        <div className="px-3 py-4 text-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--ink-muted)]">
+          拖放需求文件 / PDF / DOCX / 圖片到這裡，或點右上「📎 add file」
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 px-3 py-2.5">
+          {attachments.map((a) => (
+            <AttachmentChip key={a.file_id} a={a} onDelete={() => onDelete(a.file_id)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AttachmentChip({ a, onDelete }: { a: AttachmentInfo; onDelete: () => void }) {
+  const sizeStr =
+    a.size_bytes < 1024 ? `${a.size_bytes}B` :
+    a.size_bytes < 1024 * 1024 ? `${(a.size_bytes / 1024).toFixed(0)}KB` :
+    `${(a.size_bytes / 1024 / 1024).toFixed(1)}MB`;
+  const ok = a.has_parsed_text;
+  return (
+    <span
+      className={`flex items-center gap-1.5 border px-2 py-1 ${
+        ok
+          ? "border-[var(--rule-dark)] bg-[var(--bg)]"
+          : "border-[color-mix(in_oklab,#f59e0b_40%,transparent)] bg-[color-mix(in_oklab,#f59e0b_8%,transparent)]"
+      }`}
+      title={a.parse_error || undefined}
+    >
+      <span className="text-[11px]">{ok ? "📎" : "⚠"}</span>
+      <span className="font-[family-name:var(--font-mono)] text-[11px] text-[#cdd4df]">{a.filename}</span>
+      <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
+        · {sizeStr}
+      </span>
+      {!ok && (
+        <span className="font-[family-name:var(--font-mono)] text-[10px] text-[#f59e0b]">未解析</span>
+      )}
+      <button
+        onClick={onDelete}
+        title="刪除"
+        className="ml-1 text-[var(--ink-muted)] transition hover:text-[#f59e0b]"
+      >
+        ×
+      </button>
+    </span>
   );
 }
 

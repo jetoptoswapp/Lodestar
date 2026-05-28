@@ -20,6 +20,11 @@ def db_path() -> str:
     return os.environ.get("AITOOL_DB", str(_DEFAULT_DB))
 
 
+def uploads_dir() -> Path:
+    """附件儲存根目錄。預設 `<DB 所在資料夾>/uploads/`，跟著 AITOOL_DB 走。"""
+    return Path(db_path()).parent / "uploads"
+
+
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     """開一條 DB 連線（WAL、Row factory、foreign_keys）。唯一的連線入口。
@@ -272,3 +277,58 @@ def list_messages(thread_id: str, stage_id: str, limit: int = 200) -> list[dict]
             (thread_id, stage_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ============================================================
+#  Stage attachments（M1.1：上傳檔案 inline 進 SA prompt）
+# ============================================================
+def add_attachment(
+    file_id: str, thread_id: str, stage_id: str, filename: str,
+    mime: str, size_bytes: int, content_path: str,
+    parsed_text: Optional[str], parse_error: str = "",
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO stage_attachments "
+            "(file_id, thread_id, stage_id, filename, mime, size_bytes, "
+            " content_path, parsed_text, parse_error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (file_id, thread_id, stage_id, filename, mime, size_bytes,
+             content_path, parsed_text, parse_error),
+        )
+
+
+def list_attachments(thread_id: str, stage_id: str) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT file_id, filename, mime, size_bytes, content_path, "
+            "       parsed_text, parse_error, created_at "
+            "FROM stage_attachments "
+            "WHERE thread_id = ? AND stage_id = ? "
+            "ORDER BY created_at ASC",
+            (thread_id, stage_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_attachment(file_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT file_id, thread_id, stage_id, filename, mime, size_bytes, "
+            "       content_path, parsed_text, parse_error, created_at "
+            "FROM stage_attachments WHERE file_id = ?",
+            (file_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_attachment(file_id: str) -> Optional[dict]:
+    """刪 DB row 回傳被刪 row（caller 用 content_path 清檔）。"""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM stage_attachments WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM stage_attachments WHERE file_id = ?", (file_id,))
+    return dict(row)

@@ -16,3 +16,7 @@ Current PRD:
 
 User instruction:
 {{INSTRUCTION}}
+
+--- Attached reference files (may be empty) ---
+{{ATTACHMENTS}}
+--- End of attached files ---

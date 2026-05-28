@@ -20,13 +20,18 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 import asyncio  # noqa: E402
+import time  # noqa: E402
 import uuid  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
 
-from fastapi import HTTPException  # noqa: E402
+from fastapi import File, HTTPException, UploadFile  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
 
 import plugin_loader  # noqa: E402
 from api_errors import error_detail  # noqa: E402
 from api_models import (  # noqa: E402
+    AttachmentListResponse,
+    AttachmentResponse,
     CreateProjectRequest,
     PluginListResponse,
     PluginProvides,
@@ -47,6 +52,7 @@ from api_models import (  # noqa: E402
     StageStatusItem,
     StageStatusesResponse,
 )
+from parsers import parse as parse_attachment  # noqa: E402
 from persistence import dal, migrations  # noqa: E402
 from plugin_host import (  # noqa: E402
     CAP_AGENT,
@@ -358,4 +364,108 @@ async def stage_state(stage_id: str, thread_id: str):
         stage_id=stage_id, status=status, artifact=artifact,
         has_content=bool(artifact.strip()),
         last_updated_at=meta.get("updated_at"),
+    )
+
+
+# ============================================================
+#  Stage attachments（M1.1：上傳檔案 inline 進 SA prompt）
+# ============================================================
+def _attachment_to_response(row: dict) -> AttachmentResponse:
+    return AttachmentResponse(
+        file_id=row["file_id"],
+        filename=row["filename"],
+        mime=row["mime"] or "",
+        size_bytes=int(row["size_bytes"] or 0),
+        has_parsed_text=bool(row.get("parsed_text")),
+        parse_error=row.get("parse_error") or None,
+        created_at=row.get("created_at"),
+    )
+
+
+def _ensure_thread(thread_id: str) -> None:
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+
+
+# 注：含 literal `/attachments` 的 route 要在 generic /api/stage/{sid}/{tid} 之前？
+# 不會衝突——這些是 depth-4+ 的 path，FastAPI 依 segment count 區分。
+@app.post(
+    "/api/stage/{stage_id}/{thread_id}/attachments",
+    response_model=AttachmentResponse,
+)
+async def upload_attachment(stage_id: str, thread_id: str, file: UploadFile = File(...)):
+    _ensure_thread(thread_id)
+    file_id = uuid.uuid4().hex[:12]
+    ext = _Path(file.filename or "upload.bin").suffix.lower() or ".bin"
+
+    uploads_root = dal.uploads_dir() / thread_id
+    uploads_root.mkdir(parents=True, exist_ok=True)
+    rel_path = f"{thread_id}/{file_id}{ext}"
+    abs_path = uploads_root / f"{file_id}{ext}"
+
+    content = await file.read()
+    abs_path.write_bytes(content)
+
+    text, err = parse_attachment(abs_path, file.content_type or "", file.filename or "")
+    dal.add_attachment(
+        file_id=file_id, thread_id=thread_id, stage_id=stage_id,
+        filename=file.filename or f"upload_{file_id}{ext}",
+        mime=file.content_type or "",
+        size_bytes=len(content),
+        content_path=rel_path,
+        parsed_text=text or None,
+        parse_error=err,
+    )
+    dal.append_event(thread_id, stage_id, event_type="attachment_added",
+                     detail=f'{{"file_id": "{file_id}", "filename": "{file.filename or ""}"}}')
+    return AttachmentResponse(
+        file_id=file_id,
+        filename=file.filename or f"upload_{file_id}{ext}",
+        mime=file.content_type or "",
+        size_bytes=len(content),
+        has_parsed_text=bool(text),
+        parse_error=err or None,
+        created_at=time.time(),
+    )
+
+
+@app.get(
+    "/api/stage/{stage_id}/{thread_id}/attachments",
+    response_model=AttachmentListResponse,
+)
+async def list_attachments(stage_id: str, thread_id: str):
+    rows = dal.list_attachments(thread_id, stage_id)
+    return AttachmentListResponse(attachments=[_attachment_to_response(r) for r in rows])
+
+
+@app.delete("/api/stage/{stage_id}/{thread_id}/attachments/{file_id}")
+async def delete_attachment(stage_id: str, thread_id: str, file_id: str):
+    row = dal.delete_attachment(file_id)
+    if row is None:
+        raise HTTPException(
+            404,
+            detail=error_detail("attachment_not_found", f"attachment '{file_id}' 不存在"),
+        )
+    # 同步清檔（best-effort）
+    try:
+        (dal.uploads_dir() / row["content_path"]).unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("delete attachment file failed: %s", exc)
+    dal.append_event(thread_id, stage_id, event_type="attachment_removed",
+                     detail=f'{{"file_id": "{file_id}"}}')
+    return {"deleted": file_id}
+
+
+@app.get("/api/stage/{stage_id}/{thread_id}/attachments/{file_id}/content")
+async def download_attachment(stage_id: str, thread_id: str, file_id: str):
+    row = dal.get_attachment(file_id)
+    if row is None:
+        raise HTTPException(404, detail=error_detail("attachment_not_found", file_id))
+    abs_path = dal.uploads_dir() / row["content_path"]
+    if not abs_path.exists():
+        raise HTTPException(404, detail=error_detail("file_missing", "原始檔已遺失"))
+    return FileResponse(
+        path=str(abs_path),
+        filename=row["filename"],
+        media_type=row["mime"] or "application/octet-stream",
     )

@@ -98,6 +98,22 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
+-- M1.1：stage 上傳附件（inline 進 SA prompt 用）
+CREATE TABLE IF NOT EXISTS stage_attachments (
+    file_id       TEXT PRIMARY KEY,                 -- uuid hex
+    thread_id     TEXT NOT NULL,
+    stage_id      TEXT NOT NULL,
+    filename      TEXT NOT NULL,
+    mime          TEXT NOT NULL DEFAULT '',
+    size_bytes    INTEGER NOT NULL DEFAULT 0,
+    content_path  TEXT NOT NULL,                    -- 相對 backend/data/uploads/
+    parsed_text   TEXT,                             -- 解析後純文字（PDF/DOCX/OCR）；NULL = 未解析
+    parse_error   TEXT NOT NULL DEFAULT '',         -- 解析失敗訊息（如「tesseract 未安裝」）
+    created_at    REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stage_attachments
+    ON stage_attachments (thread_id, stage_id, created_at DESC);
+
 -- ===== Agent 客製化（agents 加 tools）=====
 CREATE TABLE IF NOT EXISTS agents (
     agent_id       TEXT PRIMARY KEY,
