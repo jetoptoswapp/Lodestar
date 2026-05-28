@@ -1,4 +1,4 @@
-# Forge — Plugin-First AI 需求工程平台
+# Lodestar — Plugin-First AI 需求工程平台
 
 把「想法 → PRD → 架構 → 使用者故事 → 交付 →（可選）自動實作」串成 pipeline。每個 stage / agent / delivery target 從第一天起都是可獨立打包安裝的 plugin。
 

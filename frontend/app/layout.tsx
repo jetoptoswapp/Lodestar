@@ -22,7 +22,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Forge — Requirement Forging Platform",
+  title: "Lodestar — Requirement Charting Platform",
   description: "From idea to delivery — plugin-first AI requirement engineering",
 };
 

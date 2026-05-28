@@ -34,7 +34,7 @@ PIDS+=("$!")
 
 echo ""
 echo "──────────────────────────────────────────────"
-echo "  Forge · M0"
+echo "  Lodestar · M0"
 echo "  backend  · http://localhost:8723   (API)"
 echo "  swagger  · http://localhost:8723/docs"
 echo "  frontend · http://localhost:8724   (UI)"

@@ -10,8 +10,8 @@ import { useEffect, useState } from "react";
 type StageStatus = "approved" | "draft" | "locked";
 
 const STAGES = [
-  { id: "prd",          n: "01", label: "PRD",            caption: "PRODUCT REQUIREMENTS", status: "approved" as StageStatus, badge: "FORGED",   agent: "3 agents · discussion" },
-  { id: "architecture", n: "02", label: "Architecture",   caption: "SYSTEM DESIGN",        status: "draft" as StageStatus,    badge: "IN FORGE", agent: "software_architect"     },
+  { id: "prd",          n: "01", label: "PRD",            caption: "PRODUCT REQUIREMENTS", status: "approved" as StageStatus, badge: "CHARTED",   agent: "3 agents · discussion" },
+  { id: "architecture", n: "02", label: "Architecture",   caption: "SYSTEM DESIGN",        status: "draft" as StageStatus,    badge: "CHARTING", agent: "software_architect"     },
   { id: "stories",      n: "03", label: "Stories",        caption: "DELIVERABLE STORIES",  status: "draft" as StageStatus,    badge: "DRAFTED",  agent: "product_owner"          },
   { id: "implement",    n: "04", label: "Implementation", caption: "AUTO-CODE · M5",       status: "draft" as StageStatus,    badge: "DISPATCH", agent: "3 agents · dispatch"    },
 ];
@@ -37,7 +37,7 @@ type DocSection =
   | { id: string; num: string; heading: string; kind: "reqs"; body: PrdReq[] };
 
 const PRD_TITLE = "電商結帳重構";
-const PRD_SUB = "Product Requirements · forged by system_analyst";
+const PRD_SUB = "Product Requirements · charted by system_analyst";
 
 const PRD_SECTIONS: DocSection[] = [
   { id: "overview", num: "1", heading: "概述", kind: "paragraphs", body: [
@@ -69,7 +69,7 @@ const PRD_SECTIONS: DocSection[] = [
 
 // ---------- Architecture ----------
 const ARCH_TITLE = "電商結帳重構 · 系統架構";
-const ARCH_SUB = "System Architecture · forged by software_architect";
+const ARCH_SUB = "System Architecture · charted by software_architect";
 
 const ARCH_SECTIONS: DocSection[] = [
   { id: "overview", num: "1", heading: "系統概觀", kind: "paragraphs", body: [
@@ -268,14 +268,7 @@ function TopBar({ nav, onNav }: { nav: string; onNav: (n: string) => void }) {
   return (
     <header className="rise-1 relative flex h-14 shrink-0 items-center justify-between border-b border-[var(--rule-dark)] px-6">
       <div className="flex items-center gap-10">
-        <div className="flex items-baseline gap-2.5">
-          <span className="font-[family-name:var(--font-display)] text-[22px] font-semibold leading-none tracking-tight text-[#e6ecf5]">
-            Forge
-          </span>
-          <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
-            requirement forging
-          </span>
-        </div>
+        <LodestarBrand />
         <nav className="relative flex items-center gap-7">
           {NAV.map((n) => {
             const active = n.id === nav;
@@ -289,7 +282,7 @@ function TopBar({ nav, onNav }: { nav: string; onNav: (n: string) => void }) {
               >
                 {n.label}
                 {active && (
-                  <span className="glow-forge absolute -bottom-[19px] left-0 right-0 h-[2px] bg-[var(--forge)]" />
+                  <span className="glow-star absolute -bottom-[19px] left-0 right-0 h-[2px] bg-[var(--polaris)]" />
                 )}
               </button>
             );
@@ -312,6 +305,32 @@ function TopBar({ nav, onNav }: { nav: string; onNav: (n: string) => void }) {
   );
 }
 
+function LodestarBrand() {
+  return (
+    <div className="flex min-w-0 items-center gap-3" aria-label="Lodestar requirement charting">
+      <span className="lodestar-logo-mark grid h-9 w-9 shrink-0 place-items-center" aria-hidden="true">
+        <svg viewBox="0 0 44 44" fill="none" focusable="false">
+          <circle className="lodestar-logo-ring" cx="22" cy="22" r="18" />
+          <circle className="lodestar-logo-orbit" cx="22" cy="22" r="15.5" />
+          <path className="lodestar-logo-bearing" d="M22 4.75v5.5M22 33.75v5.5M4.75 22h5.5M33.75 22h5.5" />
+          <path className="lodestar-logo-course" d="M11 29.5C15.5 20.5 19.5 19 22 22s6.5-3.5 11-11" />
+          <path className="lodestar-logo-star" d="M22 7.5l3.35 10.15L36 22l-10.65 4.35L22 36.5l-3.35-10.15L8 22l10.65-4.35L22 7.5Z" />
+          <circle className="lodestar-logo-core" cx="22" cy="22" r="2.4" />
+          <circle className="lodestar-logo-fix" cx="33" cy="11" r="1.55" />
+        </svg>
+      </span>
+      <div className="flex items-baseline gap-2.5">
+        <span className="font-[family-name:var(--font-display)] text-[22px] font-semibold leading-none text-[#e6ecf5]">
+          Lodestar
+        </span>
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          requirement charting
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ============================== Sidebar ==============================
 function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   if (!open) {
@@ -327,7 +346,7 @@ function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
           return (
             <button key={t.id} title={t.name}
               className={`mb-1.5 grid h-9 w-9 place-items-center border font-[family-name:var(--font-display)] text-[15px] transition ${
-                active ? "glow-forge border-[var(--forge)] text-[var(--forge)]"
+                active ? "glow-star border-[var(--polaris)] text-[var(--polaris)]"
                        : "border-[var(--rule-dark)] text-[#7a8499] hover:border-[#404a5b] hover:text-[#b8c0cf]"
               }`}>
               {t.glyph}
@@ -356,9 +375,9 @@ function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
               className={`group relative flex w-full items-center gap-3 px-5 py-3 text-left transition ${
                 active ? "bg-[var(--anvil)]/60" : "hover:bg-[var(--bg-elev)]"
               }`}>
-              {active && <span className="absolute top-3 bottom-3 left-0 w-[3px] bg-[var(--forge)]" />}
+              {active && <span className="absolute top-3 bottom-3 left-0 w-[3px] bg-[var(--polaris)]" />}
               <span className={`grid h-9 w-9 shrink-0 place-items-center border font-[family-name:var(--font-display)] text-[15px] ${
-                  active ? "border-[var(--forge)] text-[var(--forge)]" : "border-[var(--rule-dark)] text-[#7a8499] group-hover:border-[#404a5b]"
+                  active ? "border-[var(--polaris)] text-[var(--polaris)]" : "border-[var(--rule-dark)] text-[#7a8499] group-hover:border-[#404a5b]"
                 }`}>
                 {t.glyph}
               </span>
@@ -370,7 +389,7 @@ function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
           );
         })}
       </div>
-      <button className="m-3 flex items-center justify-between border border-dashed border-[var(--rule-dark)] px-4 py-2.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#5e6878] transition hover:border-[var(--forge)] hover:text-[var(--forge)]">
+      <button className="m-3 flex items-center justify-between border border-dashed border-[var(--rule-dark)] px-4 py-2.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#5e6878] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
         <span>＋ new thread</span>
         <span className="text-[var(--ink-muted)]">⌘N</span>
       </button>
@@ -385,25 +404,25 @@ function StageHeader({ selected, onSelect }: { selected: string; onSelect: (s: s
       <div className="mb-3 flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
         <span>thread</span><span className="text-[#2a3041]">/</span>
         <span className="text-[#b8c0cf]">電商結帳重構</span><span className="text-[#2a3041]">·</span>
-        <span>workflow</span><span className="text-[#2a3041]">/</span><span className="text-[var(--forge)]">default</span>
+        <span>workflow</span><span className="text-[#2a3041]">/</span><span className="text-[var(--polaris)]">default</span>
         <span className="ml-auto">stages by <span className="text-[#b8c0cf]">builtin_core_stages</span></span>
       </div>
       <h1 className="mb-5 font-[family-name:var(--font-display)] text-[32px] font-semibold leading-none tracking-tight text-[#e6ecf5]">
-        Requirement <em className="font-[family-name:var(--font-display)] italic text-[var(--forge)]">forge</em>
+        Requirement <em className="font-[family-name:var(--font-display)] italic text-[var(--polaris)]">chart</em>
       </h1>
       <ol className="flex items-stretch">
         {STAGES.map((s, i) => {
           const isSelected = s.id === selected;
           const isLocked = s.status === "locked";
-          const topBorder = isSelected ? "border-t-[var(--forge)]" : s.status === "approved" ? "border-t-[var(--approved)]" : isLocked ? "border-t-[var(--locked)]" : "border-t-[var(--rule-dark)]";
-          const badgeColor = s.status === "approved" ? "text-[var(--approved)]" : isLocked ? "text-[var(--locked)]" : isSelected ? "text-[var(--forge)]" : "text-[var(--ink-muted)]";
+          const topBorder = isSelected ? "border-t-[var(--polaris)]" : s.status === "approved" ? "border-t-[var(--approved)]" : isLocked ? "border-t-[var(--locked)]" : "border-t-[var(--rule-dark)]";
+          const badgeColor = s.status === "approved" ? "text-[var(--approved)]" : isLocked ? "text-[var(--locked)]" : isSelected ? "text-[var(--polaris)]" : "text-[var(--ink-muted)]";
           return (
             <li key={s.id} className="flex flex-1 items-stretch">
               <button disabled={isLocked} onClick={() => !isLocked && onSelect(s.id)}
                 className={`group relative w-full border-t-[2px] ${topBorder} py-3 pr-6 text-left transition ${isLocked ? "cursor-not-allowed opacity-55" : ""} ${isSelected ? "" : "hover:border-t-[#2e3441]"}`}>
                 <div className="flex items-baseline gap-3">
                   <span className={`font-[family-name:var(--font-display)] text-[26px] font-semibold leading-none ${isLocked ? "text-[#404a5b]" : "text-[#e6ecf5]"}`}>{s.n}</span>
-                  <span className={`font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] ${badgeColor} ${s.status === "draft" && s.id !== selected ? "pulse-forge" : ""}`}>{s.badge}</span>
+                  <span className={`font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] ${badgeColor} ${s.status === "draft" && s.id !== selected ? "pulse-star" : ""}`}>{s.badge}</span>
                 </div>
                 <div className={`mt-1.5 font-[family-name:var(--font-display)] text-[16px] ${isLocked ? "text-[#5e6878]" : "text-[#cdd4df]"}`}>{s.label}</div>
                 <div className="mt-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{s.caption} · {s.agent}</div>
@@ -433,7 +452,7 @@ function PrdWorkspace({ onOpenFs }: { onOpenFs: () => void }) {
             <Article title={PRD_TITLE} sub={PRD_SUB} kind="PRODUCT REQUIREMENTS · V1" sections={PRD_SECTIONS} />
           </div>
         </article>
-        <BottomMeta left="10 reqs · 2 paragraphs · forged 5 min ago · sha · a7f3e2c" right={<>depends_on <span className="text-[#5e6878]">(root)</span> · downstream <span className="text-[#b8c0cf]">architecture, stories</span></>} />
+        <BottomMeta left="10 reqs · 2 paragraphs · charted 5 min ago · sha · a7f3e2c" right={<>depends_on <span className="text-[#5e6878]">(root)</span> · downstream <span className="text-[#b8c0cf]">architecture, stories</span></>} />
         <OperationsRow approved />
       </section>
       <ChatPanel />
@@ -491,7 +510,7 @@ function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChan
       {(["document", "diagram"] as const).map((v) => (
         <button key={v} onClick={() => onChange(v)}
           className={`px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] transition ${
-            v === value ? "bg-[var(--forge)] text-white" : "text-[var(--ink-muted)] hover:text-[#b8c0cf]"
+            v === value ? "bg-[var(--polaris)] text-white" : "text-[var(--ink-muted)] hover:text-[#b8c0cf]"
           }`}>
           {v}
         </button>
@@ -520,7 +539,7 @@ function MermaidCanvas({ zoom }: { zoom: number }) {
           <marker id="arrow" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a5468" />
           </marker>
-          <marker id="arrow-forge" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <marker id="arrow-chart" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b8cff" />
           </marker>
         </defs>
@@ -539,13 +558,13 @@ function MermaidCanvas({ zoom }: { zoom: number }) {
         <ArchBox x={630} y={420} w={170} h={56} title="External"    sub="Stripe / ApplePay / LINE Pay" muted />
         <line x1="280" y1="76"  x2="430" y2="160" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
         <line x1="620" y1="76"  x2="470" y2="160" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="430" y1="216" x2="200" y2="290" stroke="#5b8cff" strokeWidth="1.4" markerEnd="url(#arrow-forge)" />
+        <line x1="430" y1="216" x2="200" y2="290" stroke="#5b8cff" strokeWidth="1.4" markerEnd="url(#arrow-chart)" />
         <line x1="450" y1="216" x2="445" y2="290" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
         <line x1="470" y1="216" x2="715" y2="290" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
         <line x1="185" y1="346" x2="185" y2="420" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
         <line x1="450" y1="346" x2="450" y2="420" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
         <line x1="715" y1="346" x2="715" y2="420" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
-        <line x1="270" y1="318" x2="365" y2="318" stroke="#5b8cff" strokeWidth="1.4" markerEnd="url(#arrow-forge)" strokeDasharray="2 3" />
+        <line x1="270" y1="318" x2="365" y2="318" stroke="#5b8cff" strokeWidth="1.4" markerEnd="url(#arrow-chart)" strokeDasharray="2 3" />
         <line x1="535" y1="332" x2="630" y2="440" stroke="#4a5468" strokeWidth="1.2" markerEnd="url(#arrow)" />
       </svg>
     </div>
@@ -579,14 +598,14 @@ function ArchBox({ x, y, w, h, title, sub, accent, muted }: {
 function StoriesWorkspace() {
   const [picked, setPicked] = useState<string | null>("US-2");
   const groups = Array.from(new Set(STORIES.map((s) => s.group)));
-  const detail = picked ? STORIES.find((s) => s.code === picked) : null;
+  const detail: Story | null = picked ? STORIES.find((s) => s.code === picked) ?? null : null;
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
         <ArtifactBar artifact="stories" stage="deliver" op="generate_stories" right={
           <>
             <DraftPill />
-            <button className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--forge)] hover:text-[var(--forge)]">
+            <button className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
               Preview to GitHub
             </button>
           </>
@@ -596,7 +615,7 @@ function StoriesWorkspace() {
             <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">DELIVERABLE STORIES · V1</div>
             <h2 className="mt-2 font-[family-name:var(--font-display)] text-[26px] font-semibold leading-tight text-[#e6ecf5]">{STORIES.length} stories · {STORIES.reduce((s, x) => s + x.estimate, 0)} pts</h2>
             <div className="mt-3 flex items-center gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-              <span>forged by product_owner</span>
+              <span>charted by product_owner</span>
               <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
               <span>2 min ago</span>
               <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
@@ -606,7 +625,7 @@ function StoriesWorkspace() {
           {groups.map((g) => (
             <div key={g} className="mb-7 last:mb-0">
               <div className="mb-3 flex items-baseline gap-3">
-                <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--forge)]">{g}</span>
+                <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--polaris)]">{g}</span>
                 <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
                   {STORIES.filter((s) => s.group === g).length} stories · {STORIES.filter((s) => s.group === g).reduce((sum, x) => sum + x.estimate, 0)} pts
                 </span>
@@ -616,10 +635,10 @@ function StoriesWorkspace() {
                 {STORIES.filter((s) => s.group === g).map((s) => (
                   <button key={s.code} onClick={() => setPicked(s.code)}
                     className={`flex flex-col items-stretch border bg-[var(--bg-elev)] p-4 text-left transition ${
-                      picked === s.code ? "border-[var(--forge)] glow-forge" : "border-[var(--paper-edge)] hover:border-[#4a5468]"
+                      picked === s.code ? "border-[var(--polaris)] glow-star" : "border-[var(--paper-edge)] hover:border-[#4a5468]"
                     }`}>
                     <div className="mb-2 flex items-center justify-between">
-                      <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--forge)]">{s.code}</code>
+                      <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{s.code}</code>
                       <span className="border border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[#cdd4df]">
                         {s.estimate} pts
                       </span>
@@ -635,7 +654,7 @@ function StoriesWorkspace() {
                     <div className="flex flex-wrap items-center gap-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
                       <span>links</span>
                       {s.reqs.map((r) => (
-                        <code key={r} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[var(--forge)]">{r}</code>
+                        <code key={r} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[var(--polaris)]">{r}</code>
                       ))}
                     </div>
                   </button>
@@ -662,7 +681,7 @@ function StoryDetail({ story }: { story: Story | null }) {
       <div className="flex items-center justify-between border-b border-[var(--rule-dark)] px-6 py-4">
         <div className="flex items-baseline gap-3">
           <h3 className="font-[family-name:var(--font-display)] text-[17px] font-semibold text-[#e6ecf5]">Story Detail</h3>
-          {story && <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--forge)]">{story.code}</span>}
+          {story && <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--polaris)]">{story.code}</span>}
         </div>
         <span className="grid h-7 w-7 place-items-center border border-[var(--rule-dark)] font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">⋯</span>
       </div>
@@ -683,7 +702,7 @@ function StoryDetail({ story }: { story: Story | null }) {
             <ul className="space-y-2">
               {story.ac.map((a, i) => (
                 <li key={i} className="flex items-start gap-2.5 text-[13px] leading-6 text-[#cdd4df]">
-                  <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center border border-[var(--paper-edge)] font-[family-name:var(--font-mono)] text-[9px] text-[var(--forge)]">AC{i + 1}</span>
+                  <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center border border-[var(--paper-edge)] font-[family-name:var(--font-mono)] text-[9px] text-[var(--polaris)]">AC{i + 1}</span>
                   <span>{a}</span>
                 </li>
               ))}
@@ -720,7 +739,7 @@ function ImplementWorkspace() {
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
         <ArtifactBar artifact="implement" stage="deliver" op="auto_implement" right={
           <>
-            <Pill color="forge">DISPATCH MODE</Pill>
+            <Pill color="chart">DISPATCH MODE</Pill>
             <Pill color="muted">M5 PREVIEW</Pill>
           </>
         } />
@@ -728,9 +747,9 @@ function ImplementWorkspace() {
           {/* Lead 分派指令 */}
           <div className="border-b border-[var(--rule)] px-6 py-5">
             <div className="mb-3 flex items-center gap-2">
-              <span className="grid h-5 w-5 place-items-center bg-[var(--forge)] font-[family-name:var(--font-display)] text-[10px] font-bold text-white">IL</span>
+              <span className="grid h-5 w-5 place-items-center bg-[var(--polaris)] font-[family-name:var(--font-display)] text-[10px] font-bold text-white">IL</span>
               <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-                implementation_lead<span className="ml-1 text-[var(--forge)]">· LEAD</span>
+                implementation_lead<span className="ml-1 text-[var(--polaris)]">· LEAD</span>
               </span>
               <span className="ml-auto font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
                 processing · US-2 · 信用卡 + 3DS 流程
@@ -762,7 +781,7 @@ function ImplementWorkspace() {
             ]} />
           </div>
         </div>
-        <BottomMeta left={<>3 agents · 1 lead + 2 subagents · dispatch · processing <span className="text-[var(--forge)]">1/8 stories</span></>} right={<>merging into <code className="text-[#cdd4df]">us-2-impl</code> · sha · pending</>} />
+        <BottomMeta left={<>3 agents · 1 lead + 2 subagents · dispatch · processing <span className="text-[var(--polaris)]">1/8 stories</span></>} right={<>merging into <code className="text-[#cdd4df]">us-2-impl</code> · sha · pending</>} />
         <div className="mt-4 flex items-center justify-end gap-2">
           <ToolBtn>暫停</ToolBtn>
           <ToolBtn>取消</ToolBtn>
@@ -810,7 +829,7 @@ function SubagentPane({ abbr, color, name, status, stats, logs }: {
         </div>
         <span className="flex items-center gap-1.5 border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider"
           style={{ color, borderColor: `color-mix(in oklab, ${color} 40%, transparent)` }}>
-          <span className="pulse-forge inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
           {status}
         </span>
       </div>
@@ -826,7 +845,7 @@ function SubagentPane({ abbr, color, name, status, stats, logs }: {
         <div className="mb-2 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">log · streaming</div>
         <ul className="space-y-1 font-[family-name:var(--font-mono)] text-[11px] leading-5">
           {logs.map((l, i) => (
-            <li key={i} className={l.t === "ok" ? "text-[var(--approved)]" : l.t === "run" ? "text-[var(--forge)]" : "text-[var(--ink-muted)]"}>
+            <li key={i} className={l.t === "ok" ? "text-[var(--approved)]" : l.t === "run" ? "text-[var(--polaris)]" : "text-[var(--ink-muted)]"}>
               <span className="opacity-50">[{String(i + 1).padStart(2, "0")}]</span> {l.t === "ok" ? "✓" : l.t === "run" ? "▸" : "·"} {l.msg}
             </li>
           ))}
@@ -843,7 +862,7 @@ function WorkflowsView() {
   return (
     <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
       <ViewHeader title="Workflows" sub="表單式編輯：有序 stage 清單 + 依賴推導（無 DAG canvas）" right={
-        <button className="border border-[var(--forge)] bg-[var(--forge)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--ember)]">
+        <button className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]">
           ＋ new workflow
         </button>
       } />
@@ -854,10 +873,10 @@ function WorkflowsView() {
             return (
               <button key={w.id} onClick={() => setPicked(w.id)}
                 className={`flex flex-col items-stretch border p-4 text-left transition ${
-                  active ? "border-[var(--forge)] bg-[color-mix(in_oklab,var(--forge)_6%,transparent)]" : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40 hover:border-[#4a5468]"
+                  active ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_6%,transparent)]" : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40 hover:border-[#4a5468]"
                 }`}>
                 <div className="mb-1 flex items-center justify-between">
-                  <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--forge)]">{w.id}</code>
+                  <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{w.id}</code>
                   {w.builtin ? <Pill color="approved">BUILTIN</Pill> : <Pill color="muted">USER</Pill>}
                 </div>
                 <div className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">{w.label}</div>
@@ -889,7 +908,7 @@ function WorkflowsView() {
                 <li key={s} className="flex flex-col gap-3 border border-[var(--rule-dark)] bg-[var(--bg-elev)]/60 p-3">
                   <div className="flex items-center gap-3">
                     <span className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--ink-muted)]">{String(i + 1).padStart(2, "0")}</span>
-                    <code className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--forge)]">{s}</code>
+                    <code className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{s}</code>
                     <span className="text-[13px] text-[#cdd4df]">{STAGES.find((x) => x.id === s)?.label ?? s}</span>
                     <span className="ml-auto flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
                       <span>collab</span>
@@ -901,18 +920,18 @@ function WorkflowsView() {
                         <code key={d} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{d}</code>
                       ))}
                     </span>
-                    <button title="上移" className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--forge)] hover:text-[var(--forge)]">↑</button>
-                    <button title="下移" className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--forge)] hover:text-[var(--forge)]">↓</button>
+                    <button title="上移" className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">↑</button>
+                    <button title="下移" className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">↓</button>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 pl-8">
                     <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">agents</span>
                     {(wf.agent_bindings[s] ?? []).map((b) => <AgentBindingChip key={b.agent_id} binding={b} />)}
-                    <button className="border border-dashed border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)] transition hover:border-[var(--forge)] hover:text-[var(--forge)]">＋ add</button>
+                    <button className="border border-dashed border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">＋ add</button>
                   </div>
                 </li>
               ))}
             </ol>
-            <button className="mt-3 flex w-full items-center justify-center gap-2 border border-dashed border-[var(--rule-dark)] py-2.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[var(--ink-muted)] transition hover:border-[var(--forge)] hover:text-[var(--forge)]">
+            <button className="mt-3 flex w-full items-center justify-center gap-2 border border-dashed border-[var(--rule-dark)] py-2.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
               ＋ add stage
             </button>
           </div>
@@ -946,7 +965,7 @@ function AgentsView() {
   return (
     <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
       <ViewHeader title="Agents" sub="完整客製化 AI agent · 多 agent 同 stage（lead / peer / subagent）" right={
-        <button className="border border-[var(--forge)] bg-[var(--forge)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--ember)]">
+        <button className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]">
           ＋ new agent
         </button>
       } />
@@ -957,7 +976,7 @@ function AgentsView() {
           return (
             <div key={stage}>
               <div className="mb-3 flex items-baseline gap-3 border-b border-[var(--rule-dark)] pb-2">
-                <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--forge)]">stage · {stage}</span>
+                <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--polaris)]">stage · {stage}</span>
                 <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{agentsInStage.length} agents</span>
                 <CollabModePill mode={mode} />
               </div>
@@ -978,7 +997,7 @@ function AgentCard({ a }: { a: typeof AGENTS[number] }) {
     <div className={`flex flex-col border bg-[var(--bg-elev)]/40 p-5 ${a.enabled ? "border-[var(--rule-dark)]" : "border-[var(--rule-dark)] opacity-60"}`}>
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center border bg-[color-mix(in_oklab,var(--forge)_10%,transparent)] font-[family-name:var(--font-display)] text-[14px] font-bold" style={{ borderColor: roleColor, color: roleColor }}>
+          <span className="grid h-9 w-9 place-items-center border bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] font-[family-name:var(--font-display)] text-[14px] font-bold" style={{ borderColor: roleColor, color: roleColor }}>
             {a.name.split(" ").map((w) => w[0]).join("")}
           </span>
           <div className="leading-tight">
@@ -995,7 +1014,7 @@ function AgentCard({ a }: { a: typeof AGENTS[number] }) {
       </div>
       {a.subagentOf && (
         <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-          subagent_of · <span className="text-[var(--forge)]">{a.subagentOf}</span>
+          subagent_of · <span className="text-[var(--polaris)]">{a.subagentOf}</span>
         </div>
       )}
       <div className="mb-3 grid grid-cols-3 gap-3 border-y border-[var(--rule-dark)] py-3">
@@ -1017,7 +1036,7 @@ function AgentCard({ a }: { a: typeof AGENTS[number] }) {
         <div className="mb-3">
           <SectionLabel>TOOLS</SectionLabel>
           <div className="flex flex-wrap gap-1.5">
-            {a.tools.map((t) => <span key={t} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--forge)]">{t}</span>)}
+            {a.tools.map((t) => <span key={t} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]">{t}</span>)}
           </div>
         </div>
       )}
@@ -1050,15 +1069,15 @@ function PluginsView() {
               <div className="mb-3 flex items-start justify-between">
                 <div>
                   <div className="flex items-center gap-2">
-                    <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--forge)]">{p.id}</code>
-                    {p.builtin && <Pill color="forge">BUILTIN</Pill>}
+                    <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{p.id}</code>
+                    {p.builtin && <Pill color="chart">BUILTIN</Pill>}
                   </div>
                   <h3 className="mt-1 font-[family-name:var(--font-display)] text-[18px] font-semibold leading-tight text-[#e6ecf5]">{p.name}</h3>
                   <div className="mt-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">version · <span className="text-[#cdd4df]">{p.version}</span></div>
                 </div>
                 <label className="relative inline-flex cursor-pointer items-center gap-2">
                   <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{p.enabled ? "enabled" : "disabled"}</span>
-                  <span className={`relative inline-block h-4 w-7 transition ${p.enabled ? "bg-[var(--forge)]" : "bg-[var(--rule-dark)]"}`}>
+                  <span className={`relative inline-block h-4 w-7 transition ${p.enabled ? "bg-[var(--polaris)]" : "bg-[var(--rule-dark)]"}`}>
                     <span className={`absolute top-0.5 h-3 w-3 bg-white transition ${p.enabled ? "left-3" : "left-0.5"}`} />
                   </span>
                 </label>
@@ -1088,7 +1107,7 @@ function PluginsView() {
               )}
               <div className="mt-auto flex items-center justify-between border-t border-[var(--rule-dark)] pt-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
                 <span>host_api · &gt;=1.0,&lt;2.0</span>
-                <button className="border border-[var(--rule-dark)] px-3 py-1 text-[#cdd4df] transition hover:border-[var(--forge)] hover:text-[var(--forge)]">manifest</button>
+                <button className="border border-[var(--rule-dark)] px-3 py-1 text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">manifest</button>
               </div>
             </div>
           ))}
@@ -1117,7 +1136,7 @@ function Article({ title, sub, kind, sections, wide = false }: {
         {sections.map((sec) => (
           <section key={sec.id}>
             <h2 className="mb-4 flex items-baseline gap-3 font-[family-name:var(--font-display)] text-[19px] font-semibold leading-none text-[#e6ecf5]">
-              <span className="font-[family-name:var(--font-mono)] text-[12px] font-normal tracking-[0.2em] text-[var(--forge)]">§{sec.num}</span>
+              <span className="font-[family-name:var(--font-mono)] text-[12px] font-normal tracking-[0.2em] text-[var(--polaris)]">§{sec.num}</span>
               {sec.heading}
             </h2>
             {sec.kind === "paragraphs" && (
@@ -1129,7 +1148,7 @@ function Article({ title, sub, kind, sections, wide = false }: {
               <ul className="space-y-2 font-[family-name:var(--font-sans)] text-[14.5px] leading-[1.7] text-[#cdd4df]">
                 {sec.body.map((item, i) => (
                   <li key={i} className="flex items-start gap-3">
-                    <span className="mt-[10px] inline-block h-1 w-1 shrink-0 rounded-full bg-[var(--forge)]" />
+                    <span className="mt-[10px] inline-block h-1 w-1 shrink-0 rounded-full bg-[var(--polaris)]" />
                     <span>{item}</span>
                   </li>
                 ))}
@@ -1139,7 +1158,7 @@ function Article({ title, sub, kind, sections, wide = false }: {
               <ul className="space-y-2.5">
                 {sec.body.map((r) => (
                   <li key={r.code} className="flex items-start gap-3.5">
-                    <code className="mt-0.5 inline-flex shrink-0 items-center border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] font-medium tracking-wider text-[var(--forge)]">{r.code}</code>
+                    <code className="mt-0.5 inline-flex shrink-0 items-center border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] font-medium tracking-wider text-[var(--polaris)]">{r.code}</code>
                     <span className="font-[family-name:var(--font-sans)] text-[14.5px] leading-[1.65] text-[#cdd4df]">{r.text}</span>
                   </li>
                 ))}
@@ -1181,10 +1200,10 @@ function ChatPanel() {
         {CHAT.map((m, i) => <ChatMessage key={i} m={m} />)}
       </div>
       <div className="border-t border-[var(--rule-dark)] p-4">
-        <div className="flex items-end gap-2 border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2.5 focus-within:border-[var(--forge)]">
+        <div className="flex items-end gap-2 border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2.5 focus-within:border-[var(--polaris)]">
           <textarea rows={2} placeholder="補充需求 / 要求 SA 修正……"
             className="flex-1 resize-none bg-transparent text-[13px] text-[#cdd4df] outline-none placeholder:text-[var(--ink-muted)]" />
-          <button className="grid h-7 w-7 shrink-0 place-items-center bg-[var(--forge)] text-white hover:bg-[var(--ember)]"><span className="-mt-0.5 text-sm">↵</span></button>
+          <button className="grid h-7 w-7 shrink-0 place-items-center bg-[var(--polaris)] text-white hover:bg-[var(--polaris-hi)]"><span className="-mt-0.5 text-sm">↵</span></button>
         </div>
         <div className="mt-2 flex items-center justify-between font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
           <span>↵ send · ⌘↵ refine</span>
@@ -1204,7 +1223,7 @@ function ChatMessage({ m }: { m: ChatMsg }) {
             ↳ to <span style={{ color: SPEAKER_STYLES[m.toAgent].color }}>{m.toAgent}</span>
           </span>
         )}
-        <div className="max-w-[88%] border-l-2 border-[var(--forge)] bg-[color-mix(in_oklab,var(--forge)_12%,transparent)] px-4 py-2.5 text-[13px] leading-6 text-[#e6ecf5]">{m.content}</div>
+        <div className="max-w-[88%] border-l-2 border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_12%,transparent)] px-4 py-2.5 text-[13px] leading-6 text-[#e6ecf5]">{m.content}</div>
       </div>
     );
   }
@@ -1241,10 +1260,10 @@ function ChatMessage({ m }: { m: ChatMsg }) {
 function ReplyChip({ label, selected, multi }: { label: string; selected?: boolean; multi?: boolean }) {
   return (
     <button className={`flex items-center gap-1.5 border px-3 py-1.5 text-[12px] transition ${
-      selected ? "border-[var(--forge)] bg-[color-mix(in_oklab,var(--forge)_18%,transparent)] text-[var(--forge)]" : "border-[var(--rule-dark)] bg-transparent text-[#cdd4df] hover:border-[#4a5468] hover:bg-[var(--bg-elev)]"
+      selected ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] text-[var(--polaris)]" : "border-[var(--rule-dark)] bg-transparent text-[#cdd4df] hover:border-[#4a5468] hover:bg-[var(--bg-elev)]"
     }`}>
       {multi ? (
-        <span className={`grid h-3 w-3 place-items-center border ${selected ? "border-[var(--forge)] bg-[var(--forge)]" : "border-[#2e3441]"}`}>
+        <span className={`grid h-3 w-3 place-items-center border ${selected ? "border-[var(--polaris)] bg-[var(--polaris)]" : "border-[#2e3441]"}`}>
           {selected && <span className="text-[9px] leading-none text-white">✓</span>}
         </span>
       ) : (
@@ -1263,11 +1282,11 @@ function DocFullscreen({ onClose }: { onClose: () => void }) {
         <div className="flex items-baseline gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
           <span>artifact</span><span className="text-[#cdd4df]">prd</span><span>·</span><span>specify · generate_prd</span>
           <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
-          <span className="text-[var(--approved)]">forged · approved</span>
+          <span className="text-[var(--approved)]">charted · approved</span>
         </div>
         <div className="flex items-center gap-3">
           <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">esc · 關閉</span>
-          <button onClick={onClose} title="關閉" className="grid h-8 w-8 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--forge)] hover:text-[var(--forge)]"><CloseIcon /></button>
+          <button onClick={onClose} title="關閉" className="grid h-8 w-8 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"><CloseIcon /></button>
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -1313,25 +1332,25 @@ function ApprovedSeal() {
   return (
     <div className="flex items-center gap-2 border border-[color-mix(in_oklab,var(--approved)_40%,transparent)] bg-[color-mix(in_oklab,var(--approved)_12%,transparent)] px-3 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--approved)]">
       <span className="glow-approved relative inline-block h-1.5 w-1.5 rounded-full bg-[var(--approved)]" />
-      forged · approved
+      charted · approved
     </div>
   );
 }
 
 function DraftPill() {
   return (
-    <div className="flex items-center gap-2 border border-[color-mix(in_oklab,var(--forge)_40%,transparent)] bg-[color-mix(in_oklab,var(--forge)_10%,transparent)] px-3 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--forge)]">
-      <span className="pulse-forge relative inline-block h-1.5 w-1.5 rounded-full bg-[var(--forge)]" />
-      in forge · draft
+    <div className="flex items-center gap-2 border border-[color-mix(in_oklab,var(--polaris)_40%,transparent)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] px-3 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--polaris)]">
+      <span className="pulse-star relative inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />
+      charting · draft
     </div>
   );
 }
 
-function Pill({ children, color }: { children: React.ReactNode; color: "approved" | "forge" | "muted" }) {
+function Pill({ children, color }: { children: React.ReactNode; color: "approved" | "chart" | "muted" }) {
   const cls = color === "approved"
     ? "border-[color-mix(in_oklab,var(--approved)_40%,transparent)] bg-[color-mix(in_oklab,var(--approved)_10%,transparent)] text-[var(--approved)]"
-    : color === "forge"
-      ? "border-[color-mix(in_oklab,var(--forge)_40%,transparent)] bg-[color-mix(in_oklab,var(--forge)_10%,transparent)] text-[var(--forge)]"
+    : color === "chart"
+      ? "border-[color-mix(in_oklab,var(--polaris)_40%,transparent)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] text-[var(--polaris)]"
       : "border-[var(--rule-dark)] text-[var(--ink-muted)]";
   return (
     <span className={`border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] ${cls}`}>{children}</span>
@@ -1339,7 +1358,7 @@ function Pill({ children, color }: { children: React.ReactNode; color: "approved
 }
 
 const ROLE_COLORS: Record<Collab, string> = {
-  lead:     "var(--forge)",  // cobalt
+  lead:     "var(--polaris)",  // cobalt
   peer:     "#f59e0b",       // amber
   subagent: "#a78bfa",       // violet
 };
@@ -1357,7 +1376,7 @@ function AgentBindingChip({ binding }: { binding: Binding }) {
 function CollabModePill({ mode }: { mode: CollabMode }) {
   const styles: Record<CollabMode, { color: string; label: string }> = {
     single:     { color: "var(--ink-muted)", label: "single" },
-    discussion: { color: "var(--forge)",     label: "discussion" },
+    discussion: { color: "var(--polaris)",     label: "discussion" },
     dispatch:   { color: "#f59e0b",          label: "dispatch" },
   };
   const sp = styles[mode];
@@ -1383,7 +1402,7 @@ function IconBtn({ children, onClick, title, small }: { children: React.ReactNod
   const sz = small ? "h-6 w-6" : "h-8 w-8";
   return (
     <button onClick={onClick} title={title}
-      className={`grid ${sz} place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--forge)] hover:text-[var(--forge)]`}>
+      className={`grid ${sz} place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]`}>
       {children}
     </button>
   );
@@ -1394,7 +1413,7 @@ function ViewHeader({ title, sub, right }: { title: string; sub: string; right?:
     <div className="border-b border-[var(--rule-dark)] px-10 pt-7 pb-5">
       <div className="flex items-end justify-between">
         <div>
-          <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">FORGE · MANAGEMENT</div>
+          <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">LODESTAR · MANAGEMENT</div>
           <h1 className="mt-1 font-[family-name:var(--font-display)] text-[34px] font-semibold leading-none tracking-tight text-[#e6ecf5]">{title}</h1>
           <p className="mt-2 text-[13px] text-[#97a0b3]">{sub}</p>
         </div>
