@@ -165,8 +165,18 @@ class WorkflowEngine:
             msgs = dal.list_messages(thread_id, stage_id, limit=50)
             conv = tuple((m["role"], m["content"]) for m in msgs)
 
-        # 4. 附件（M1.1：放進 metadata.attachments；plugin 自己決定要不要 inline 進 prompt）
-        attachments = dal.list_attachments(thread_id, stage_id)
+        # 4. 附件（M1.1 inline / M1.3 path-passing 並存）
+        #    - 注入 abs_path：plugin 不必碰 dal / FS 也能告訴 model 去 Read。
+        #    - 仍保留 parsed_text：給未來不支援 Read tool 的 adapter inline 退路。
+        raw_attachments = dal.list_attachments(thread_id, stage_id)
+        uploads_root = dal.uploads_dir()
+        attachments: list[dict] = []
+        for row in raw_attachments:
+            item = dict(row)
+            cpath = item.get("content_path")
+            if cpath:
+                item["abs_path"] = str(uploads_root / cpath)
+            attachments.append(item)
 
         # 5. StageContext + HarnessRunner
         ctx = StageContext(

@@ -99,13 +99,33 @@ def _format_conversation(conv: tuple) -> str:
 def _format_attachments(attachments: list) -> str:
     """把 ctx.metadata['attachments'] 渲染成 prompt 可讀的 block。
 
-    每個附件用 marker 包：
-        <<< attachment: filename (mime, size) >>>
-        <parsed text 或「未解析」原因>
-        <<< end of filename >>>
+    M1.3 path-passing（每筆 attachment 都有 abs_path）：列絕對路徑 + Read 指令，
+    由 Claude 自己用 Read tool 讀檔——支援原生 vision（圖片）/ PDF / DOCX，
+    不必本地 OCR / parse。
+
+    Fallback（缺 abs_path，例如未來不能 Read 的 adapter）：退回 inline parsed_text。
     """
     if not attachments:
         return "(no attached files)"
+
+    all_have_path = all(a.get("abs_path") for a in attachments)
+    if all_have_path:
+        lines: list[str] = [
+            "READ the following files NOW with the Read tool BEFORE answering.",
+            "Images use native vision; PDFs and DOCX read via the same Read tool.",
+            "Treat their contents as primary reference material; cite them in the PRD.",
+            "",
+        ]
+        for a in attachments:
+            fname = a.get("filename", "(unnamed)")
+            mime = a.get("mime") or "unknown"
+            size = a.get("size_bytes", 0)
+            lines.append(
+                f"- {a['abs_path']}  ·  original={fname}  ·  mime={mime}  ·  {size} bytes"
+            )
+        return "\n".join(lines)
+
+    # Fallback：inline parsed_text（保留 M1.1 行為，給不支援 Read tool 的 adapter）
     blocks: list[str] = []
     for a in attachments:
         fname = a.get("filename", "(unnamed)")
