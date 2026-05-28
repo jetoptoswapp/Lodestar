@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-labelledby="title desc">
+  <title id="title">Lodestar logo</title>
+  <desc id="desc">Animated Lodestar brand mark with a compass ring, north star, and charted route.</desc>
+  <style>
+    :root {
+      --bg: #0a0d12;
+      --ink: #e0e6f0;
+      --muted: #5b6479;
+      --rule: #2a3242;
+      --polaris: #5b8cff;
+      --polaris-hi: #80a3ff;
+      --approved: #6ddca8;
+    }
+
+    .panel {
+      fill: var(--bg);
+    }
+
+    .ring {
+      fill: rgba(91, 140, 255, 0.08);
+      stroke: rgba(91, 140, 255, 0.36);
+      stroke-width: 1.4;
+    }
+
+    .orbit {
+      fill: none;
+      stroke: var(--polaris);
+      stroke-dasharray: 2 8;
+      stroke-linecap: round;
+      stroke-width: 1.55;
+      opacity: 0.74;
+      transform-origin: 48px 48px;
+      animation: orbit 7.5s linear infinite;
+    }
+
+    .bearing {
+      stroke: #4a5468;
+      stroke-linecap: square;
+      stroke-width: 1.25;
+    }
+
+    .course {
+      fill: none;
+      stroke: var(--approved);
+      stroke-dasharray: 56;
+      stroke-dashoffset: 56;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.65;
+      animation: course 1.8s cubic-bezier(0.2, 0.8, 0.2, 1) 280ms forwards, courseBreathe 3.8s ease-in-out 2.1s infinite;
+    }
+
+    .star {
+      fill: var(--polaris-hi);
+      opacity: 0.92;
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: starPulse 2.8s ease-in-out infinite;
+    }
+
+    .core {
+      fill: #fff;
+    }
+
+    .fix {
+      fill: var(--approved);
+      animation: fixBlink 2.4s ease-in-out infinite;
+    }
+
+    .word {
+      fill: var(--ink);
+      font-family: Fraunces, Georgia, "Times New Roman", serif;
+      font-size: 36px;
+      font-weight: 650;
+    }
+
+    .tagline {
+      fill: var(--muted);
+      font-family: Geist Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+    }
+
+    @keyframes orbit {
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes course {
+      to { stroke-dashoffset: 0; }
+    }
+
+    @keyframes courseBreathe {
+      0%, 100% { opacity: 0.72; }
+      50% { opacity: 1; }
+    }
+
+    @keyframes starPulse {
+      0%, 100% { opacity: 0.86; transform: scale(0.96); }
+      50% { opacity: 1; transform: scale(1.04); }
+    }
+
+    @keyframes fixBlink {
+      0%, 100% { opacity: 0.35; }
+      45%, 55% { opacity: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .orbit,
+      .course,
+      .star,
+      .fix {
+        animation: none;
+      }
+
+      .course {
+        stroke-dashoffset: 0;
+      }
+    }
+  </style>
+  <rect class="panel" width="360" height="96" rx="0" />
+  <g transform="translate(16 0)" filter="drop-shadow(0 0 14px rgba(91, 140, 255, 0.24))">
+    <circle class="ring" cx="48" cy="48" r="31" />
+    <circle class="orbit" cx="48" cy="48" r="26.75" />
+    <path class="bearing" d="M48 14.5v9.5M48 72v9.5M14.5 48H24M72 48h9.5" />
+    <path class="course" d="M29 61.5C36.5 45.5 44 43.25 48 48s11.25-6.5 19-20" />
+    <path class="star" d="M48 23l5.85 18.15L73 48l-19.15 6.85L48 73l-5.85-18.15L23 48l19.15-6.85L48 23Z" />
+    <circle class="core" cx="48" cy="48" r="3.6" />
+    <circle class="fix" cx="67" cy="28" r="2.35" />
+  </g>
+  <text class="word" x="112" y="48">Lodestar</text>
+  <text class="tagline" x="114" y="66">REQUIREMENT CHARTING</text>
+</svg>

@@ -487,7 +487,7 @@ function ArchWorkspace() {
           ) : (
             <>
               <div className="flex items-center justify-between border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[#7a8499]">
-                <span>// architecture.mmd · service topology</span>
+                <span>{"// architecture.mmd · service topology"}</span>
                 <span>generated 2 min ago · in revision</span>
               </div>
               <div className="relative min-h-0 flex-1 overflow-auto">

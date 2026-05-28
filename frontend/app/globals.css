@@ -86,6 +86,93 @@ body::before {
 .glow-approved { box-shadow: 0 0 12px 2px rgba(109, 220, 168, 0.4); }
 .glow-star    { box-shadow: 0 0 14px 2px rgba(91, 140, 255, 0.45); }
 
+.lodestar-logo-mark {
+  color: var(--polaris);
+  filter: drop-shadow(0 0 10px rgba(91, 140, 255, 0.22));
+}
+
+.lodestar-logo-mark svg {
+  height: 100%;
+  width: 100%;
+  overflow: visible;
+}
+
+.lodestar-logo-ring {
+  fill: color-mix(in oklab, var(--polaris) 8%, transparent);
+  stroke: color-mix(in oklab, var(--polaris) 36%, transparent);
+  stroke-width: 1.15;
+}
+
+.lodestar-logo-orbit {
+  fill: none;
+  stroke: var(--polaris);
+  stroke-dasharray: 2 7;
+  stroke-linecap: round;
+  stroke-width: 1.35;
+  opacity: 0.72;
+  transform-origin: 22px 22px;
+  animation: lodestar-orbit 7.5s linear infinite;
+}
+
+.lodestar-logo-bearing {
+  stroke: #4a5468;
+  stroke-linecap: square;
+  stroke-width: 1.1;
+}
+
+.lodestar-logo-course {
+  fill: none;
+  stroke: var(--approved);
+  stroke-dasharray: 48;
+  stroke-dashoffset: 48;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.45;
+  animation:
+    lodestar-course 1.8s cubic-bezier(0.2, 0.8, 0.2, 1) 280ms forwards,
+    lodestar-course-breathe 3.8s ease-in-out 2.1s infinite;
+}
+
+.lodestar-logo-star {
+  fill: color-mix(in oklab, var(--polaris) 92%, white);
+  opacity: 0.92;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: lodestar-star-pulse 2.8s ease-in-out infinite;
+}
+
+.lodestar-logo-core {
+  fill: #ffffff;
+}
+
+.lodestar-logo-fix {
+  fill: var(--approved);
+  animation: lodestar-fix-blink 2.4s ease-in-out infinite;
+}
+
+@keyframes lodestar-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes lodestar-course {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes lodestar-course-breathe {
+  0%, 100% { opacity: 0.72; }
+  50%      { opacity: 1; }
+}
+
+@keyframes lodestar-star-pulse {
+  0%, 100% { opacity: 0.86; transform: scale(0.96); }
+  50%      { opacity: 1; transform: scale(1.04); }
+}
+
+@keyframes lodestar-fix-blink {
+  0%, 100% { opacity: 0.35; }
+  45%, 55% { opacity: 1; }
+}
+
 /* staggered entrance reveal */
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
@@ -102,6 +189,24 @@ body::before {
   50%      { opacity: 1; }
 }
 .pulse-star { animation: pulse-star 2.2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lodestar-logo-orbit,
+  .lodestar-logo-course,
+  .lodestar-logo-star,
+  .lodestar-logo-fix,
+  .pulse-star,
+  .rise-1,
+  .rise-2,
+  .rise-3,
+  .rise-4 {
+    animation: none;
+  }
+
+  .lodestar-logo-course {
+    stroke-dashoffset: 0;
+  }
+}
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
