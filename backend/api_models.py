@@ -58,6 +58,24 @@ class PluginToggleRequest(BaseModel):
 
 
 # ============================================================
+#  ModelAdapter（GET /api/models）—— TopBar selector / 各 stage 操作的 model_choice
+# ============================================================
+class ModelAdapterResponse(BaseModel):
+    model_choice: str
+    description: str
+    is_available: bool
+    supports_multimodal: bool = False
+    max_context_tokens: int = 0
+    prompt_budget_tokens: int = 0
+    response_budget_tokens: int = 0
+    source_plugin: Optional[str] = None
+
+
+class ModelAdapterListResponse(BaseModel):
+    models: list[ModelAdapterResponse]
+
+
+# ============================================================
 #  Projects / threads（M1）
 # ============================================================
 class CreateProjectRequest(BaseModel):

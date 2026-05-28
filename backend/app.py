@@ -34,6 +34,8 @@ from api_models import (  # noqa: E402
     AttachmentListResponse,
     AttachmentResponse,
     CreateProjectRequest,
+    ModelAdapterListResponse,
+    ModelAdapterResponse,
     PluginListResponse,
     PluginProvides,
     PluginResponse,
@@ -183,6 +185,36 @@ async def get_plugins():
             )
         )
     return PluginListResponse(plugins=plugins)
+
+
+@app.get("/api/models", response_model=ModelAdapterListResponse)
+async def get_models():
+    """列出已註冊的 ModelAdapter（TopBar selector 用）。
+
+    is_available=False 的 adapter 仍會出現（讓 UI 可標示「環境缺 cli」），
+    使用者選 unavailable model 後仍可送 request，HarnessRunner 會回 model.unavailable error。
+    """
+    reg = _registry()
+    owner = {cid: pid for (pid, ctype, cid) in reg.contributions if ctype == "model_adapter"}
+    items: list[ModelAdapterResponse] = []
+    for choice, adapter in reg.model_adapters.items():
+        try:
+            available = bool(adapter.is_available())
+        except Exception:  # noqa: BLE001
+            available = False
+        items.append(ModelAdapterResponse(
+            model_choice=choice,
+            description=adapter.description,
+            is_available=available,
+            supports_multimodal=adapter.supports_multimodal,
+            max_context_tokens=adapter.max_context_tokens,
+            prompt_budget_tokens=adapter.prompt_budget_tokens,
+            response_budget_tokens=adapter.response_budget_tokens,
+            source_plugin=owner.get(choice),
+        ))
+    # 排序：可用優先、再按 model_choice 字母序，呈現穩定
+    items.sort(key=lambda m: (not m.is_available, m.model_choice))
+    return ModelAdapterListResponse(models=items)
 
 
 @app.get("/api/integrations")

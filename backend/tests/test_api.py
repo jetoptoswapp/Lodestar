@@ -56,3 +56,18 @@ def test_endpoints(tmp_db):
             {"stage_id": "architecture", "status": "draft"},
             {"stage_id": "stories", "status": "draft"},
         ]
+
+
+def test_get_models(tmp_db):
+    """GET /api/models 列出 builtin_models 註冊的 adapter；至少含 claude-cli。"""
+    with TestClient(appmod.app) as client:
+        r = client.get("/api/models").json()
+        choices = [m["model_choice"] for m in r["models"]]
+        assert "claude-cli" in choices, f"expected claude-cli in models, got {choices}"
+        cli = next(m for m in r["models"] if m["model_choice"] == "claude-cli")
+        # M1.3：supports_multimodal=True（透過 Read tool path-passing）
+        assert cli["supports_multimodal"] is True
+        assert cli["source_plugin"] == "builtin_models"
+        assert cli["max_context_tokens"] > 0
+        # is_available 視環境（CI 上沒 claude CLI），不強制；但 schema 內欄位必出現
+        assert isinstance(cli["is_available"], bool)
