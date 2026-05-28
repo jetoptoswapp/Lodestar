@@ -7,6 +7,7 @@ stage 操作 / workflow / agent / SSE 隨 M1+ 增補。
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -77,11 +78,17 @@ FRONTEND_PORT = 8724
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     migrations.migrate()
+    # M1.3：把 uploads 根目錄暴露給 claude-cli adapter（--add-dir + --allowedTools Read）。
+    # adapter 在 plugin_loader.load_all 之前 import，但實際 invoke 才讀 env，所以這裡先設安全。
+    uploads_root = dal.uploads_dir()
+    uploads_root.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("LODESTAR_UPLOADS_DIR", str(uploads_root))
     registry = plugin_loader.load_all()
     app.state.registry = registry
     app.state.engine = WorkflowEngine(registry)
     loaded = [p.manifest.id for p in registry.loaded_plugins if p.loaded]
     log.info("startup complete — plugins loaded: %s", loaded or "(none)")
+    log.info("LODESTAR_UPLOADS_DIR=%s", os.environ["LODESTAR_UPLOADS_DIR"])
     yield
 
 

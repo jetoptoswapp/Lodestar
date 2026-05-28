@@ -122,10 +122,10 @@ def test_delete_unknown_attachment_404(tmp_db):
 
 
 # ============================================================
-#  PRD prompt injection（用 mock adapter 捕獲 prompt，驗證附件內容有進去）
+#  PRD prompt injection（M1.3 path-passing：列 abs_path + READ 指令）
 # ============================================================
-def test_prd_prompt_includes_attachment_content(tmp_db):
-    """upload 一個 md 附件，然後 generate PRD，確認 prompt 內含附件內容。"""
+def test_prd_prompt_passes_attachment_path(tmp_db):
+    """上傳 md 附件 → generate PRD → prompt 含絕對路徑與 READ 指令（path-passing）。"""
     from plugin_api import ModelAdapter
     import plugin_loader as L
     from persistence import dal
@@ -147,24 +147,33 @@ def test_prd_prompt_includes_attachment_content(tmp_db):
     )
 
     dal.create_project("t1", "test")
-    # 直接寫 attachment row + 檔案
     uploads = dal.uploads_dir() / "t1"
     uploads.mkdir(parents=True, exist_ok=True)
-    (uploads / "abc123.md").write_text("# 競品調研\n\nApple Pay 對 iOS 轉換率關鍵", encoding="utf-8")
+    rel = "t1/abc123.md"
+    (dal.uploads_dir() / rel).write_text("# 競品調研\n\nApple Pay 對 iOS 轉換率關鍵",
+                                          encoding="utf-8")
     dal.add_attachment(
         file_id="abc123", thread_id="t1", stage_id="prd",
         filename="research.md", mime="text/markdown", size_bytes=64,
-        content_path="t1/abc123.md",
-        parsed_text="# 競品調研\n\nApple Pay 對 iOS 轉換率關鍵",
+        content_path=rel,
+        parsed_text=None,  # M1.3：parser 不再強制 inline；handler 走 path
     )
 
     engine = WorkflowEngine(reg)
     engine.dispatch(thread_id="t1", stage_id="prd", op="generate")
 
-    # 驗證附件內容被注入 prompt
-    assert "competitor".lower() in captured["prompt"].lower() or "競品調研" in captured["prompt"]
-    assert "Apple Pay" in captured["prompt"]
-    assert "<<< attachment: research.md" in captured["prompt"]
+    prompt = captured["prompt"]
+    # 1. READ 指令在
+    assert "READ" in prompt and "Read tool" in prompt
+    # 2. 絕對路徑在
+    expected_abs = str(dal.uploads_dir() / rel)
+    assert expected_abs in prompt
+    # 3. 原始檔名 / mime 也標示
+    assert "research.md" in prompt
+    assert "text/markdown" in prompt
+    # 4. 不再 inline parsed_text（path-passing 應該不含內容）
+    assert "Apple Pay" not in prompt
+    assert "<<< attachment:" not in prompt
 
 
 def test_prd_prompt_without_attachments_has_marker(tmp_db):
@@ -188,3 +197,71 @@ def test_prd_prompt_without_attachments_has_marker(tmp_db):
     engine = WorkflowEngine(reg)
     engine.dispatch(thread_id="t2", stage_id="prd", op="generate")
     assert "no attached files" in captured["prompt"].lower()
+
+
+# ============================================================
+#  _format_attachments unit tests（M1.3 path-passing vs inline fallback）
+# ============================================================
+def test_format_attachments_path_list():
+    """所有 attachment 都有 abs_path → path-list 格式 + READ 指令，無 inline 內容。"""
+    from plugins.builtin_core_stages.prd_stage import _format_attachments
+
+    out = _format_attachments([
+        {"abs_path": "/srv/uploads/t1/aaa.png", "filename": "screen.png",
+         "mime": "image/png", "size_bytes": 12345,
+         "parsed_text": "[OCR text that should NOT appear]"},
+        {"abs_path": "/srv/uploads/t1/bbb.pdf", "filename": "spec.pdf",
+         "mime": "application/pdf", "size_bytes": 99999,
+         "parsed_text": "[PDF text that should NOT appear]"},
+    ])
+
+    # READ 指令在
+    assert "READ" in out and "Read tool" in out
+    # 兩條 path 在
+    assert "/srv/uploads/t1/aaa.png" in out
+    assert "/srv/uploads/t1/bbb.pdf" in out
+    # 原始檔名 / mime / size 在
+    assert "screen.png" in out and "image/png" in out and "12345" in out
+    assert "spec.pdf" in out and "application/pdf" in out
+    # parsed_text 不應該被列出（path-passing 模式）
+    assert "OCR text" not in out
+    assert "PDF text" not in out
+    # 不應該有 inline marker
+    assert "<<< attachment:" not in out
+
+
+def test_format_attachments_inline_fallback():
+    """缺 abs_path 時退回 inline parsed_text + marker（保留 M1.1 行為）。"""
+    from plugins.builtin_core_stages.prd_stage import _format_attachments
+
+    out = _format_attachments([
+        {"filename": "notes.txt", "mime": "text/plain", "size_bytes": 42,
+         "parsed_text": "Apple Pay 對 iOS 轉換率關鍵"},
+    ])
+
+    assert "<<< attachment: notes.txt" in out
+    assert "Apple Pay" in out
+    assert "<<< end of notes.txt >>>" in out
+    # 不該出現 path-list 模式的 READ 指令
+    assert "Read tool" not in out
+
+
+def test_format_attachments_mixed_falls_back():
+    """有一筆缺 abs_path → 整批走 inline fallback（保守策略）。"""
+    from plugins.builtin_core_stages.prd_stage import _format_attachments
+
+    out = _format_attachments([
+        {"abs_path": "/srv/uploads/t1/a.md", "filename": "a.md",
+         "mime": "text/markdown", "size_bytes": 10, "parsed_text": "AAA content"},
+        {"filename": "b.md", "mime": "text/markdown",
+         "size_bytes": 10, "parsed_text": "BBB content"},
+    ])
+    assert "<<< attachment: a.md" in out
+    assert "AAA content" in out
+    assert "BBB content" in out
+    assert "Read tool" not in out
+
+
+def test_format_attachments_empty():
+    from plugins.builtin_core_stages.prd_stage import _format_attachments
+    assert _format_attachments([]) == "(no attached files)"
