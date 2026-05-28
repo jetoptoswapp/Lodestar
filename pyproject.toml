@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# 讓 pytest 從專案根執行時，backend/ 在 import path（plugin_api.* / persistence.* / plugin_*）
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+addopts = "-q"

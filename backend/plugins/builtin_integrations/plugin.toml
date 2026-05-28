@@ -1,0 +1,19 @@
+[plugin]
+id = "builtin_integrations"
+name = "Built-in Delivery Integrations"
+version = "1.0.0"
+description = "GitHub / Jira / GitLab delivery targets (preview-before-publish)"
+host_api = ">=1.0,<2.0"
+entry_module = "plugins.builtin_integrations.register"
+requires_plugins = []
+
+# 只宣告「貢獻什麼」供 loader 預檢 + UI 預覽；真正的 spec 在 register() 建構
+[[contributes.integration]]
+id = "github"
+label = "GitHub"
+[[contributes.integration]]
+id = "jira"
+label = "Jira"
+[[contributes.integration]]
+id = "gitlab"
+label = "GitLab"
