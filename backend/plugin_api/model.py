@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 # ---- sync one-shot（stage 生成用）----
+#
+# Multimodal extension（spec §6.7 擴展，M1.2 落地 contract，先預備、不強制走）:
+#   adapter 若支援原生 multimodal（image / PDF / docx 等內容直接給 model 讀），
+#   設 supports_multimodal=True 並提供 invoke_messages。Dispatcher 在 ctx 有附件時
+#   偵測 capability：True → 走 invoke_messages(list[content_blocks])，False → 退回
+#   本地 parse 後 inline 進 invoke(prompt_string)。
 @dataclass(frozen=True)
 class ModelAdapter:
     model_choice: str
@@ -13,6 +19,9 @@ class ModelAdapter:
     max_context_tokens: int
     prompt_budget_tokens: int
     response_budget_tokens: int
+    # ---- multimodal（可選） ----
+    supports_multimodal: bool = False
+    invoke_messages: Optional[Callable[[list], str]] = None
 
 
 # ---- async long-running（M5 實作 agent 用）----

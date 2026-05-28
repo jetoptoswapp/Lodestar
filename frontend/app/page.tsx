@@ -664,19 +664,29 @@ function PrdWorkspace({
             <IconBtn onClick={onOpenFs} title="全螢幕閱讀"><ExpandIcon /></IconBtn>
           </>
         } />
-        <AttachmentZone
-          thread={thread}
-          attachments={attachments}
-          uploading={uploading}
-          onUpload={onUploadAttachment}
-          onDelete={onDeleteAttachment}
-        />
+        {hasContent && (
+          <AttachmentStrip
+            thread={thread}
+            attachments={attachments}
+            uploading={uploading}
+            onUpload={onUploadAttachment}
+            onDelete={onDeleteAttachment}
+          />
+        )}
         <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
           <div className="min-h-0 flex-1 overflow-y-auto">
             {hasContent ? (
               <PrdArtifactView artifact={artifact} />
             ) : (
-              <PrdEmptyState busy={busy} thread={thread} onGenerate={onGenerate} />
+              <PrdEmptyState
+                busy={busy}
+                thread={thread}
+                onGenerate={onGenerate}
+                attachments={attachments}
+                uploading={uploading}
+                onUpload={onUploadAttachment}
+                onDelete={onDeleteAttachment}
+              />
             )}
           </div>
         </article>
@@ -707,32 +717,85 @@ function PrdWorkspace({
   );
 }
 
-function PrdEmptyState({ busy, thread, onGenerate }: { busy: PrdBusy; thread: string | null; onGenerate: () => void }) {
+function PrdEmptyState({
+  busy, thread, onGenerate,
+  attachments, uploading, onUpload, onDelete,
+}: {
+  busy: PrdBusy;
+  thread: string | null;
+  onGenerate: () => void;
+  attachments: AttachmentInfo[];
+  uploading: boolean;
+  onUpload: (f: File) => void;
+  onDelete: (fileId: string) => void;
+}) {
   return (
-    <div className="flex h-full items-center justify-center px-10 py-12">
-      <div className="max-w-md text-center">
-        <div className="mx-auto mb-5 grid h-14 w-14 place-items-center border-2 border-[var(--polaris)] font-[family-name:var(--font-display)] text-[22px] font-semibold text-[var(--polaris)]">
-          01
+    <div className="flex h-full items-start justify-center overflow-y-auto px-10 py-10">
+      <div className="w-full max-w-xl">
+        {/* Heading */}
+        <div className="text-center">
+          <div className="mx-auto mb-5 grid h-14 w-14 place-items-center border-2 border-[var(--polaris)] font-[family-name:var(--font-display)] text-[22px] font-semibold text-[var(--polaris)]">
+            01
+          </div>
+          <h3 className="font-[family-name:var(--font-display)] text-[26px] font-semibold text-[#e6ecf5]">
+            尚未標繪
+          </h3>
+          <p className="mt-2 text-[13px] leading-6 text-[#7a8499]">
+            PRD 是 pipeline 的起點。上傳既有需求文件作為 SA 的參考，
+            <br />
+            或直接點下方按鈕讓 SA 與你對話收斂。
+          </p>
         </div>
-        <h3 className="font-[family-name:var(--font-display)] text-[26px] font-semibold text-[#e6ecf5]">
-          尚未標繪
-        </h3>
-        <p className="mt-2 text-[13px] leading-6 text-[#7a8499]">
-          PRD 是 pipeline 的起點。點下方按鈕，
-          <br />
-          系統分析師（claude-cli）會與你對話／生成完整 PRD。
-        </p>
-        <div className="mx-auto my-6 h-px w-20 bg-[var(--rule-dark)]" />
-        <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
-          agent: system_analyst · model: claude-cli
+
+        {/* Attachments section（大型 drop zone）*/}
+        <div className="mt-8">
+          <div className="mb-3 flex items-baseline justify-between">
+            <h4 className="font-[family-name:var(--font-display)] text-[15px] font-semibold text-[#e6ecf5]">
+              參考文件
+              <span className="ml-2 font-[family-name:var(--font-mono)] text-[11px] font-normal text-[var(--ink-muted)]">
+                （可選）
+              </span>
+            </h4>
+            {attachments.length > 0 && (
+              <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--polaris)]">
+                {attachments.length} 個檔案
+              </span>
+            )}
+          </div>
+          <AttachmentDropZone
+            thread={thread}
+            uploading={uploading}
+            onUpload={onUpload}
+            hasAttachments={attachments.length > 0}
+          />
+          {attachments.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {attachments.map((a) => (
+                <AttachmentChip key={a.file_id} a={a} onDelete={() => onDelete(a.file_id)} />
+              ))}
+            </div>
+          )}
         </div>
-        <button
-          onClick={onGenerate}
-          disabled={!thread || !!busy}
-          className="border-2 border-[var(--polaris)] bg-[var(--polaris)] px-8 py-3 font-[family-name:var(--font-mono)] text-[12px] uppercase tracking-[0.22em] text-white transition hover:bg-[var(--polaris-hi)] disabled:opacity-50"
-        >
-          {busy === "generate" ? "★  charting…（30–60s）" : "✦  chart PRD"}
-        </button>
+
+        {/* Generate CTA */}
+        <div className="mt-10 text-center">
+          <div className="mx-auto mb-5 h-px w-24 bg-[var(--rule-dark)]" />
+          <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            agent: system_analyst · model: claude-cli
+          </div>
+          <button
+            onClick={onGenerate}
+            disabled={!thread || !!busy}
+            className="border-2 border-[var(--polaris)] bg-[var(--polaris)] px-8 py-3 font-[family-name:var(--font-mono)] text-[12px] uppercase tracking-[0.22em] text-white transition hover:bg-[var(--polaris-hi)] disabled:opacity-50"
+          >
+            {busy === "generate" ? "★  charting…（30–60s）" : "✦  chart PRD"}
+          </button>
+          {attachments.length > 0 && (
+            <p className="mt-3 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+              SA 會參考上述 {attachments.length} 個文件生成 PRD
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -750,8 +813,11 @@ function PrdArtifactView({ artifact }: { artifact: string }) {
   );
 }
 
-// ============================== Attachment zone（M1.1）==============================
-function AttachmentZone({
+// ============================== Attachments：strip（compact）+ drop zone（大型）==============================
+const ATTACH_ACCEPT = ".md,.markdown,.txt,.csv,.tsv,.json,.xml,.yaml,.yml,.html,.log,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,.bmp";
+
+/** 已有 PRD 時的 compact strip：cobalt-accent border、明顯的「+ 加檔案」按鈕。 */
+function AttachmentStrip({
   thread, attachments, uploading, onUpload, onDelete,
 }: {
   thread: string | null;
@@ -760,65 +826,93 @@ function AttachmentZone({
   onUpload: (f: File) => void;
   onDelete: (fileId: string) => void;
 }) {
-  const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-
   if (!thread) return null;
 
-  const handleSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) onUpload(f);
-    e.target.value = "";  // allow re-selecting same file
-  };
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    const f = e.dataTransfer.files[0];
-    if (f) onUpload(f);
-  };
+  const handle = (file: File | undefined) => file && onUpload(file);
+
+  return (
+    <div className="mb-3 flex items-center gap-3 border-l-2 border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_6%,transparent)] px-3 py-2">
+      <div className="flex shrink-0 items-baseline gap-2">
+        <span className="text-[14px]">📎</span>
+        <span className="font-[family-name:var(--font-display)] text-[13px] font-semibold text-[#e6ecf5]">
+          參考文件
+        </span>
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          · {attachments.length}
+        </span>
+      </div>
+
+      <div className="flex flex-1 flex-wrap items-center gap-1.5">
+        {attachments.length === 0 ? (
+          <span className="font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+            尚未上傳；點右側加檔案讓 SA 參考。
+          </span>
+        ) : (
+          attachments.map((a) => (
+            <AttachmentChip key={a.file_id} a={a} onDelete={() => onDelete(a.file_id)} />
+          ))
+        )}
+      </div>
+
+      <button
+        onClick={() => !uploading && fileInput.current?.click()}
+        disabled={uploading}
+        className="shrink-0 border border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] px-3 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--polaris)] transition hover:bg-[color-mix(in_oklab,var(--polaris)_32%,transparent)] disabled:opacity-50"
+      >
+        {uploading ? "uploading…" : "＋ 加檔案"}
+      </button>
+      <input
+        ref={fileInput}
+        type="file"
+        onChange={(e) => { handle(e.target.files?.[0]); e.target.value = ""; }}
+        className="hidden"
+        accept={ATTACH_ACCEPT}
+      />
+    </div>
+  );
+}
+
+/** Empty state 內的大型 drop zone：拖放 + 點擊選檔的主要入口。 */
+function AttachmentDropZone({
+  thread, uploading, onUpload, hasAttachments,
+}: {
+  thread: string | null;
+  uploading: boolean;
+  onUpload: (f: File) => void;
+  hasAttachments: boolean;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  if (!thread) return null;
+  const handle = (file: File | undefined) => file && onUpload(file);
 
   return (
     <div
-      className={`mb-3 border ${
-        dragging
-          ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_8%,transparent)]"
-          : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40"
-      }`}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
-      onDrop={handleDrop}
+      onDrop={(e) => { e.preventDefault(); setDragging(false); handle(e.dataTransfer.files[0]); }}
+      onClick={() => !uploading && fileInput.current?.click()}
+      className={`cursor-pointer border-2 border-dashed px-6 py-8 text-center transition ${
+        dragging
+          ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_14%,transparent)]"
+          : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/30 hover:border-[var(--polaris)] hover:bg-[var(--bg-elev)]/60"
+      }`}
     >
-      <div className="flex items-center justify-between border-b border-[var(--rule-dark)] px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
-        <span>attachments · {attachments.length}</span>
-        <div className="flex items-center gap-2">
-          <span className="text-[var(--ink-muted)]">md · pdf · docx · txt · image</span>
-          <button
-            onClick={() => fileInput.current?.click()}
-            disabled={uploading}
-            className="border border-dashed border-[var(--rule-dark)] px-3 py-0.5 transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:opacity-50"
-          >
-            {uploading ? "uploading…" : "📎 add file"}
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            onChange={handleSelect}
-            className="hidden"
-            accept=".md,.markdown,.txt,.csv,.tsv,.json,.xml,.yaml,.yml,.html,.log,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,.bmp"
-          />
-        </div>
+      <div className="text-[30px] leading-none">📎</div>
+      <div className="mt-2 font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">
+        {uploading ? "上傳中…" : hasAttachments ? "再加一個檔案" : "拖放或點擊選檔"}
       </div>
-      {attachments.length === 0 ? (
-        <div className="px-3 py-4 text-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--ink-muted)]">
-          拖放需求文件 / PDF / DOCX / 圖片到這裡，或點右上「📎 add file」
-        </div>
-      ) : (
-        <div className="flex flex-wrap gap-1.5 px-3 py-2.5">
-          {attachments.map((a) => (
-            <AttachmentChip key={a.file_id} a={a} onDelete={() => onDelete(a.file_id)} />
-          ))}
-        </div>
-      )}
+      <div className="mt-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+        md · txt · pdf · docx · png · jpg
+      </div>
+      <input
+        ref={fileInput}
+        type="file"
+        onChange={(e) => { handle(e.target.files?.[0]); e.target.value = ""; }}
+        className="hidden"
+        accept={ATTACH_ACCEPT}
+      />
     </div>
   );
 }
