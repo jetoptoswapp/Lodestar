@@ -2,7 +2,7 @@
 id = "builtin_core_stages"
 name = "Core Requirement Stages"
 version = "1.0.0"
-description = "PRD / Architecture / Stories 內建 stages（M1：先做 PRD；M2 補 Architecture / Stories）"
+description = "PRD / Architecture / Stories 內建 stages + default workflow（M2 完成版）"
 host_api = ">=1.0,<2.0"
 entry_module = "plugins.builtin_core_stages.register"
 requires_plugins = []
@@ -11,6 +11,14 @@ requires_plugins = []
 [[contributes.stage]]
 id = "prd"
 label = "PRD"
+
+[[contributes.stage]]
+id = "architecture"
+label = "架構"
+
+[[contributes.stage]]
+id = "stories"
+label = "使用者故事"
 
 [[contributes.workflow]]
 id = "default"

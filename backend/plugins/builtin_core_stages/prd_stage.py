@@ -23,6 +23,12 @@ from plugin_api import (
 )
 from plugin_api.harness import HarnessContext
 
+from ._shared import (
+    format_attachments as _format_attachments,
+    format_conversation as _shared_format_conversation,
+    format_focus_section,
+)
+
 
 # ============================================================
 #  Validator —— structural sanity（warn-only；spec §11）
@@ -86,55 +92,12 @@ def _strip_sentinel(text: str) -> Tuple[str, bool]:
 
 
 def _format_conversation(conv: tuple) -> str:
-    """把 ((role, content), ...) 轉成 prompt 內可讀的對話形式。"""
-    if not conv:
-        return "(no prior conversation)"
-    lines: list[str] = []
-    for role, content in conv:
-        speaker = "User" if role == "user" else "SA"
-        lines.append(f"{speaker}:\n{content}")
-    return "\n\n".join(lines)
+    """SA 對話格式（assistant 顯示為 SA）。沿用 _shared.format_conversation。"""
+    return _shared_format_conversation(conv, ai_label="SA")
 
 
-def _format_attachments(attachments: list) -> str:
-    """把 ctx.metadata['attachments'] 渲染成 prompt 可讀的 block。
-
-    M1.3 path-passing（每筆 attachment 都有 abs_path）：列絕對路徑 + Read 指令，
-    由 Claude 自己用 Read tool 讀檔——支援原生 vision（圖片）/ PDF / DOCX，
-    不必本地 OCR / parse。
-
-    Fallback（缺 abs_path，例如未來不能 Read 的 adapter）：退回 inline parsed_text。
-    """
-    if not attachments:
-        return "(no attached files)"
-
-    all_have_path = all(a.get("abs_path") for a in attachments)
-    if all_have_path:
-        lines: list[str] = [
-            "READ the following files NOW with the Read tool BEFORE answering.",
-            "Images use native vision; PDFs and DOCX read via the same Read tool.",
-            "Treat their contents as primary reference material; cite them in the PRD.",
-            "",
-        ]
-        for a in attachments:
-            fname = a.get("filename", "(unnamed)")
-            mime = a.get("mime") or "unknown"
-            size = a.get("size_bytes", 0)
-            lines.append(
-                f"- {a['abs_path']}  ·  original={fname}  ·  mime={mime}  ·  {size} bytes"
-            )
-        return "\n".join(lines)
-
-    # Fallback：inline parsed_text（保留 M1.1 行為，給不支援 Read tool 的 adapter）
-    blocks: list[str] = []
-    for a in attachments:
-        fname = a.get("filename", "(unnamed)")
-        mime = a.get("mime") or "unknown"
-        size = a.get("size_bytes", 0)
-        header = f"<<< attachment: {fname}  ·  mime={mime}  ·  {size} bytes >>>"
-        body = a.get("parsed_text") or f"[未解析：{a.get('parse_error') or 'unsupported'}]"
-        blocks.append(f"{header}\n{body}\n<<< end of {fname} >>>")
-    return "\n\n".join(blocks)
+# _format_attachments：直接用 _shared.format_attachments（M1.3 path-passing + M1.1 inline fallback）。
+# import 時已 alias 為 _format_attachments，這裡不再重寫。
 
 
 # ============================================================
@@ -144,7 +107,7 @@ def _prd_generate(ctx: StageContext, run) -> StageResult:
     """PRD generate：空白或基於對話 → 用 sa_chat 模板呼叫 model。"""
     sa_system = run.render_prompt("sa_system.md", {})
     conversation_text = _format_conversation(ctx.conversation)
-    focus_block = f"\n[Focus on section: {ctx.focus_section}]\n" if ctx.focus_section else ""
+    focus_block = format_focus_section(ctx.focus_section)
 
     prompt = run.render_prompt("sa_chat.md", {
         "SYSTEM_PROMPT": sa_system,
@@ -197,7 +160,7 @@ def _prd_chat(ctx: StageContext, run) -> StageChatResult:
         sa_system = sa_system + "\n\n" + amendment
 
     conversation_text = _format_conversation(ctx.conversation)
-    focus_block = f"\n[Focus on section: {ctx.focus_section}]\n" if ctx.focus_section else ""
+    focus_block = format_focus_section(ctx.focus_section)
 
     prompt = run.render_prompt("sa_chat.md", {
         "SYSTEM_PROMPT": sa_system,

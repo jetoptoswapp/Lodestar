@@ -148,3 +148,101 @@ def test_dispatch_chat_appends_messages_and_optional_artifact(tmp_db):
     out = engine.dispatch(thread_id="t1", stage_id="prd", op="chat",
                           user_input="尖峰 5000")
     assert "Product Requirements Document" in (dal.get_artifact("t1", "prd") or "")
+
+
+# ============ M2：下游 reset（PRD → architecture → stories）============
+_FAKE_ARCH = """**Project tier**: T1 — fake arch.
+
+## Module Layout
+
+```
+app/
+```
+
+```mermaid
+graph TD
+  A --> B
+```
+"""
+
+_FAKE_STORIES = """# X — User Stories
+
+## Epic 1: y
+
+### Story 1.1 — z
+
+**Acceptance Criteria**
+- 1
+
+**Senior RD Estimate**
+- 1
+"""
+
+
+def test_dispatch_blocks_when_upstream_missing(tmp_db):
+    """architecture generate 在 PRD 缺失時應該 raise MissingDependencyError（spec §11）。"""
+    import plugin_loader as L
+    from persistence import dal
+
+    reg = L.load_all()
+    _install_mock_adapter(reg, _FAKE_ARCH)
+    dal.create_project("t1", "test")
+    engine = WorkflowEngine(reg)
+    with pytest.raises(MissingDependencyError) as exc_info:
+        engine.dispatch(thread_id="t1", stage_id="architecture", op="generate")
+    assert exc_info.value.missing_upstream == "prd"
+
+
+def test_dispatch_downstream_reset_chain(tmp_db):
+    """改 PRD → 已 approved 的 architecture / stories 都 reset 為 needs_revision。"""
+    import plugin_loader as L
+    from persistence import dal
+
+    reg = L.load_all()
+    dal.create_project("t1", "test")
+    # 先讓 PRD / Arch / Stories 都 approved
+    dal.upsert_artifact("t1", "prd", _FAKE_PRD)
+    dal.set_stage_status("t1", "prd", "approved")
+    dal.upsert_artifact("t1", "architecture", _FAKE_ARCH)
+    dal.set_stage_status("t1", "architecture", "approved")
+    dal.upsert_artifact("t1", "stories", _FAKE_STORIES)
+    dal.set_stage_status("t1", "stories", "approved")
+
+    # 改 PRD（refine）→ architecture / stories 應自動降為 needs_revision
+    _install_mock_adapter(reg, _FAKE_PRD.replace("Fake PRD", "Edited PRD"))
+    engine = WorkflowEngine(reg)
+    out = engine.dispatch(
+        thread_id="t1", stage_id="prd", op="refine",
+        instruction="加一條 NFR",
+    )
+    assert set(out["downstream_reset"]) == {"architecture", "stories"}
+    assert dal.get_stage_status("t1", "architecture") == "needs_revision"
+    assert dal.get_stage_status("t1", "stories") == "needs_revision"
+    # PRD 本身原本 approved → refine 後 status 保留 approved（spec §11：approved 不自動降 draft）
+    assert dal.get_stage_status("t1", "prd") == "approved"
+
+
+def test_dispatch_intermediate_change_resets_only_downstream(tmp_db):
+    """改 architecture（不動 PRD）→ 只有 stories reset，PRD 不動。"""
+    import plugin_loader as L
+    from persistence import dal
+
+    reg = L.load_all()
+    dal.create_project("t1", "test")
+    dal.upsert_artifact("t1", "prd", _FAKE_PRD)
+    dal.set_stage_status("t1", "prd", "approved")
+    dal.upsert_artifact("t1", "architecture", _FAKE_ARCH)
+    dal.set_stage_status("t1", "architecture", "approved")
+    dal.upsert_artifact("t1", "stories", _FAKE_STORIES)
+    dal.set_stage_status("t1", "stories", "approved")
+
+    _install_mock_adapter(reg, _FAKE_ARCH.replace("fake arch", "edited arch"))
+    engine = WorkflowEngine(reg)
+    out = engine.dispatch(
+        thread_id="t1", stage_id="architecture", op="refine",
+        instruction="加 cache layer",
+    )
+    assert out["downstream_reset"] == ["stories"]
+    assert dal.get_stage_status("t1", "stories") == "needs_revision"
+    # 上游 PRD 不動
+    assert dal.get_stage_status("t1", "prd") == "approved"
