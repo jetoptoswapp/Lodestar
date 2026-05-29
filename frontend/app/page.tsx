@@ -1380,6 +1380,8 @@ function WorkflowSwitcher({ workflows, currentId, onChange }: {
   }, [open]);
 
   // currentId 為 null → effective workflow 是 "default"（lazy fallback）
+  // 缺口6：區分 null（未綁定 → lazy fallback default）vs 真的綁了某個 workflow
+  const isUnbound = currentId === null;
   const effectiveId = currentId ?? "default";
   return (
     <div ref={ref} className="relative inline-block">
@@ -1388,25 +1390,45 @@ function WorkflowSwitcher({ workflows, currentId, onChange }: {
         className="inline-flex items-center gap-1 border border-transparent px-1 text-[var(--polaris)] transition hover:border-[var(--rule-dark)] hover:bg-[var(--bg-elev)]"
       >
         <span>{effectiveId}</span>
+        {isUnbound && (
+          <span className="font-[family-name:var(--font-mono)] text-[8px] uppercase tracking-wider text-[var(--ink-muted)]">(auto)</span>
+        )}
         <svg viewBox="0 0 10 10" width="9" height="9" className={`transition ${open ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.4">
           <path d="M2 4 L5 7 L8 4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
       {open && (
-        <div className="absolute left-0 top-[calc(100%+6px)] z-40 min-w-[260px] border border-[var(--paper-edge)] bg-[var(--paper)] shadow-anvil">
+        <div className="absolute left-0 top-[calc(100%+6px)] z-40 min-w-[280px] border border-[var(--paper-edge)] bg-[var(--paper)] shadow-anvil">
           <div className="border-b border-[var(--rule)] px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
             切換 thread 的 workflow
           </div>
           <ul className="max-h-[50vh] overflow-y-auto">
+            {/* 解除綁定 → lazy default */}
+            <li>
+              <button
+                onClick={() => { onChange(null); setOpen(false); }}
+                className={`flex w-full items-baseline gap-2 border-l-2 px-3 py-2 text-left transition ${
+                  isUnbound
+                    ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)]"
+                    : "border-transparent hover:bg-[var(--bg-elev)] hover:border-[#404a5b]"
+                }`}
+              >
+                <code className={`font-[family-name:var(--font-mono)] text-[11.5px] ${isUnbound ? "text-[var(--polaris)]" : "text-[#e6ecf5]"}`}>(auto)</code>
+                <span className="font-[family-name:var(--font-sans)] text-[11.5px] text-[#cdd4df]">未綁定 · 自動用 default</span>
+                {isUnbound && <span className="ml-auto font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[var(--polaris)]">current</span>}
+              </button>
+            </li>
+            <li className="border-t border-[var(--rule-dark)]" />
             {workflows.length === 0 && (
               <li className="px-3 py-2 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">loading…</li>
             )}
             {workflows.map((w) => {
-              const selected = w.id === effectiveId;
+              // 只有「明確綁定」才高亮（isUnbound 時即使 effectiveId==default 也不在此高亮）
+              const selected = !isUnbound && w.id === effectiveId;
               return (
                 <li key={w.id}>
                   <button
-                    onClick={() => { onChange(w.id === "default" ? null : w.id); setOpen(false); }}
+                    onClick={() => { onChange(w.id); setOpen(false); }}
                     className={`flex w-full items-baseline gap-2 border-l-2 px-3 py-2 text-left transition ${
                       selected
                         ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)]"
@@ -2676,6 +2698,89 @@ function SubagentPane({ abbr, color, name, status, stats, logs }: {
 // ============================== Workflows view（M3：API-driven CRUD）==============================
 type WorkflowDraft = Omit<Workflow, "source" | "source_plugin" | "created_at">;
 
+// 缺口1：NewWorkflowModal —— 取代 window.prompt，一次收 id + label + description
+function NewWorkflowModal({ open, existingIds, onSubmit, onCancel }: {
+  open: boolean;
+  existingIds: string[];
+  onSubmit: (id: string, label: string, description: string) => void;
+  onCancel: () => void;
+}) {
+  const [id, setId] = useState("");
+  const [label, setLabel] = useState("");
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const idRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setId(""); setLabel(""); setDescription(""); setError(null);
+    setTimeout(() => idRef.current?.focus(), 50);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [open, onCancel]);
+
+  if (!open) return null;
+
+  const submit = () => {
+    const tid = id.trim();
+    if (!tid) return setError("workflow id 不可為空");
+    if (!/^[a-z0-9_-]+$/i.test(tid)) return setError("id 只允許英數 / 底線 / 連字號");
+    if (existingIds.includes(tid)) return setError(`id「${tid}」已存在`);
+    onSubmit(tid, label.trim() || tid, description.trim());
+  };
+
+  const fc = "w-full border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2 font-[family-name:var(--font-mono)] text-[12.5px] text-[#e6ecf5] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--polaris)]";
+
+  return (
+    <div
+      className="rise-1 fixed inset-0 z-50 grid place-items-center bg-[var(--bg)]/72 px-4 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+      role="dialog" aria-modal="true"
+    >
+      <div className="shadow-anvil paper-texture relative w-full max-w-md border border-[var(--paper-edge)] bg-[var(--paper)]">
+        <div className="border-b border-[var(--rule)] px-6 py-4">
+          <h2 className="font-[family-name:var(--font-display)] text-[18px] font-semibold leading-tight text-[#e6ecf5]">新建 workflow</h2>
+          <p className="mt-1.5 font-[family-name:var(--font-mono)] text-[10.5px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">POST /api/workflows</p>
+        </div>
+        <div className="space-y-4 px-6 py-5">
+          {error && (
+            <div className="border border-[#f47171]/40 bg-[#f47171]/10 px-3 py-2 font-[family-name:var(--font-mono)] text-[11px] text-[#f47171]">{error}</div>
+          )}
+          <div>
+            <label className="mb-1 block font-[family-name:var(--font-mono)] text-[10.5px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">id<span className="ml-1 text-[#f47171]">*</span></label>
+            <input ref={idRef} type="text" value={id} onChange={(e) => setId(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+              placeholder="e.g. checkout-flow（建立後不能改）" className={fc} />
+          </div>
+          <div>
+            <label className="mb-1 block font-[family-name:var(--font-mono)] text-[10.5px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">label</label>
+            <input type="text" value={label} onChange={(e) => setLabel(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+              placeholder="顯示名稱（留空則用 id）" className={fc} />
+          </div>
+          <div>
+            <label className="mb-1 block font-[family-name:var(--font-mono)] text-[10.5px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">description</label>
+            <input type="text" value={description} onChange={(e) => setDescription(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+              placeholder="一句話描述" className={fc} />
+          </div>
+          <p className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">建立後進編輯模式加 stage · ↵ 提交 · esc 取消</p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--rule)] bg-[var(--bg-elev)]/30 px-5 py-3">
+          <button onClick={onCancel} className="border border-[var(--rule-dark)] bg-transparent px-4 py-1.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[#404a5b] hover:bg-[var(--bg-elev)]">取消</button>
+          <button onClick={submit} className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-1.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.2em] text-white transition hover:bg-[var(--polaris-hi)]">建立並編輯</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WorkflowsView({
   workflows, agents, availableStages, onRefresh, onDelete, onSetError,
 }: {
@@ -2689,18 +2794,21 @@ function WorkflowsView({
   const [pickedId, setPickedId] = useState<string>(() => workflows[0]?.id ?? "default");
   const [draft, setDraft] = useState<WorkflowDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [newModalOpen, setNewModalOpen] = useState(false);   // 缺口1：取代 window.prompt
 
   // 切到 user workflow → 建立 draft 副本（builtin 只 view）
   const picked = workflows.find((w) => w.id === pickedId) ?? workflows[0];
   const isEditable = picked?.source === "user";
   const inEditMode = draft !== null;
 
-  // 切換 workflow 時，清掉舊 draft
-  useEffect(() => { setDraft(null); }, [pickedId]);
-
-  // 如果 list 變了但 picked 不在了，挑第一個
+  // 切換 workflow 時清掉舊 draft —— 但若 draft 正是當前 pickedId（剛建的新 workflow），保留
   useEffect(() => {
-    if (workflows.length > 0 && !workflows.find((w) => w.id === pickedId)) {
+    setDraft((d) => (d && d.id === pickedId ? d : null));
+  }, [pickedId]);
+
+  // 如果 list 變了但 picked 不在了，挑第一個（新建中的 draft 還沒存進 list，要排除）
+  useEffect(() => {
+    if (workflows.length > 0 && !workflows.find((w) => w.id === pickedId) && !(draft && draft.id === pickedId)) {
       setPickedId(workflows[0].id);
     }
   }, [workflows, pickedId]);
@@ -2718,15 +2826,11 @@ function WorkflowsView({
     });
   };
 
-  const startNew = () => {
-    const id = window.prompt("新 workflow id（英數/底線；之後不能改）：", "");
-    if (!id || !/^[a-z0-9_-]+$/i.test(id.trim())) return;
-    setDraft({
-      id: id.trim(), label: id.trim(),
-      description: "",
-      stages: [],
-    });
-    setPickedId(id.trim());
+  // 缺口1：NewWorkflowModal submit → 建空白 draft 直接進編輯
+  const onNewWorkflowSubmit = (id: string, label: string, description: string) => {
+    setNewModalOpen(false);
+    setDraft({ id, label, description, stages: [] });
+    setPickedId(id);
   };
 
   const saveDraft = async () => {
@@ -2799,6 +2903,16 @@ function WorkflowsView({
     setDraft({ ...draft, stages: ns });
   };
 
+  // 缺口3：depends_on multi-select toggle（只能勾「排在前面」的 stage → 天然防環）
+  const toggleDependency = (stageIdx: number, depId: string) => {
+    if (!draft) return;
+    const ns = [...draft.stages];
+    const cur = ns[stageIdx].depends_on;
+    const next = cur.includes(depId) ? cur.filter((d) => d !== depId) : [...cur, depId];
+    ns[stageIdx] = { ...ns[stageIdx], depends_on: next };
+    setDraft({ ...draft, stages: ns });
+  };
+
   const cycleBindingRole = (stageIdx: number, bindIdx: number) => {
     if (!draft) return;
     const order: ApiCollabRole[] = ["lead", "peer", "subagent"];
@@ -2835,10 +2949,16 @@ function WorkflowsView({
   return (
     <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
       <ViewHeader title="Workflows" sub="表單式編輯：有序 stage 清單 + 依賴推導（無 DAG canvas）" right={
-        <button onClick={startNew} className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]">
+        <button onClick={() => setNewModalOpen(true)} className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]">
           ＋ new workflow
         </button>
       } />
+      <NewWorkflowModal
+        open={newModalOpen}
+        existingIds={workflows.map((w) => w.id)}
+        onSubmit={onNewWorkflowSubmit}
+        onCancel={() => setNewModalOpen(false)}
+      />
       <div className="flex min-h-0 flex-1">
         <div className="flex w-[420px] shrink-0 flex-col overflow-y-auto border-r border-[var(--rule-dark)] p-6 space-y-3">
           {workflows.length === 0 && (
@@ -2893,11 +3013,39 @@ function WorkflowsView({
                   </span>
                 )}
               </div>
-              <h2 className="font-[family-name:var(--font-display)] text-[24px] font-semibold leading-tight text-[#e6ecf5]">{picked.label}</h2>
-              {picked.description && <p className="mt-1 text-[13px] text-[#97a0b3]">{picked.description}</p>}
+              {inEditMode ? (
+                /* 缺口4：label / description inline edit */
+                <div className="mt-1 space-y-3">
+                  <div>
+                    <SectionLabel>LABEL</SectionLabel>
+                    <input
+                      type="text"
+                      value={draft!.label}
+                      onChange={(e) => setDraft({ ...draft!, label: e.target.value })}
+                      placeholder="workflow 顯示名稱"
+                      className="w-full border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2 font-[family-name:var(--font-display)] text-[18px] font-semibold text-[#e6ecf5] outline-none focus:border-[var(--polaris)]"
+                    />
+                  </div>
+                  <div>
+                    <SectionLabel>DESCRIPTION</SectionLabel>
+                    <input
+                      type="text"
+                      value={draft!.description}
+                      onChange={(e) => setDraft({ ...draft!, description: e.target.value })}
+                      placeholder="一句話描述這個 workflow"
+                      className="w-full border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2 font-[family-name:var(--font-sans)] text-[13px] text-[#cdd4df] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--polaris)]"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <h2 className="font-[family-name:var(--font-display)] text-[24px] font-semibold leading-tight text-[#e6ecf5]">{picked.label}</h2>
+                  {picked.description && <p className="mt-1 text-[13px] text-[#97a0b3]">{picked.description}</p>}
+                </>
+              )}
 
               <div className="mt-7">
-                <SectionLabel>STAGES{inEditMode ? "（上下移 / 加減 / 編輯 binding & collab）" : ""}</SectionLabel>
+                <SectionLabel>STAGES{inEditMode ? "（上下移 / 加減 / depends_on / binding / collab）" : ""}</SectionLabel>
                 <WorkflowStageList
                   stages={inEditMode ? draft!.stages : picked.stages}
                   agents={agents}
@@ -2908,6 +3056,7 @@ function WorkflowsView({
                   onAddBinding={addBinding}
                   onRemoveBinding={removeBinding}
                   onCycleBindingRole={cycleBindingRole}
+                  onToggleDependency={toggleDependency}
                 />
                 {inEditMode && (
                   <AddStagePicker
@@ -2944,6 +3093,7 @@ function WorkflowsView({
 function WorkflowStageList({
   stages, agents, editable,
   onMoveStage, onRemoveStage, onCycleCollab, onAddBinding, onRemoveBinding, onCycleBindingRole,
+  onToggleDependency,
 }: {
   stages: WorkflowStage[];
   agents: Agent[];
@@ -2954,6 +3104,7 @@ function WorkflowStageList({
   onAddBinding: (stageIdx: number, agentId: string) => void;
   onRemoveBinding: (stageIdx: number, bindIdx: number) => void;
   onCycleBindingRole: (stageIdx: number, bindIdx: number) => void;
+  onToggleDependency?: (stageIdx: number, depId: string) => void;
 }) {
   if (stages.length === 0) {
     return (
@@ -2981,12 +3132,14 @@ function WorkflowStageList({
                 </button>
               ) : <CollabModePill mode={s.collab_mode} />}
             </span>
-            <span className="flex items-center gap-2 border-l border-[var(--rule-dark)] pl-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-              <span>depends_on</span>
-              {s.depends_on.length === 0 ? <span className="text-[#5e6878]">(root)</span> : s.depends_on.map((d) => (
-                <code key={d} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{d}</code>
-              ))}
-            </span>
+            {!editable && (
+              <span className="flex items-center gap-2 border-l border-[var(--rule-dark)] pl-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+                <span>depends_on</span>
+                {s.depends_on.length === 0 ? <span className="text-[#5e6878]">(root)</span> : s.depends_on.map((d) => (
+                  <code key={d} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{d}</code>
+                ))}
+              </span>
+            )}
             {editable && (
               <>
                 <button title="上移" onClick={() => onMoveStage(i, -1)} className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">↑</button>
@@ -2995,6 +3148,35 @@ function WorkflowStageList({
               </>
             )}
           </div>
+          {/* 缺口3：depends_on multi-select —— 只列「排在前面」的 stage（天然防環）*/}
+          {editable && (
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-[var(--rule-dark)] pt-2 pl-8">
+              <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">depends_on</span>
+              {i === 0 ? (
+                <span className="font-[family-name:var(--font-mono)] text-[10px] text-[#5e6878]">(root · 無前置 stage)</span>
+              ) : (
+                stages.slice(0, i).map((prev) => {
+                  const checked = s.depends_on.includes(prev.stage_id);
+                  return (
+                    <button
+                      key={prev.stage_id}
+                      onClick={() => onToggleDependency?.(i, prev.stage_id)}
+                      className={`inline-flex items-center gap-1 border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] tracking-wider transition ${
+                        checked
+                          ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] text-[var(--polaris)]"
+                          : "border-[var(--rule-dark)] text-[#cdd4df] hover:border-[#4a5468]"
+                      }`}
+                    >
+                      <span className={`grid h-3 w-3 place-items-center border ${checked ? "border-[var(--polaris)] bg-[var(--polaris)]" : "border-[#2e3441]"}`}>
+                        {checked && <span className="text-[8px] leading-none text-white">✓</span>}
+                      </span>
+                      {prev.stage_id}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-1.5 pl-8">
             <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">agents</span>
             {s.agent_bindings.map((b, bi) => (
