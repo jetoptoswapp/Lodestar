@@ -1,0 +1,17 @@
+[plugin]
+id = "builtin_implement"
+name = "Implementation Agent (async)"
+version = "1.0.0"
+description = "M5：async 長時實作 agent。runner（claude-cli agentic / mock dry-run）+ tool hooks（擋受保護分支 / 塗黑秘密）。"
+host_api = ">=1.0,<2.0"
+entry_module = "plugins.builtin_implement.register"
+requires_plugins = []
+
+# 宣告貢獻供 loader 預檢 + UI 預覽；真正的 runner / hook 在 register() 建構
+[[contributes.runner]]
+id = "claude-cli"
+label = "Claude Code (agentic)"
+
+[[contributes.runner]]
+id = "mock"
+label = "Mock Runner (safe dry-run)"
