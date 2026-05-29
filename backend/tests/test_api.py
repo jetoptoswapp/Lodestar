@@ -72,3 +72,10 @@ def test_get_models(tmp_db):
         assert cli["max_context_tokens"] > 0
         # is_available 視環境（CI 上沒 claude CLI），不強制；但 schema 內欄位必出現
         assert isinstance(cli["is_available"], bool)
+        # builtin_models 註冊三個 CLI adapter：claude-cli / codex-cli / agy-cli
+        assert {"claude-cli", "codex-cli", "agy-cli"}.issubset(set(choices)), \
+            f"expected all 3 CLI adapters, got {choices}"
+        for c in ("codex-cli", "agy-cli"):
+            m = next(x for x in r["models"] if x["model_choice"] == c)
+            assert m["source_plugin"] == "builtin_models"
+            assert isinstance(m["is_available"], bool)

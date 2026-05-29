@@ -2,7 +2,7 @@
 id = "builtin_models"
 name = "Built-in Model Adapters"
 version = "1.0.0"
-description = "Sync one-shot ModelAdapter via CLI（M1：claude-cli；M5+ 加 codex-cli / Ollama）"
+description = "Sync one-shot ModelAdapter via CLI：claude-cli / codex-cli / agy-cli"
 host_api = ">=1.0,<2.0"
 entry_module = "plugins.builtin_models.register"
 requires_plugins = []
@@ -11,3 +11,11 @@ requires_plugins = []
 [[contributes.model_adapter]]
 id = "claude-cli"
 label = "Claude (claude-cli)"
+
+[[contributes.model_adapter]]
+id = "codex-cli"
+label = "Codex (codex-cli)"
+
+[[contributes.model_adapter]]
+id = "agy-cli"
+label = "agy (agy-cli)"

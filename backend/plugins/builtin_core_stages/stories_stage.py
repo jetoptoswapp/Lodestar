@@ -194,6 +194,7 @@ def _stories_chat(ctx: StageContext, run) -> StageChatResult:
 STORIES_STAGE = StageSpec(
     id="stories",
     label="使用者故事",
+    description="把架構拆成可交付、可估時的使用者故事（Epic／Story）。",
     icon="list",
     telemetry_stage="deliver",
     generate_operation="generate_user_stories",

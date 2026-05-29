@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from plugin_api import StageContext
 from plugin_api.stage import StageChatResult, StageResult
-from plugin_api.workflow import WorkflowSpec
+from plugin_api.workflow import WorkflowSpec, normalize_bindings
 
 from harness_runner import HarnessRunner
 from persistence import dal
@@ -247,11 +247,22 @@ class WorkflowEngine:
 
         try:
             if op == "generate":
-                if stage.generate is None:
+                # §6.4 collab：多 binding + discussion/dispatch → 交 coordinator 合成 artifact
+                bindings = normalize_bindings(workflow.agent_bindings.get(stage_id, ()))
+                mode = workflow.collab_mode.get(stage_id, "single")
+                if mode in ("discussion", "dispatch") and len(bindings) > 1:
+                    from collab_coordinator import run_collab
+                    new_artifact = run_collab(
+                        self._reg, thread_id=thread_id, stage=stage, ctx=ctx,
+                        model_choice=model_choice, bindings=bindings, mode=mode,
+                    )
+                    state_extra = {}
+                elif stage.generate is None:
                     raise OperationNotSupportedError(stage_id, op)
-                res: StageResult = stage.generate(ctx, runner)
-                new_artifact = res.artifact
-                state_extra = dict(res.state_extra or {})
+                else:
+                    res: StageResult = stage.generate(ctx, runner)
+                    new_artifact = res.artifact
+                    state_extra = dict(res.state_extra or {})
             elif op == "refine":
                 if stage.refine is None:
                     raise OperationNotSupportedError(stage_id, op)

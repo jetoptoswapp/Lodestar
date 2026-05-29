@@ -11,6 +11,7 @@ from plugin_api import StageSpec
 IMPLEMENT_STAGE = StageSpec(
     id="implement",
     label="自動實作",
+    description="（async）依使用者故事派實作 agent 自動寫 code 並開 PR。",
     icon="rocket",
     telemetry_stage="implement",
     depends_on=("stories",),

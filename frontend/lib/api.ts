@@ -153,6 +153,62 @@ export async function setProjectWorkflow(threadId: string, workflowId: string | 
 }
 
 // ============================================================
+//  Generic stage helpers + RCA（catalog-driven workspace / agentic plan）
+// ============================================================
+export type StageCatalogItem = {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  depends_on: string[];
+  downstream: string[];
+  supports_chat: boolean;
+  source: string;
+  plugin_id: string | null;
+  operations: string[];
+  telemetry_stage: string;
+};
+
+export async function fetchStages(): Promise<StageCatalogItem[]> {
+  const r = await apiCall<{ stages: StageCatalogItem[] }>("/api/stages");
+  return r.stages;
+}
+
+export type StageStatusItem = { stage_id: string; status: string };
+
+export async function fetchStageStatuses(threadId: string): Promise<StageStatusItem[]> {
+  const r = await apiCall<{ statuses: StageStatusItem[] }>(`/api/stage/statuses/${threadId}`);
+  return r.statuses;
+}
+
+export async function fetchStageState(stageId: string, threadId: string): Promise<{ artifact: string; status: string }> {
+  return apiCall(`/api/stage/${stageId}/${threadId}`);
+}
+
+export async function stageGenerate(stageId: string, threadId: string, modelChoice: string): Promise<{ artifact: string }> {
+  return apiCall(`/api/stage/${stageId}/generate`, {
+    method: "POST",
+    body: JSON.stringify({ thread_id: threadId, model_choice: modelChoice }),
+  });
+}
+
+export async function stageRefine(stageId: string, threadId: string, modelChoice: string, instruction: string): Promise<{ artifact: string }> {
+  return apiCall(`/api/stage/${stageId}/refine`, {
+    method: "POST",
+    body: JSON.stringify({ thread_id: threadId, model_choice: modelChoice, instruction }),
+  });
+}
+
+export async function stageApprove(stageId: string, threadId: string): Promise<{ status: string }> {
+  return apiCall(`/api/stage/${stageId}/${threadId}/approve`, { method: "POST" });
+}
+
+// RCA-3：核准的 rca_plan → 建 workflow（rca_plan_{tid}）並 rebind thread
+export async function applyRcaPlan(threadId: string): Promise<Workflow> {
+  return apiCall<Workflow>(`/api/projects/${threadId}/rca/apply-plan`, { method: "POST" });
+}
+
+// ============================================================
 //  Plugins（M4）
 // ============================================================
 export async function fetchPlugins(): Promise<Plugin[]> {

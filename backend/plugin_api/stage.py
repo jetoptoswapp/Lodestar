@@ -68,6 +68,7 @@ class StageSpec:
     """整個系統的心臟。雙詞彙（id / telemetry_stage）務必兩套都帶。"""
     id: str                         # UI/狀態詞彙：prd / architecture / stories
     label: str
+    description: str = ""           # 一句話用途說明（catalog / workflow 編輯器顯示）
     icon: str = ""                  # icon 名稱字串（前端 allowlist resolve）
     telemetry_stage: str = ""       # 遙測詞彙：specify / design / deliver
     generate_operation: str = ""    # 預設 f"generate_{id}"

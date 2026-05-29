@@ -1,0 +1,59 @@
+# rca_domain —— 製造業 Root-Cause-Analysis 領域 plugin（與需求工程領域並存）。
+# 非 builtin：使用者可在 /plugins UI 開關。新 stage id 全用 rca_*，與既有零碰撞。
+[plugin]
+id = "rca_domain"
+name = "Manufacturing RCA"
+version = "0.1.0"
+description = "製造異常根因分析（RCA）領域：anomaly intake → 候選根因分析。AI 是 Copilot 不是 Judge。"
+host_api = ">=1.0,<2.0"
+entry_module = "plugins.rca_domain.register"
+requires_plugins = []
+
+# 宣告貢獻供 loader 預檢 + UI 預覽；真正 spec 在 register() 建構。
+[[contributes.stage]]
+id = "rca_intake"
+label = "Anomaly Intake"
+
+[[contributes.stage]]
+id = "rca_analysis"
+label = "RCA Analysis"
+
+[[contributes.stage]]
+id = "rca_baseline"
+label = "Baseline & Profiling"
+
+[[contributes.stage]]
+id = "rca_causal"
+label = "Causal-Graph Reasoning"
+
+[[contributes.stage]]
+id = "rca_knowledge"
+label = "Knowledge / SOP 對照"
+
+[[contributes.stage]]
+id = "rca_synthesis"
+label = "Synthesis（候選根因）"
+
+[[contributes.stage]]
+id = "rca_plan"
+label = "RCA Plan（agentic）"
+
+[[contributes.workflow]]
+id = "rca_single"
+label = "Single-agent RCA"
+
+[[contributes.workflow]]
+id = "rca_chain"
+label = "Multi-agent RCA chain"
+
+[[contributes.workflow]]
+id = "rca_planner"
+label = "Agentic RCA planner"
+
+[[contributes.workflow]]
+id = "rca_panel"
+label = "RCA panel (discussion)"
+
+[[contributes.workflow]]
+id = "rca_dispatch"
+label = "RCA dispatch (lead + subagents)"

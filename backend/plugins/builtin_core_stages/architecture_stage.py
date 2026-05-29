@@ -143,6 +143,7 @@ def _arch_chat(ctx: StageContext, run) -> StageChatResult:
 ARCHITECTURE_STAGE = StageSpec(
     id="architecture",
     label="架構",
+    description="依 PRD 設計系統架構與技術選型，標 tier、每個決策回溯到需求。",
     icon="diagram",
     telemetry_stage="design",
     generate_operation="generate_architecture",

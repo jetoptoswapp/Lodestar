@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentEditorModal, type AgentDraft } from "@/components/AgentEditorModal";
 import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import { PublishModal } from "@/components/PublishModal";
+import RcaWorkspace from "@/components/RcaWorkspace";
 import {
   type Agent,
   type AgentBinding as ApiAgentBinding,
@@ -23,6 +24,7 @@ import {
   type ImplementRun,
   type ImplementLogLine,
   type RunnerInfo,
+  type StageCatalogItem,
   apiCall,
   createAgent,
   createWorkflow,
@@ -30,6 +32,7 @@ import {
   deleteWorkflowApi,
   fetchAgents,
   fetchPlugins,
+  fetchStages,
   fetchWorkflows,
   setProjectWorkflow,
   togglePlugin,
@@ -479,6 +482,17 @@ export default function Page() {
       .catch(() => {/* silent */});
   }, [thread]);
 
+  // RCA：catalog（給 WorkflowsView availableStages + 每個 stage 的用途說明，catalog-driven）
+  const [catalogStages, setCatalogStages] = useState<StageCatalogItem[]>([]);
+  useEffect(() => { fetchStages().then(setCatalogStages).catch(() => {/* silent */}); }, []);
+  const catalogStageIds = useMemo(() => catalogStages.map((s) => s.id), [catalogStages]);
+  const stageInfo = useMemo(
+    () => Object.fromEntries(catalogStages.map((s) => [s.id, { label: s.label, description: s.description }])),
+    [catalogStages],
+  );
+  // RCA thread：綁定的 workflow 以 rca 開頭 → workspace 走 RcaWorkspace（與 PRD 流程互不干擾）
+  const isRcaThread = !!currentProjectWorkflowId && currentProjectWorkflowId.startsWith("rca");
+
   // onChangeProjectWorkflow 移到 refreshPrd/Arch/Stories 後（避免 TS 引用順序錯誤）
 
   // ===== M3：Agent CRUD handlers =====
@@ -876,7 +890,17 @@ export default function Page() {
             />
           )}
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-            {nav === "workspace" && (
+            {nav === "workspace" && (isRcaThread && thread ? (
+              <RcaWorkspace
+                thread={thread}
+                workflowId={currentProjectWorkflowId}
+                workflows={workflowList}
+                modelChoice={modelChoice}
+                onChangeWorkflow={onChangeProjectWorkflow}
+                onError={(m) => setErr(m)}
+                threadName={threadList.find((p) => p.thread_id === thread)?.name ?? null}
+              />
+            ) : (
               <>
                 <StageHeader
                   selected={selected}
@@ -941,12 +965,13 @@ export default function Page() {
                   )}
                 </div>
               </>
-            )}
+            ))}
             {nav === "workflows" && (
               <WorkflowsView
                 workflows={workflowList}
                 agents={agentList}
-                availableStages={["prd", "architecture", "stories", "implement"]}
+                availableStages={catalogStageIds.length ? catalogStageIds : ["prd", "architecture", "stories", "implement"]}
+                stageInfo={stageInfo}
                 onRefresh={refreshWorkflows}
                 onDelete={(wf) => setDeleteConfirm({ kind: "workflow", id: wf.id, name: wf.label })}
                 onSetError={(m) => setErr(m)}
@@ -1065,7 +1090,7 @@ function TopBar({ nav, onNav, thread, pluginCount, modelChoice, modelList, onSel
   onSelectModel: (choice: string) => void;
 }) {
   return (
-    <header className="rise-1 relative flex h-14 shrink-0 items-center justify-between border-b border-[var(--rule-dark)] px-6">
+    <header className="rise-1 relative z-50 flex h-14 shrink-0 items-center justify-between border-b border-[var(--rule-dark)] px-6">
       <div className="flex items-center gap-10">
         <LodestarBrand />
         <nav className="relative flex items-center gap-7">
@@ -2959,11 +2984,12 @@ function NewWorkflowModal({ open, existingIds, onSubmit, onCancel }: {
 }
 
 function WorkflowsView({
-  workflows, agents, availableStages, onRefresh, onDelete, onSetError,
+  workflows, agents, availableStages, stageInfo, onRefresh, onDelete, onSetError,
 }: {
   workflows: Workflow[];
   agents: Agent[];
   availableStages: string[];
+  stageInfo: Record<string, { label: string; description: string }>;
   onRefresh: () => Promise<void>;
   onDelete: (wf: Workflow) => void;
   onSetError: (msg: string | null) => void;
@@ -3226,6 +3252,7 @@ function WorkflowsView({
                 <WorkflowStageList
                   stages={inEditMode ? draft!.stages : picked.stages}
                   agents={agents}
+                  stageInfo={stageInfo}
                   editable={inEditMode}
                   onMoveStage={moveStage}
                   onRemoveStage={removeStage}
@@ -3238,6 +3265,7 @@ function WorkflowsView({
                 {inEditMode && (
                   <AddStagePicker
                     availableStages={availableStages.filter((s) => !draft!.stages.find((x) => x.stage_id === s))}
+                    stageInfo={stageInfo}
                     onAdd={addStage}
                   />
                 )}
@@ -3268,12 +3296,13 @@ function WorkflowsView({
 }
 
 function WorkflowStageList({
-  stages, agents, editable,
+  stages, agents, stageInfo, editable,
   onMoveStage, onRemoveStage, onCycleCollab, onAddBinding, onRemoveBinding, onCycleBindingRole,
   onToggleDependency,
 }: {
   stages: WorkflowStage[];
   agents: Agent[];
+  stageInfo: Record<string, { label: string; description: string }>;
   editable: boolean;
   onMoveStage: (idx: number, dir: -1 | 1) => void;
   onRemoveStage: (idx: number) => void;
@@ -3297,6 +3326,7 @@ function WorkflowStageList({
           <div className="flex items-center gap-3">
             <span className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--ink-muted)]">{String(i + 1).padStart(2, "0")}</span>
             <code className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{s.stage_id}</code>
+            {stageInfo[s.stage_id]?.label && <span className="text-[12px] text-[#cdd4df]">{stageInfo[s.stage_id].label}</span>}
             <span className="ml-auto flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
               <span>collab</span>
               {editable ? (
@@ -3325,6 +3355,9 @@ function WorkflowStageList({
               </>
             )}
           </div>
+          {stageInfo[s.stage_id]?.description && (
+            <p className="pl-7 text-[11.5px] leading-5 text-[var(--ink-muted)]">{stageInfo[s.stage_id].description}</p>
+          )}
           {/* 缺口3：depends_on multi-select —— 只列「排在前面」的 stage（天然防環）*/}
           {editable && (
             <div className="flex flex-wrap items-center gap-1.5 border-t border-[var(--rule-dark)] pt-2 pl-8">
@@ -3450,7 +3483,7 @@ function BindingPicker({ agents, excludeIds, onPick }: {
   );
 }
 
-function AddStagePicker({ availableStages, onAdd }: { availableStages: string[]; onAdd: (sid: string) => void }) {
+function AddStagePicker({ availableStages, stageInfo, onAdd }: { availableStages: string[]; stageInfo: Record<string, { label: string; description: string }>; onAdd: (sid: string) => void }) {
   if (availableStages.length === 0) {
     return (
       <div className="mt-3 border border-dashed border-[var(--rule-dark)] py-2 text-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
@@ -3465,9 +3498,10 @@ function AddStagePicker({ availableStages, onAdd }: { availableStages: string[];
         <button
           key={sid}
           onClick={() => onAdd(sid)}
+          title={stageInfo[sid]?.description || sid}
           className="border border-dashed border-[var(--rule-dark)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
         >
-          {sid}
+          {stageInfo[sid]?.label || sid}
         </button>
       ))}
     </div>
@@ -3602,14 +3636,19 @@ function PluginsView({ plugins, onToggle }: {
   plugins: Plugin[];
   onToggle: (id: string, enabled: boolean) => void;
 }) {
+  const [showSystem, setShowSystem] = useState(false);
   const loaded = plugins.filter((p) => p.enabled && !p.load_error).length;
+  // 「你的功能」= 提供你在 Workspace 操作的 stage / 流程；其餘 = 背景零件（agent / 模型 / 交付）
+  const isFeature = (p: Plugin) => p.provides.stages.length > 0 || p.provides.workflows.length > 0;
+  const features = plugins.filter(isFeature).sort((a, b) => Number(a.builtin) - Number(b.builtin));
+  const system = plugins.filter((p) => !isFeature(p));
   return (
     <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
-      <ViewHeader title="Plugins" sub="所有功能都是 plugin —— 內建與第三方走同一套 API" right={
+      <ViewHeader title="Plugins · 擴充功能" sub="像手機 App：裝上去才有對應功能。下方「你的功能」是你會用到的分析能力；「系統零件」是背景機件，平常不用管。" right={
         <div className="flex items-center gap-3 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-          <span>discovered · {plugins.length}</span>
+          <span>{plugins.length} 已安裝</span>
           <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
-          <span className="text-[var(--approved)]">{loaded} loaded</span>
+          <span className="text-[var(--approved)]">{loaded} 啟用中</span>
         </div>
       } />
       <div className="min-h-0 flex-1 overflow-y-auto p-8">
@@ -3618,11 +3657,34 @@ function PluginsView({ plugins, onToggle }: {
             無 plugins（loading…）
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-4">
-            {plugins.map((p) => (
-              <PluginCard key={p.id} plugin={p} onToggle={onToggle} />
-            ))}
-          </div>
+          <>
+            <SectionLabel>你的功能 · 你會用到的分析能力</SectionLabel>
+            <div className="mt-3 grid grid-cols-2 gap-4">
+              {features.map((p) => (
+                <PluginCard key={p.id} plugin={p} onToggle={onToggle} />
+              ))}
+            </div>
+
+            {system.length > 0 && (
+              <>
+                <button
+                  onClick={() => setShowSystem((s) => !s)}
+                  className="mt-8 flex w-full items-center gap-3 border-t border-[var(--rule-dark)] pt-5 text-left font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[var(--ink-muted)] transition hover:text-[#cdd4df]"
+                >
+                  <span className="text-[var(--polaris)]">{showSystem ? "▾" : "▸"}</span>
+                  <span>系統零件 · {system.length}</span>
+                  <span className="normal-case tracking-normal text-[#5e6878]">共用的背景機件（模型接口 / 預設 agent / 交付整合）— 平常不用管</span>
+                </button>
+                {showSystem && (
+                  <div className="mt-4 grid grid-cols-2 gap-4">
+                    {system.map((p) => (
+                      <PluginCard key={p.id} plugin={p} onToggle={onToggle} />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
     </div>

@@ -6,6 +6,7 @@ stage 操作 / workflow / agent / SSE 隨 M1+ 增補。
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -64,8 +65,10 @@ from api_models import (  # noqa: E402
     StageStatusItem,
     StageStatusesResponse,
     UpdateProjectRequest,
+    AgentBindingPayload,
     WorkflowListResponse,
     WorkflowResponse,
+    WorkflowStagePayload,
     WorkflowUpsertRequest,
     ImplementStartRequest,
     ImplementStartResponse,
@@ -160,6 +163,7 @@ def _build_catalog(reg: Registry) -> list[StageCatalogItem]:
             StageCatalogItem(
                 id=spec.id,
                 label=spec.label,
+                description=spec.description,
                 icon=spec.icon,
                 depends_on=list(spec.depends_on),
                 downstream=downstream,
@@ -539,6 +543,77 @@ async def set_project_workflow_endpoint(thread_id: str, req: SetProjectWorkflowR
     project = dal.get_project(thread_id)
     assert project is not None
     return ProjectResponse(**project)
+
+
+# ============================================================
+#  RCA：agentic plan → workflow（RCA-3）
+#  讀 approved 的 rca_plan artifact → 建 user workflow（重用 _save_workflow 驗證）→ 綁 thread。
+#  inline 解析 plan（host 不 import domain plugin，維持邊界）。
+# ============================================================
+def _parse_rca_plan(text: str) -> "dict | None":
+    if not text:
+        return None
+    start, end = "[PLAN_START]", "[PLAN_END]"
+    i, j = text.find(start), text.find(end)
+    if i != -1 and j > i:
+        blob = text[i + len(start):j]
+    else:
+        a, b = text.find("{"), text.rfind("}")
+        if a == -1 or b <= a:
+            return None
+        blob = text[a:b + 1]
+    try:
+        data = json.loads(blob)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+@app.post("/api/projects/{thread_id}/rca/apply-plan", response_model=WorkflowResponse)
+async def rca_apply_plan(thread_id: str):
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    plan_art = dal.get_artifact(thread_id, "rca_plan")
+    if not plan_art or not plan_art.strip():
+        raise HTTPException(404, detail=error_detail("plan_not_found", "rca_plan artifact 不存在；請先 generate rca_plan"))
+    if dal.get_stage_status(thread_id, "rca_plan") != "approved":
+        raise HTTPException(409, detail=error_detail("plan_not_approved", "rca_plan 尚未 approved；核准後才能套用"))
+    plan = _parse_rca_plan(plan_art)
+    if plan is None or not isinstance(plan.get("stages"), list) or not plan["stages"]:
+        raise HTTPException(400, detail=error_detail("plan_unparseable", "無法解析 plan JSON（需含 stages）"))
+
+    stages_payload: list[WorkflowStagePayload] = []
+    has_intake = any(isinstance(s, dict) and s.get("stage_id") == "rca_intake" for s in plan["stages"])
+    if not has_intake:
+        # 確保依賴鏈完整：plan 未含 rca_intake 時自動前置（異常來源）
+        stages_payload.append(WorkflowStagePayload(
+            stage_id="rca_intake", depends_on=[],
+            agent_bindings=[AgentBindingPayload(agent_id="rca_intake_helper", role="lead")],
+            collab_mode="single"))
+    for s in plan["stages"]:
+        if not isinstance(s, dict) or not s.get("stage_id"):
+            continue
+        stages_payload.append(WorkflowStagePayload(
+            stage_id=s["stage_id"],
+            depends_on=list(s.get("depends_on") or []),
+            agent_bindings=[
+                AgentBindingPayload(agent_id=b.get("agent_id", ""), role=b.get("role", "lead"))
+                for b in (s.get("agent_bindings") or [])
+                if isinstance(b, dict) and b.get("agent_id")
+            ],
+            collab_mode=s.get("collab_mode", "single") or "single",
+        ))
+
+    wf_id = f"rca_plan_{thread_id}"
+    req = WorkflowUpsertRequest(
+        id=wf_id,
+        label=plan.get("label") or f"RCA plan · {thread_id}",
+        description=plan.get("description") or plan.get("rationale", ""),
+        stages=stages_payload,
+    )
+    resp = _save_workflow(req, allow_existing=True)   # 驗 stage/dep/collab → 精確 4xx
+    dal.set_project_workflow(thread_id, wf_id)
+    return resp
 
 
 @app.get("/api/integrations")

@@ -186,6 +186,7 @@ def _prd_chat(ctx: StageContext, run) -> StageChatResult:
 PRD_STAGE = StageSpec(
     id="prd",
     label="PRD",
+    description="把想法／對話經 SA discovery 整理成明確的產品需求文件（FR／NFR）。",
     icon="document",
     telemetry_stage="specify",
     generate_operation="generate_prd",

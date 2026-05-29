@@ -9,6 +9,12 @@
         "PATH=/Users/sheldon.chang/.nvm/versions/node/v22.17.0/bin:$PATH npm run dev --prefix frontend"
       ],
       "port": 8724
+    },
+    {
+      "name": "rca-mock",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "4173", "--directory", "frontend/mocks"],
+      "port": 4173
     }
   ]
 }

@@ -6,6 +6,9 @@
 > 完整施工計畫：`~/.claude/plans/md-dreamy-hanrahan.md`。
 > 建構規格：[`ai-agent-plug-in-magical-brooks.md`](./ai-agent-plug-in-magical-brooks.md)。
 
+> 🧭 **製造業 RCA Copilot**（領域 plugin，與需求工程並存）：異常根因分析助手。
+> 快速上手 → [`docs/RCA_QUICKSTART.md`](./docs/RCA_QUICKSTART.md)；架構說明 → [`docs/RCA.md`](./docs/RCA.md)。
+
 ---
 
 ## 快速開始
