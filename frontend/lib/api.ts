@@ -47,6 +47,26 @@ export type Agent = {
   updated_at: number | null;
 };
 
+export type PluginProvides = {
+  stages: string[];
+  workflows: string[];
+  agents: string[];
+  integrations: string[];
+};
+
+export type Plugin = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  provides: PluginProvides;
+  requires_rebuild: boolean;
+  load_error: string | null;
+  builtin: boolean;
+  discovery: "directory" | "entry_point";
+};
+
 // ============================================================
 //  Fetch helper
 // ============================================================
@@ -129,5 +149,20 @@ export async function setProjectWorkflow(threadId: string, workflowId: string | 
   await apiCall(`/api/projects/${threadId}/workflow`, {
     method: "POST",
     body: JSON.stringify({ workflow_id: workflowId }),
+  });
+}
+
+// ============================================================
+//  Plugins（M4）
+// ============================================================
+export async function fetchPlugins(): Promise<Plugin[]> {
+  const r = await apiCall<{ plugins: Plugin[] }>("/api/plugins");
+  return r.plugins;
+}
+
+export async function togglePlugin(id: string, enabled: boolean): Promise<Plugin> {
+  return apiCall<Plugin>(`/api/plugins/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled }),
   });
 }
