@@ -6,10 +6,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { Agent } from "@/lib/api";
+import { API_BASE, type Agent } from "@/lib/api";
 
 const ROLE_OPTIONS = ["prd", "architecture", "stories", "implement", "custom"] as const;
-const MODEL_OPTIONS = ["claude-cli"] as const;   // M2.5：M3 後可從 /api/models 拉
 
 export type AgentDraft = {
   agent_id: string;
@@ -30,6 +29,20 @@ export function AgentEditorModal({
   onSubmit: (draft: AgentDraft) => Promise<void>;
   onCancel: () => void;
 }) {
+  // 缺口5：model list 從 /api/models 拉（不再寫死 claude-cli）
+  const [models, setModels] = useState<string[]>(["claude-cli"]);
+  useEffect(() => {
+    if (!open) return;
+    fetch(`${API_BASE}/api/models`)
+      .then((r) => r.json())
+      .then((d: { models: Array<{ model_choice: string }> }) => {
+        const choices = d.models.map((m) => m.model_choice);
+        if (choices.length > 0) setModels(choices);
+      })
+      .catch(() => {/* fallback 保留 claude-cli */});
+  }, [open]);
+  // 缺口2：tools chip editor 的暫存輸入
+  const [toolInput, setToolInput] = useState("");
   const [draft, setDraft] = useState<AgentDraft>(() => emptyDraft());
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -39,6 +52,7 @@ export function AgentEditorModal({
     if (!open) return;
     setError(null);
     setSaving(false);
+    setToolInput("");
     if (initial) {
       setDraft({
         agent_id: initial.agent_id,
@@ -84,11 +98,17 @@ export function AgentEditorModal({
     if (draft.max_iterations < 1) return setError("max_iterations 必須 ≥ 1");
     setSaving(true);
     try {
+      // 把還停在 toolInput 沒按 Enter 的字也收進去
+      const pendingTool = toolInput.trim().replace(/,$/, "");
+      const tools = pendingTool && !draft.tools.includes(pendingTool)
+        ? [...draft.tools, pendingTool]
+        : draft.tools;
       await onSubmit({
         ...draft,
         agent_id: draft.agent_id.trim(),
         name: draft.name.trim(),
         role: draft.role.trim(),
+        tools,
       });
     } catch (e) {
       setError((e as Error).message);
@@ -196,7 +216,10 @@ export function AgentEditorModal({
                 onChange={(e) => setDraft({ ...draft, model_choice: e.target.value })}
                 className={fieldClass}
               >
-                {MODEL_OPTIONS.map((m) => (<option key={m} value={m}>{m}</option>))}
+                {/* 確保 draft.model_choice 即使不在 list（已 retire 的 adapter）也顯示 */}
+                {(models.includes(draft.model_choice) ? models : [draft.model_choice, ...models]).map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
               </select>
             </Field>
             <Field label="max iterations">
@@ -210,6 +233,41 @@ export function AgentEditorModal({
               />
             </Field>
           </div>
+
+          {/* 缺口2：tools chip editor */}
+          <Field label="tools（給 tool-using / 實作 agent）">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {draft.tools.map((t) => (
+                <span key={t} className="inline-flex items-center gap-1 border border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] text-[var(--polaris)]">
+                  {t}
+                  <button
+                    type="button"
+                    onClick={() => setDraft({ ...draft, tools: draft.tools.filter((x) => x !== t) })}
+                    className="text-[var(--ink-muted)] transition hover:text-[#f47171]"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <input
+                type="text"
+                value={toolInput}
+                onChange={(e) => setToolInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === ",") {
+                    e.preventDefault();
+                    const t = toolInput.trim().replace(/,$/, "");
+                    if (t && !draft.tools.includes(t)) {
+                      setDraft({ ...draft, tools: [...draft.tools, t] });
+                    }
+                    setToolInput("");
+                  }
+                }}
+                placeholder={draft.tools.length === 0 ? "e.g. bash, file-edit（↵ 或 , 加入）" : "+ 加 tool"}
+                className="min-w-[120px] flex-1 border border-[var(--rule-dark)] bg-[var(--bg)] px-2 py-1 font-[family-name:var(--font-mono)] text-[11px] text-[#e6ecf5] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--polaris)]"
+              />
+            </div>
+          </Field>
 
           <label className="flex items-center gap-2.5 cursor-pointer">
             <input
