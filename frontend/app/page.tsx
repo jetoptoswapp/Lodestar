@@ -8,8 +8,27 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AgentEditorModal, type AgentDraft } from "@/components/AgentEditorModal";
 import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import { PublishModal } from "@/components/PublishModal";
+import {
+  type Agent,
+  type AgentBinding as ApiAgentBinding,
+  type CollabMode as ApiCollabMode,
+  type CollabRole as ApiCollabRole,
+  type Workflow,
+  type WorkflowStage,
+  apiCall,
+  createAgent,
+  createWorkflow,
+  deleteAgentApi,
+  deleteWorkflowApi,
+  fetchAgents,
+  fetchWorkflows,
+  setProjectWorkflow,
+  updateAgent,
+  updateWorkflow,
+} from "@/lib/api";
 import {
   countStoriesAndEstimate,
   parseArchitecture,
@@ -266,6 +285,15 @@ export default function Page() {
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
   // M2.5：Publish modal 開啟旗標（獨立 state，因為它是 multi-step internal state machine）
   const [publishOpen, setPublishOpen] = useState(false);
+  // M3：workflows / agents 真實 list（給 /workflows, /agents 頁面與 thread switcher 共用）
+  const [workflowList, setWorkflowList] = useState<Workflow[]>([]);
+  const [agentList, setAgentList] = useState<Agent[]>([]);
+  // M3：Agent editor modal state
+  const [agentEditor, setAgentEditor] = useState<{ open: boolean; initial: Agent | null }>({ open: false, initial: null });
+  // M3：delete confirm modal（共用給 workflow / agent 刪除）
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    kind: "workflow" | "agent"; id: string; name: string;
+  } | null>(null);
 
   // 清掉所有 per-thread 衍生狀態（切 thread / 刪除後重置 UI 用）
   const resetThreadDerivedState = useCallback(() => {
@@ -378,6 +406,77 @@ export default function Page() {
     setModelChoice(choice);
   }, []);
 
+  // ===== M3：workflows / agents refresh =====
+  const refreshWorkflows = useCallback(async () => {
+    try {
+      setWorkflowList(await fetchWorkflows());
+    } catch (e) {
+      setErr(`讀取 workflows 失敗：${(e as Error).message}`);
+    }
+  }, []);
+  const refreshAgents = useCallback(async () => {
+    try {
+      setAgentList(await fetchAgents());
+    } catch (e) {
+      setErr(`讀取 agents 失敗：${(e as Error).message}`);
+    }
+  }, []);
+
+  // 啟動時抓一次（thread switcher dropdown 用得到）
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const [wfs, ags] = await Promise.all([fetchWorkflows(), fetchAgents()]);
+        if (!mounted) return;
+        setWorkflowList(wfs);
+        setAgentList(ags);
+      } catch { /* silent */ }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // ===== M3：thread workflow switcher =====
+  const [currentProjectWorkflowId, setCurrentProjectWorkflowId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!thread) return;
+    apiCall<{ workflow_id: string | null }>(`/api/projects/${thread}`)
+      .then((p) => setCurrentProjectWorkflowId(p.workflow_id ?? null))
+      .catch(() => {/* silent */});
+  }, [thread]);
+
+  // onChangeProjectWorkflow 移到 refreshPrd/Arch/Stories 後（避免 TS 引用順序錯誤）
+
+  // ===== M3：Agent CRUD handlers =====
+  const onSaveAgent = useCallback(async (draft: AgentDraft) => {
+    const isEdit = !!agentEditor.initial;
+    if (isEdit) {
+      await updateAgent(draft.agent_id, draft);
+    } else {
+      await createAgent(draft);
+    }
+    setAgentEditor({ open: false, initial: null });
+    await refreshAgents();
+  }, [agentEditor.initial, refreshAgents]);
+
+  const onDeleteConfirmed = useCallback(async () => {
+    if (!deleteConfirm) return;
+    setErr(null);
+    try {
+      if (deleteConfirm.kind === "workflow") {
+        await deleteWorkflowApi(deleteConfirm.id);
+        await refreshWorkflows();
+      } else {
+        await deleteAgentApi(deleteConfirm.id);
+        await refreshAgents();
+      }
+    } catch (e) {
+      setErr(`刪除失敗：${(e as Error).message}`);
+    } finally {
+      setDeleteConfirm(null);
+    }
+  }, [deleteConfirm, refreshWorkflows, refreshAgents]);
+
   // ===== Thread CRUD callbacks（打開 modal；submit 才呼 API）=====
   const onNewThread = useCallback(() => setModal({ kind: "newThread" }), []);
   const onRenameThread = useCallback((tid: string, currentName: string) => {
@@ -486,6 +585,23 @@ export default function Page() {
     refreshArchitecture(thread);
     refreshStories(thread);
   }, [thread, refreshPrd, refreshArchitecture, refreshStories]);
+
+  // M3：切 thread workflow（hoisted 到 refreshXxx 之後避免 hoisting issue）
+  const onChangeProjectWorkflow = useCallback(async (workflowId: string | null) => {
+    if (!thread) return;
+    setErr(null);
+    try {
+      await setProjectWorkflow(thread, workflowId);
+      setCurrentProjectWorkflowId(workflowId);
+      // 切後重 fetch 三 stage state
+      resetThreadDerivedState();
+      refreshPrd(thread);
+      refreshArchitecture(thread);
+      refreshStories(thread);
+    } catch (e) {
+      setErr(`切換 workflow 失敗：${(e as Error).message}`);
+    }
+  }, [thread, resetThreadDerivedState, refreshPrd, refreshArchitecture, refreshStories]);
 
   // 拿 attachments
   const refreshAttachments = useCallback(async (tid: string) => {
@@ -735,6 +851,9 @@ export default function Page() {
                   archStatus={archStatus}
                   storiesStatus={storiesStatus}
                   threadName={threadList.find((p) => p.thread_id === thread)?.name ?? null}
+                  workflows={workflowList}
+                  currentWorkflowId={currentProjectWorkflowId}
+                  onChangeWorkflow={onChangeProjectWorkflow}
                 />
                 <div className="flex min-h-0 flex-1">
                   {selected === "prd" && (
@@ -782,8 +901,24 @@ export default function Page() {
                 </div>
               </>
             )}
-            {nav === "workflows" && <WorkflowsView />}
-            {nav === "agents"    && <AgentsView />}
+            {nav === "workflows" && (
+              <WorkflowsView
+                workflows={workflowList}
+                agents={agentList}
+                availableStages={["prd", "architecture", "stories", "implement"]}
+                onRefresh={refreshWorkflows}
+                onDelete={(wf) => setDeleteConfirm({ kind: "workflow", id: wf.id, name: wf.label })}
+                onSetError={(m) => setErr(m)}
+              />
+            )}
+            {nav === "agents" && (
+              <AgentsView
+                agents={agentList}
+                onNew={() => setAgentEditor({ open: true, initial: null })}
+                onEdit={(a) => setAgentEditor({ open: true, initial: a })}
+                onDelete={(a) => setDeleteConfirm({ kind: "agent", id: a.agent_id, name: a.name })}
+              />
+            )}
             {nav === "plugins"   && <PluginsView />}
             {/* BuildSeal 只在無 ChatPanel 的 view 顯示，避免跟 footer 的「↵ send · ⌘↵ refine」overlap */}
             <BuildSeal visible={nav !== "workspace"} />
@@ -846,6 +981,33 @@ export default function Page() {
         thread={thread}
         apiBase={API_BASE}
         onClose={() => setPublishOpen(false)}
+      />
+
+      {/* M3：Agent editor modal（new / edit user agent）*/}
+      <AgentEditorModal
+        open={agentEditor.open}
+        initial={agentEditor.initial}
+        onSubmit={onSaveAgent}
+        onCancel={() => setAgentEditor({ open: false, initial: null })}
+      />
+
+      {/* M3：刪除 workflow / agent 確認 */}
+      <ConfirmDialog
+        open={deleteConfirm !== null}
+        destructive
+        title={deleteConfirm?.kind === "workflow" ? "刪除 workflow？" : "刪除 agent？"}
+        subtitle="此動作無法復原"
+        message={
+          deleteConfirm ? (
+            <>
+              即將刪除「<span className="font-semibold text-[#e6ecf5]">{deleteConfirm.name}</span>
+              」（<code className="font-[family-name:var(--font-mono)] text-[var(--polaris)]">{deleteConfirm.id}</code>）。
+            </>
+          ) : null
+        }
+        confirmLabel="刪除"
+        onConfirm={onDeleteConfirmed}
+        onCancel={() => setDeleteConfirm(null)}
       />
     </>
   );
@@ -1201,13 +1363,88 @@ function TrashIcon() {
 }
 
 // ============================== Stage header ==============================
-function StageHeader({ selected, onSelect, prdStatus, archStatus, storiesStatus, threadName }: {
+function WorkflowSwitcher({ workflows, currentId, onChange }: {
+  workflows: Workflow[];
+  currentId: string | null;
+  onChange: (id: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  // currentId 為 null → effective workflow 是 "default"（lazy fallback）
+  const effectiveId = currentId ?? "default";
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1 border border-transparent px-1 text-[var(--polaris)] transition hover:border-[var(--rule-dark)] hover:bg-[var(--bg-elev)]"
+      >
+        <span>{effectiveId}</span>
+        <svg viewBox="0 0 10 10" width="9" height="9" className={`transition ${open ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.4">
+          <path d="M2 4 L5 7 L8 4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+6px)] z-40 min-w-[260px] border border-[var(--paper-edge)] bg-[var(--paper)] shadow-anvil">
+          <div className="border-b border-[var(--rule)] px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            切換 thread 的 workflow
+          </div>
+          <ul className="max-h-[50vh] overflow-y-auto">
+            {workflows.length === 0 && (
+              <li className="px-3 py-2 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">loading…</li>
+            )}
+            {workflows.map((w) => {
+              const selected = w.id === effectiveId;
+              return (
+                <li key={w.id}>
+                  <button
+                    onClick={() => { onChange(w.id === "default" ? null : w.id); setOpen(false); }}
+                    className={`flex w-full items-baseline gap-2 border-l-2 px-3 py-2 text-left transition ${
+                      selected
+                        ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)]"
+                        : "border-transparent hover:bg-[var(--bg-elev)] hover:border-[#404a5b]"
+                    }`}
+                  >
+                    <code className={`font-[family-name:var(--font-mono)] text-[11.5px] ${selected ? "text-[var(--polaris)]" : "text-[#e6ecf5]"}`}>
+                      {w.id}
+                    </code>
+                    <span className="font-[family-name:var(--font-sans)] text-[11.5px] text-[#cdd4df]">{w.label}</span>
+                    <span className="ml-auto font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[var(--ink-muted)]">
+                      {w.source} · {w.stages.length}st
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function StageHeader({
+  selected, onSelect, prdStatus, archStatus, storiesStatus, threadName,
+  workflows, currentWorkflowId, onChangeWorkflow,
+}: {
   selected: string;
   onSelect: (s: string) => void;
   prdStatus: string;            // M2 baseline：PRD 從真實 state 來
   archStatus: string;           // M2.3：架構從真實 state 來
   storiesStatus: string;        // M2.3：故事從真實 state 來
   threadName: string | null;    // 從 thread list 找對應名稱
+  workflows: Workflow[];        // M3：thread workflow switcher
+  currentWorkflowId: string | null;
+  onChangeWorkflow: (workflowId: string | null) => void;
 }) {
   // 把後端 status 字串映成 StageStatus（draft/approved/needs_revision；其餘 fallback draft）
   const normalize = (s: string): StageStatus =>
@@ -1232,7 +1469,12 @@ function StageHeader({ selected, onSelect, prdStatus, archStatus, storiesStatus,
       <div className="mb-3 flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
         <span>thread</span><span className="text-[#2a3041]">/</span>
         <span className="text-[#b8c0cf]">{threadName ?? "—"}</span><span className="text-[#2a3041]">·</span>
-        <span>workflow</span><span className="text-[#2a3041]">/</span><span className="text-[var(--polaris)]">default</span>
+        <span>workflow</span><span className="text-[#2a3041]">/</span>
+        <WorkflowSwitcher
+          workflows={workflows}
+          currentId={currentWorkflowId}
+          onChange={onChangeWorkflow}
+        />
         <span className="ml-auto">stages by <span className="text-[#b8c0cf]">builtin_core_stages</span></span>
       </div>
       <h1 className="mb-5 font-[family-name:var(--font-display)] text-[32px] font-semibold leading-none tracking-tight text-[#e6ecf5]">
@@ -2431,133 +2673,496 @@ function SubagentPane({ abbr, color, name, status, stats, logs }: {
   );
 }
 
-// ============================== Workflows view ==============================
-function WorkflowsView() {
-  const [picked, setPicked] = useState<string>("default");
-  const wf = WORKFLOWS.find((w) => w.id === picked)!;
+// ============================== Workflows view（M3：API-driven CRUD）==============================
+type WorkflowDraft = Omit<Workflow, "source" | "source_plugin" | "created_at">;
+
+function WorkflowsView({
+  workflows, agents, availableStages, onRefresh, onDelete, onSetError,
+}: {
+  workflows: Workflow[];
+  agents: Agent[];
+  availableStages: string[];
+  onRefresh: () => Promise<void>;
+  onDelete: (wf: Workflow) => void;
+  onSetError: (msg: string | null) => void;
+}) {
+  const [pickedId, setPickedId] = useState<string>(() => workflows[0]?.id ?? "default");
+  const [draft, setDraft] = useState<WorkflowDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // 切到 user workflow → 建立 draft 副本（builtin 只 view）
+  const picked = workflows.find((w) => w.id === pickedId) ?? workflows[0];
+  const isEditable = picked?.source === "user";
+  const inEditMode = draft !== null;
+
+  // 切換 workflow 時，清掉舊 draft
+  useEffect(() => { setDraft(null); }, [pickedId]);
+
+  // 如果 list 變了但 picked 不在了，挑第一個
+  useEffect(() => {
+    if (workflows.length > 0 && !workflows.find((w) => w.id === pickedId)) {
+      setPickedId(workflows[0].id);
+    }
+  }, [workflows, pickedId]);
+
+  const startEdit = () => {
+    if (!picked) return;
+    setDraft({
+      id: picked.id, label: picked.label, description: picked.description,
+      stages: picked.stages.map((s) => ({
+        stage_id: s.stage_id,
+        depends_on: [...s.depends_on],
+        agent_bindings: s.agent_bindings.map((b) => ({ ...b })),
+        collab_mode: s.collab_mode,
+      })),
+    });
+  };
+
+  const startNew = () => {
+    const id = window.prompt("新 workflow id（英數/底線；之後不能改）：", "");
+    if (!id || !/^[a-z0-9_-]+$/i.test(id.trim())) return;
+    setDraft({
+      id: id.trim(), label: id.trim(),
+      description: "",
+      stages: [],
+    });
+    setPickedId(id.trim());
+  };
+
+  const saveDraft = async () => {
+    if (!draft) return;
+    onSetError(null);
+    setSaving(true);
+    try {
+      const exists = workflows.find((w) => w.id === draft.id && w.source === "user");
+      if (exists) {
+        await updateWorkflow(draft.id, draft);
+      } else {
+        await createWorkflow(draft);
+      }
+      await onRefresh();
+      setDraft(null);
+    } catch (e) {
+      onSetError(`儲存失敗：${(e as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Stage manipulation helpers
+  const moveStage = (idx: number, dir: -1 | 1) => {
+    if (!draft) return;
+    const next = [...draft.stages];
+    const j = idx + dir;
+    if (j < 0 || j >= next.length) return;
+    [next[idx], next[j]] = [next[j], next[idx]];
+    // depends_on 不能引用後面的 stage —— 移動時要過濾
+    const ids = next.map((s) => s.stage_id);
+    next.forEach((s, i) => {
+      s.depends_on = s.depends_on.filter((d) => ids.indexOf(d) < i);
+    });
+    setDraft({ ...draft, stages: next });
+  };
+
+  const removeStage = (idx: number) => {
+    if (!draft) return;
+    const next = draft.stages.filter((_, i) => i !== idx);
+    const removedId = draft.stages[idx].stage_id;
+    next.forEach((s) => {
+      s.depends_on = s.depends_on.filter((d) => d !== removedId);
+    });
+    setDraft({ ...draft, stages: next });
+  };
+
+  const addStage = (sid: string) => {
+    if (!draft) return;
+    if (draft.stages.find((s) => s.stage_id === sid)) return;
+    const prev = draft.stages[draft.stages.length - 1]?.stage_id;
+    setDraft({
+      ...draft,
+      stages: [...draft.stages, {
+        stage_id: sid,
+        depends_on: prev ? [prev] : [],
+        agent_bindings: [],
+        collab_mode: "single",
+      }],
+    });
+  };
+
+  const cycleCollab = (idx: number) => {
+    if (!draft) return;
+    const order: ApiCollabMode[] = ["single", "discussion", "dispatch"];
+    const cur = draft.stages[idx].collab_mode;
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    const ns = [...draft.stages];
+    ns[idx] = { ...ns[idx], collab_mode: next };
+    setDraft({ ...draft, stages: ns });
+  };
+
+  const cycleBindingRole = (stageIdx: number, bindIdx: number) => {
+    if (!draft) return;
+    const order: ApiCollabRole[] = ["lead", "peer", "subagent"];
+    const ns = [...draft.stages];
+    const cur = ns[stageIdx].agent_bindings[bindIdx].role;
+    const newBindings = [...ns[stageIdx].agent_bindings];
+    newBindings[bindIdx] = { ...newBindings[bindIdx], role: order[(order.indexOf(cur) + 1) % order.length] };
+    ns[stageIdx] = { ...ns[stageIdx], agent_bindings: newBindings };
+    setDraft({ ...draft, stages: ns });
+  };
+
+  const removeBinding = (stageIdx: number, bindIdx: number) => {
+    if (!draft) return;
+    const ns = [...draft.stages];
+    ns[stageIdx] = {
+      ...ns[stageIdx],
+      agent_bindings: ns[stageIdx].agent_bindings.filter((_, i) => i !== bindIdx),
+    };
+    setDraft({ ...draft, stages: ns });
+  };
+
+  const addBinding = (stageIdx: number, agentId: string) => {
+    if (!draft) return;
+    const stage = draft.stages[stageIdx];
+    if (stage.agent_bindings.find((b) => b.agent_id === agentId)) return;
+    const ns = [...draft.stages];
+    ns[stageIdx] = {
+      ...ns[stageIdx],
+      agent_bindings: [...stage.agent_bindings, { agent_id: agentId, role: "lead" }],
+    };
+    setDraft({ ...draft, stages: ns });
+  };
+
   return (
     <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
       <ViewHeader title="Workflows" sub="表單式編輯：有序 stage 清單 + 依賴推導（無 DAG canvas）" right={
-        <button className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]">
+        <button onClick={startNew} className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]">
           ＋ new workflow
         </button>
       } />
       <div className="flex min-h-0 flex-1">
-        <div className="flex w-[420px] shrink-0 flex-col border-r border-[var(--rule-dark)] overflow-y-auto p-6 space-y-3">
-          {WORKFLOWS.map((w) => {
-            const active = w.id === picked;
+        <div className="flex w-[420px] shrink-0 flex-col overflow-y-auto border-r border-[var(--rule-dark)] p-6 space-y-3">
+          {workflows.length === 0 && (
+            <div className="border border-dashed border-[var(--rule-dark)] py-8 text-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+              無 workflow（loading…）
+            </div>
+          )}
+          {workflows.map((w) => {
+            const active = w.id === pickedId;
             return (
-              <button key={w.id} onClick={() => setPicked(w.id)}
+              <button key={w.id} onClick={() => setPickedId(w.id)}
                 className={`flex flex-col items-stretch border p-4 text-left transition ${
                   active ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_6%,transparent)]" : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40 hover:border-[#4a5468]"
                 }`}>
                 <div className="mb-1 flex items-center justify-between">
                   <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{w.id}</code>
-                  {w.builtin ? <Pill color="approved">BUILTIN</Pill> : <Pill color="muted">USER</Pill>}
+                  {w.source === "builtin" ? <Pill color="approved">BUILTIN</Pill> : <Pill color="muted">USER</Pill>}
                 </div>
                 <div className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">{w.label}</div>
-                <div className="mt-1 text-[12px] text-[#97a0b3]">{w.desc}</div>
-                <div className="mt-3 flex items-center gap-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+                {w.description && <div className="mt-1 text-[12px] text-[#97a0b3]">{w.description}</div>}
+                <div className="mt-3 flex flex-wrap items-center gap-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
                   {w.stages.map((s, i) => (
-                    <span key={s} className="flex items-center gap-1.5">
-                      <span className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{s}</span>
+                    <span key={s.stage_id} className="flex items-center gap-1.5">
+                      <span className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{s.stage_id}</span>
                       {i < w.stages.length - 1 && <span className="text-[var(--ink-muted)]">→</span>}
                     </span>
                   ))}
                 </div>
                 <div className="mt-3 flex items-center justify-between border-t border-[var(--rule-dark)] pt-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                  <span>{w.threads} thread{w.threads === 1 ? "" : "s"} using</span>
-                  <span>source · <span className="text-[#cdd4df]">{w.source}</span></span>
+                  <span>source · <span className="text-[#cdd4df]">{w.source}{w.source_plugin ? ` · ${w.source_plugin}` : ""}</span></span>
+                  <span>{w.stages.length} stages</span>
                 </div>
               </button>
             );
           })}
         </div>
+
         <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-8">
-          <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">EDITING · {wf.id}</div>
-          <h2 className="font-[family-name:var(--font-display)] text-[24px] font-semibold leading-tight text-[#e6ecf5]">{wf.label}</h2>
-          <p className="mt-1 text-[13px] text-[#97a0b3]">{wf.desc}</p>
-          <div className="mt-7">
-            <SectionLabel>STAGES（拖曳重排 / 上下移）</SectionLabel>
-            <ol className="space-y-2">
-              {wf.stages.map((s, i) => (
-                <li key={s} className="flex flex-col gap-3 border border-[var(--rule-dark)] bg-[var(--bg-elev)]/60 p-3">
-                  <div className="flex items-center gap-3">
-                    <span className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--ink-muted)]">{String(i + 1).padStart(2, "0")}</span>
-                    <code className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{s}</code>
-                    <span className="text-[13px] text-[#cdd4df]">{STAGES.find((x) => x.id === s)?.label ?? s}</span>
-                    <span className="ml-auto flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                      <span>collab</span>
-                      <CollabModePill mode={wf.collab_mode[s] ?? "single"} />
-                    </span>
-                    <span className="flex items-center gap-2 border-l border-[var(--rule-dark)] pl-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                      <span>depends_on</span>
-                      {wf.stages.slice(0, i).length === 0 ? <span className="text-[#5e6878]">(root)</span> : wf.stages.slice(0, i).map((d) => (
-                        <code key={d} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{d}</code>
-                      ))}
-                    </span>
-                    <button title="上移" className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">↑</button>
-                    <button title="下移" className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">↓</button>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 pl-8">
-                    <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">agents</span>
-                    {(wf.agent_bindings[s] ?? []).map((b) => <AgentBindingChip key={b.agent_id} binding={b} />)}
-                    <button className="border border-dashed border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">＋ add</button>
-                  </div>
-                </li>
-              ))}
-            </ol>
-            <button className="mt-3 flex w-full items-center justify-center gap-2 border border-dashed border-[var(--rule-dark)] py-2.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
-              ＋ add stage
-            </button>
-          </div>
-          <div className="mt-8">
-            <SectionLabel>STEPPER PREVIEW</SectionLabel>
-            <ol className="flex gap-2">
-              {wf.stages.map((s, i) => (
-                <li key={s} className="flex items-center gap-2">
-                  <div className="border border-[var(--rule-dark)] bg-[var(--bg-elev)]/40 px-3 py-2">
-                    <div className="font-[family-name:var(--font-display)] text-[18px] font-semibold text-[#e6ecf5]">{String(i + 1).padStart(2, "0")}</div>
-                    <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{STAGES.find((x) => x.id === s)?.label}</div>
-                  </div>
-                  {i < wf.stages.length - 1 && <span className="text-[var(--rule-dark)]">→</span>}
-                </li>
-              ))}
-            </ol>
-          </div>
-          <div className="mt-8 flex justify-end gap-2">
-            <ToolBtn>取消</ToolBtn>
-            <ToolBtn primary>儲存 workflow</ToolBtn>
-          </div>
+          {!picked ? (
+            <div className="grid flex-1 place-items-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+              選一個 workflow
+            </div>
+          ) : (
+            <>
+              <div className="mb-2 flex items-baseline gap-3">
+                <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                  {inEditMode ? "EDITING" : "VIEWING"} · {picked.id}
+                </span>
+                {picked.source === "builtin" && (
+                  <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[#5e6878]">
+                    （builtin · 唯讀）
+                  </span>
+                )}
+              </div>
+              <h2 className="font-[family-name:var(--font-display)] text-[24px] font-semibold leading-tight text-[#e6ecf5]">{picked.label}</h2>
+              {picked.description && <p className="mt-1 text-[13px] text-[#97a0b3]">{picked.description}</p>}
+
+              <div className="mt-7">
+                <SectionLabel>STAGES{inEditMode ? "（上下移 / 加減 / 編輯 binding & collab）" : ""}</SectionLabel>
+                <WorkflowStageList
+                  stages={inEditMode ? draft!.stages : picked.stages}
+                  agents={agents}
+                  editable={inEditMode}
+                  onMoveStage={moveStage}
+                  onRemoveStage={removeStage}
+                  onCycleCollab={cycleCollab}
+                  onAddBinding={addBinding}
+                  onRemoveBinding={removeBinding}
+                  onCycleBindingRole={cycleBindingRole}
+                />
+                {inEditMode && (
+                  <AddStagePicker
+                    availableStages={availableStages.filter((s) => !draft!.stages.find((x) => x.stage_id === s))}
+                    onAdd={addStage}
+                  />
+                )}
+              </div>
+
+              <div className="mt-8 flex justify-end gap-2">
+                {!inEditMode && isEditable && (
+                  <ToolBtn onClick={startEdit}>編輯</ToolBtn>
+                )}
+                {!inEditMode && picked.source === "user" && (
+                  <ToolBtn onClick={() => onDelete(picked)}>刪除</ToolBtn>
+                )}
+                {inEditMode && (
+                  <>
+                    <ToolBtn onClick={() => setDraft(null)} disabled={saving}>取消</ToolBtn>
+                    <ToolBtn primary onClick={saveDraft} disabled={saving}>
+                      {saving ? "saving…" : "儲存 workflow"}
+                    </ToolBtn>
+                  </>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// ============================== Agents view ==============================
-function AgentsView() {
-  const stagesInOrder = Array.from(new Set(AGENTS.map((a) => a.stage)));
+function WorkflowStageList({
+  stages, agents, editable,
+  onMoveStage, onRemoveStage, onCycleCollab, onAddBinding, onRemoveBinding, onCycleBindingRole,
+}: {
+  stages: WorkflowStage[];
+  agents: Agent[];
+  editable: boolean;
+  onMoveStage: (idx: number, dir: -1 | 1) => void;
+  onRemoveStage: (idx: number) => void;
+  onCycleCollab: (idx: number) => void;
+  onAddBinding: (stageIdx: number, agentId: string) => void;
+  onRemoveBinding: (stageIdx: number, bindIdx: number) => void;
+  onCycleBindingRole: (stageIdx: number, bindIdx: number) => void;
+}) {
+  if (stages.length === 0) {
+    return (
+      <div className="border border-dashed border-[var(--rule-dark)] py-8 text-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+        無 stage{editable ? "，點下方加入第一個" : ""}
+      </div>
+    );
+  }
+  return (
+    <ol className="space-y-2">
+      {stages.map((s, i) => (
+        <li key={s.stage_id} className="flex flex-col gap-3 border border-[var(--rule-dark)] bg-[var(--bg-elev)]/60 p-3">
+          <div className="flex items-center gap-3">
+            <span className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--ink-muted)]">{String(i + 1).padStart(2, "0")}</span>
+            <code className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{s.stage_id}</code>
+            <span className="ml-auto flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+              <span>collab</span>
+              {editable ? (
+                <button
+                  onClick={() => onCycleCollab(i)}
+                  title="點擊切換 collab_mode"
+                  className="border border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]"
+                >
+                  {s.collab_mode}
+                </button>
+              ) : <CollabModePill mode={s.collab_mode} />}
+            </span>
+            <span className="flex items-center gap-2 border-l border-[var(--rule-dark)] pl-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+              <span>depends_on</span>
+              {s.depends_on.length === 0 ? <span className="text-[#5e6878]">(root)</span> : s.depends_on.map((d) => (
+                <code key={d} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{d}</code>
+              ))}
+            </span>
+            {editable && (
+              <>
+                <button title="上移" onClick={() => onMoveStage(i, -1)} className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">↑</button>
+                <button title="下移" onClick={() => onMoveStage(i, 1)} className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">↓</button>
+                <button title="刪除" onClick={() => onRemoveStage(i)} className="grid h-6 w-6 place-items-center border border-[var(--rule-dark)] text-[var(--ink-muted)] transition hover:border-[#f47171] hover:text-[#f47171]">×</button>
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 pl-8">
+            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">agents</span>
+            {s.agent_bindings.map((b, bi) => (
+              <BindingChip
+                key={b.agent_id + bi}
+                binding={b}
+                editable={editable}
+                onCycleRole={() => onCycleBindingRole(i, bi)}
+                onRemove={() => onRemoveBinding(i, bi)}
+              />
+            ))}
+            {editable && (
+              <BindingPicker
+                agents={agents}
+                excludeIds={s.agent_bindings.map((b) => b.agent_id)}
+                onPick={(aid) => onAddBinding(i, aid)}
+              />
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function BindingChip({ binding, editable, onCycleRole, onRemove }: {
+  binding: ApiAgentBinding;
+  editable: boolean;
+  onCycleRole: () => void;
+  onRemove: () => void;
+}) {
+  const color = binding.role === "lead" ? "#5b8cff"
+              : binding.role === "peer" ? "#f59e0b"
+              : "#a78bfa";
+  return (
+    <span className="inline-flex items-center gap-1 border px-2 py-0.5" style={{ borderColor: color }}>
+      <code className="font-[family-name:var(--font-mono)] text-[10px] text-[#e6ecf5]">{binding.agent_id}</code>
+      {editable ? (
+        <button onClick={onCycleRole} title="切換 role" className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider" style={{ color }}>
+          {binding.role}
+        </button>
+      ) : (
+        <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider" style={{ color }}>{binding.role}</span>
+      )}
+      {editable && (
+        <button onClick={onRemove} title="移除" className="text-[var(--ink-muted)] hover:text-[#f47171]">×</button>
+      )}
+    </span>
+  );
+}
+
+function BindingPicker({ agents, excludeIds, onPick }: {
+  agents: Agent[];
+  excludeIds: string[];
+  onPick: (agentId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+  const choices = agents.filter((a) => !excludeIds.includes(a.agent_id));
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="border border-dashed border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
+      >
+        ＋ add
+      </button>
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+4px)] z-30 max-h-[40vh] min-w-[220px] overflow-y-auto border border-[var(--paper-edge)] bg-[var(--paper)] shadow-anvil">
+          {choices.length === 0 ? (
+            <div className="px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">無可加 agent</div>
+          ) : choices.map((a) => (
+            <button
+              key={a.agent_id}
+              onClick={() => { onPick(a.agent_id); setOpen(false); }}
+              className="flex w-full items-baseline gap-2 px-3 py-2 text-left transition hover:bg-[var(--bg-elev)]"
+            >
+              <code className="font-[family-name:var(--font-mono)] text-[11px] text-[var(--polaris)]">{a.agent_id}</code>
+              <span className="font-[family-name:var(--font-sans)] text-[11px] text-[#cdd4df]">{a.name}</span>
+              <span className="ml-auto font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[var(--ink-muted)]">{a.role}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddStagePicker({ availableStages, onAdd }: { availableStages: string[]; onAdd: (sid: string) => void }) {
+  if (availableStages.length === 0) {
+    return (
+      <div className="mt-3 border border-dashed border-[var(--rule-dark)] py-2 text-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+        所有可用 stage 都已加入
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)] self-center">＋ add stage</span>
+      {availableStages.map((sid) => (
+        <button
+          key={sid}
+          onClick={() => onAdd(sid)}
+          className="border border-dashed border-[var(--rule-dark)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
+        >
+          {sid}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+
+// ============================== Agents view（M3：API-driven CRUD）==============================
+const ROLE_COLOR_REAL: Record<string, string> = {
+  lead: "#5b8cff",
+  peer: "#f59e0b",
+  subagent: "#a78bfa",
+};
+
+function AgentsView({ agents, onNew, onEdit, onDelete }: {
+  agents: Agent[];
+  onNew: () => void;
+  onEdit: (a: Agent) => void;
+  onDelete: (a: Agent) => void;
+}) {
+  // 用 role（綁的 stage_id）分組
+  const roles = Array.from(new Set(agents.map((a) => a.role)));
   return (
     <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
-      <ViewHeader title="Agents" sub="完整客製化 AI agent · 多 agent 同 stage（lead / peer / subagent）" right={
-        <button className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]">
+      <ViewHeader title="Agents" sub="完整客製化 AI agent · 內建 seed + user 可覆寫" right={
+        <button
+          onClick={onNew}
+          className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]"
+        >
           ＋ new agent
         </button>
       } />
       <div className="min-h-0 flex-1 space-y-7 overflow-y-auto p-8">
-        {stagesInOrder.map((stage) => {
-          const agentsInStage = AGENTS.filter((a) => a.stage === stage);
-          const mode = WORKFLOWS[0].collab_mode[stage] ?? "single";
+        {agents.length === 0 && (
+          <div className="border border-dashed border-[var(--rule-dark)] py-12 text-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            無 agents（loading…）
+          </div>
+        )}
+        {roles.map((role) => {
+          const inRole = agents.filter((a) => a.role === role);
           return (
-            <div key={stage}>
+            <div key={role}>
               <div className="mb-3 flex items-baseline gap-3 border-b border-[var(--rule-dark)] pb-2">
-                <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--polaris)]">stage · {stage}</span>
-                <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{agentsInStage.length} agents</span>
-                <CollabModePill mode={mode} />
+                <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--polaris)]">
+                  role · {role}
+                </span>
+                <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+                  {inRole.length} agents
+                </span>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                {agentsInStage.map((a) => <AgentCard key={a.id} a={a} />)}
+                {inRole.map((a) => (
+                  <AgentCard key={a.agent_id} agent={a} onEdit={() => onEdit(a)} onDelete={() => onDelete(a)} />
+                ))}
               </div>
             </div>
           );
@@ -2567,60 +3172,65 @@ function AgentsView() {
   );
 }
 
-function AgentCard({ a }: { a: typeof AGENTS[number] }) {
-  const roleColor = ROLE_COLORS[a.collab];
+function AgentCard({ agent, onEdit, onDelete }: {
+  agent: Agent;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const isUser = agent.source === "user";
+  const initials = agent.name
+    .split(/\s+|[-_]/)
+    .filter(Boolean)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .slice(0, 2)
+    .join("") || agent.agent_id[0]?.toUpperCase();
   return (
-    <div className={`flex flex-col border bg-[var(--bg-elev)]/40 p-5 ${a.enabled ? "border-[var(--rule-dark)]" : "border-[var(--rule-dark)] opacity-60"}`}>
+    <div className={`flex flex-col border bg-[var(--bg-elev)]/40 p-5 ${agent.enabled ? "border-[var(--rule-dark)]" : "border-[var(--rule-dark)] opacity-60"}`}>
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center border bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] font-[family-name:var(--font-display)] text-[14px] font-bold" style={{ borderColor: roleColor, color: roleColor }}>
-            {a.name.split(" ").map((w) => w[0]).join("")}
+          <span className="grid h-9 w-9 place-items-center border border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] font-[family-name:var(--font-display)] text-[14px] font-bold text-[var(--polaris)]">
+            {initials}
           </span>
           <div className="leading-tight">
-            <div className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">{a.name}</div>
-            <code className="mt-1 inline-block font-[family-name:var(--font-mono)] text-[10px] tracking-wider text-[var(--ink-muted)]">{a.id}</code>
+            <div className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">{agent.name}</div>
+            <code className="mt-1 inline-block font-[family-name:var(--font-mono)] text-[10px] tracking-wider text-[var(--ink-muted)]">{agent.agent_id}</code>
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">
-          <span className="border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em]" style={{ color: roleColor, borderColor: `color-mix(in oklab, ${roleColor} 40%, transparent)` }}>
-            {a.collab}
-          </span>
-          {a.enabled ? <Pill color="approved">ENABLED</Pill> : <Pill color="muted">DISABLED</Pill>}
+          {isUser ? <Pill color="muted">USER</Pill> : <Pill color="approved">BUILTIN</Pill>}
+          {agent.enabled ? <Pill color="approved">ENABLED</Pill> : <Pill color="muted">DISABLED</Pill>}
         </div>
       </div>
-      {a.subagentOf && (
-        <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-          subagent_of · <span className="text-[var(--polaris)]">{a.subagentOf}</span>
-        </div>
-      )}
       <div className="mb-3 grid grid-cols-3 gap-3 border-y border-[var(--rule-dark)] py-3">
-        <KV k="MODEL" v={a.model} />
-        <KV k="MAX ITER" v={String(a.iter)} />
-        <KV k="SKILLS" v={String(a.skills.length)} />
+        <KV k="ROLE" v={agent.role} />
+        <KV k="MODEL" v={agent.model_choice} />
+        <KV k="MAX ITER" v={String(agent.max_iterations)} />
       </div>
       <div className="mb-3">
         <SectionLabel>SYSTEM PROMPT</SectionLabel>
-        <div className="line-clamp-2 font-[family-name:var(--font-mono)] text-[12px] leading-5 text-[#cdd4df]">{a.prompt}</div>
-      </div>
-      <div className="mb-3">
-        <SectionLabel>SKILLS</SectionLabel>
-        <div className="flex flex-wrap gap-1.5">
-          {a.skills.map((s) => <span key={s} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[#cdd4df]">{s}</span>)}
+        <div className="line-clamp-3 font-[family-name:var(--font-mono)] text-[12px] leading-5 text-[#cdd4df]">
+          {agent.system_prompt || <span className="text-[var(--ink-muted)]">（未設定）</span>}
         </div>
       </div>
-      {a.tools.length > 0 && (
+      {agent.tools.length > 0 && (
         <div className="mb-3">
           <SectionLabel>TOOLS</SectionLabel>
           <div className="flex flex-wrap gap-1.5">
-            {a.tools.map((t) => <span key={t} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]">{t}</span>)}
+            {agent.tools.map((t) => (
+              <span key={t} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]">
+                {t}
+              </span>
+            ))}
           </div>
         </div>
       )}
       <div className="mt-auto flex items-center justify-between border-t border-[var(--rule-dark)] pt-3">
-        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">seed · {a.seed}</span>
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+          source · {agent.source}
+        </span>
         <div className="flex gap-2">
-          <ToolBtn>編輯</ToolBtn>
-          <ToolBtn>{a.enabled ? "停用" : "啟用"}</ToolBtn>
+          <ToolBtn onClick={onEdit}>編輯</ToolBtn>
+          {isUser && <ToolBtn onClick={onDelete}>刪除</ToolBtn>}
         </div>
       </div>
     </div>
