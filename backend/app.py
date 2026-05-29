@@ -34,6 +34,10 @@ from api_models import (  # noqa: E402
     AttachmentListResponse,
     AttachmentResponse,
     CreateProjectRequest,
+    DeliveryItemPreview,
+    DeliveryPreviewResponse,
+    DeliveryPublishRequest,
+    DeliveryPublishResponse,
     ModelAdapterListResponse,
     ModelAdapterResponse,
     PluginListResponse,
@@ -56,6 +60,7 @@ from api_models import (  # noqa: E402
     StageStatusesResponse,
     UpdateProjectRequest,
 )
+from delivery_parser import parse_stories_to_delivery_items  # noqa: E402
 from parsers import parse as parse_attachment  # noqa: E402
 from persistence import dal, migrations  # noqa: E402
 from plugin_host import (  # noqa: E402
@@ -370,6 +375,83 @@ async def stage_chat(stage_id: str, req: StageChatRequest):
     return StageChatResponse(
         ai_response=out["reply"] or "",
         updated_content=out["artifact"] or None,
+    )
+
+
+@app.post("/api/stage/stories/{thread_id}/preview-delivery", response_model=DeliveryPreviewResponse)
+async def stories_preview_delivery(thread_id: str, req: DeliveryPublishRequest):
+    """解析 stories artifact → DeliveryItem[] → 呼 IntegrationSpec.preview()。
+
+    不真打外部 API；給前端顯示「即將建立什麼」清單供 user 確認後再 publish。
+    """
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    reg = _registry()
+    integ = reg.integrations.get(req.target)
+    if integ is None:
+        raise HTTPException(
+            404,
+            detail=error_detail("integration_not_found", f"integration '{req.target}' 未註冊"),
+        )
+    artifact = dal.get_artifact(thread_id, "stories") or ""
+    if not artifact.strip():
+        raise HTTPException(
+            400,
+            detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
+        )
+    items = parse_stories_to_delivery_items(artifact, target_project=req.config.get("repo", ""))
+    if not items:
+        raise HTTPException(
+            400,
+            detail=error_detail(
+                "stories_unparseable",
+                "stories 解析不出任何 DeliveryItem；檢查 heading shape：## Epic N: / ### Story N.M —",
+            ),
+        )
+    previews = integ.preview(items, req.config)
+    return DeliveryPreviewResponse(
+        target=req.target, config=req.config, item_count=len(items),
+        items=[DeliveryItemPreview(**p) for p in previews],
+    )
+
+
+@app.post("/api/stage/stories/{thread_id}/publish", response_model=DeliveryPublishResponse)
+async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
+    """解析 stories → 呼 IntegrationSpec.publish()。回傳已建立的 issue URL。
+
+    要 user 在 publish modal 上 confirm 過再呼叫；本 endpoint 不二次確認。
+    """
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    reg = _registry()
+    integ = reg.integrations.get(req.target)
+    if integ is None:
+        raise HTTPException(
+            404,
+            detail=error_detail("integration_not_found", f"integration '{req.target}' 未註冊"),
+        )
+    artifact = dal.get_artifact(thread_id, "stories") or ""
+    if not artifact.strip():
+        raise HTTPException(
+            400,
+            detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
+        )
+    items = parse_stories_to_delivery_items(artifact, target_project=req.config.get("repo", ""))
+    if not items:
+        raise HTTPException(400, detail=error_detail("stories_unparseable", "stories 解析失敗"))
+
+    # 真實 publish（GitHub 已實作；jira / gitlab stub 會回 success=False）
+    result = await asyncio.to_thread(integ.publish, items, req.config)
+    dal.append_event(
+        thread_id, "stories",
+        event_type="delivery_published" if result.success else "delivery_publish_failed",
+        detail=f'{{"target":"{result.target}","count":{result.count},"created":{result.count if result.success else 0}}}',
+    )
+    return DeliveryPublishResponse(
+        success=result.success,
+        target=result.target,
+        count=result.count,
+        created=list(result.created),
     )
 
 
