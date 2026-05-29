@@ -67,7 +67,17 @@ from api_models import (  # noqa: E402
     WorkflowListResponse,
     WorkflowResponse,
     WorkflowUpsertRequest,
+    ImplementStartRequest,
+    ImplementStartResponse,
+    ImplementRunInfo,
+    ImplementSessionResponse,
+    ImplementSessionListResponse,
+    ImplementCancelResponse,
+    ImplementLogLine,
+    ImplementLogResponse,
 )
+from async_runtime import impl_dal, orchestrator, task_registry  # noqa: E402
+from plugin_api import ToolHook  # noqa: E402
 from delivery_parser import parse_stories_to_delivery_items  # noqa: E402
 from parsers import parse as parse_attachment  # noqa: E402
 from persistence import dal, migrations  # noqa: E402
@@ -106,6 +116,8 @@ async def lifespan(app: FastAPI):
     log.info("startup complete — plugins loaded: %s", loaded or "(none)")
     log.info("LODESTAR_UPLOADS_DIR=%s", os.environ["LODESTAR_UPLOADS_DIR"])
     yield
+    # shutdown：取消所有在跑的背景實作 task（避免殘留子程序）
+    await task_registry.cancel_all()
 
 
 app = FastAPI(title="ai-tool-v3", version="0.1.0", lifespan=lifespan)
@@ -737,6 +749,96 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
         count=result.count,
         created=list(result.created),
     )
+
+
+# ============================================================
+#  Implement（async 實作 agent，M5）
+# ============================================================
+def _impl_run_info(r: dict) -> ImplementRunInfo:
+    return ImplementRunInfo(
+        run_id=r["run_id"], attempt=r["attempt"], runner=r["runner"], status=r["status"],
+        exit_code=r["exit_code"], cancelled=bool(r["cancelled"]), timed_out=bool(r["timed_out"]),
+        parent_run_id=r["parent_run_id"], started_at=r["started_at"], ended_at=r["ended_at"],
+    )
+
+
+def _impl_session_response(s: dict) -> ImplementSessionResponse:
+    runs = impl_dal.list_runs(s["session_id"])
+    return ImplementSessionResponse(
+        session_id=s["session_id"], thread_id=s["thread_id"], stage=s["stage"],
+        title=s["title"], target_repo=s["target_repo"], runner=s["runner"],
+        status=s["status"], pr_url=s["pr_url"], error_message=s["error_message"],
+        created_at=s["created_at"], updated_at=s["updated_at"],
+        runs=[_impl_run_info(r) for r in runs],
+    )
+
+
+@app.post("/api/implement/start", response_model=ImplementStartResponse)
+async def implement_start(req: ImplementStartRequest):
+    """啟動一次 async 實作 session（非阻塞，立刻回 session_id）。
+
+    runner 由 registry 解析（mock = 安全 dry-run）；hooks 取所有 registered tool hooks；
+    story 留空則讀該 thread 的 stories artifact。實際 fix-loop 在背景 task 跑。
+    """
+    if dal.get_project(req.thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{req.thread_id}' 不存在"))
+    reg = _registry()
+    runner_cls = reg.runners.get(req.runner)
+    if runner_cls is None:
+        raise HTTPException(400, detail=error_detail("runner_not_found", f"runner '{req.runner}' 未註冊"))
+    runner = runner_cls()
+    if not runner.is_available():
+        raise HTTPException(400, detail=error_detail("runner_unavailable", f"runner '{req.runner}' 在此環境不可用"))
+    story = req.story.strip() or (dal.get_artifact(req.thread_id, "stories") or "")
+    if not story.strip():
+        raise HTTPException(400, detail=error_detail("story_empty", "沒有 story 可實作：先生成 stories 或於請求帶 story"))
+    hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
+    title = req.title.strip() or f"Implement {req.thread_id[:8]}"
+    session_id = orchestrator.start_session(
+        thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
+        target_repo=req.target_repo, title=title, hooks=hooks,
+    )
+    return ImplementStartResponse(session_id=session_id)
+
+
+@app.get("/api/implement/threads/{thread_id}/sessions", response_model=ImplementSessionListResponse)
+async def implement_sessions(thread_id: str):
+    sessions = impl_dal.list_sessions(thread_id)
+    return ImplementSessionListResponse(sessions=[_impl_session_response(s) for s in sessions])
+
+
+@app.post("/api/implement/{session_id}/cancel", response_model=ImplementCancelResponse)
+async def implement_cancel(session_id: int):
+    if impl_dal.get_session(session_id) is None:
+        raise HTTPException(404, detail=error_detail("session_not_found", f"session {session_id} 不存在"))
+    requested = await orchestrator.request_cancel(session_id)
+    return ImplementCancelResponse(session_id=session_id, cancel_requested=requested)
+
+
+@app.get("/api/implement/{session_id}/log", response_model=ImplementLogResponse)
+async def implement_log(session_id: int, after_id: int = 0):
+    """poll log channel：回 after_id 之後的所有 run 串流行 + 各 run 狀態 + 下次游標。"""
+    s = impl_dal.get_session(session_id)
+    if s is None:
+        raise HTTPException(404, detail=error_detail("session_not_found", f"session {session_id} 不存在"))
+    rows = impl_dal.list_session_messages(session_id, after_id=after_id)
+    next_cursor = rows[-1]["id"] if rows else after_id
+    lines = [
+        ImplementLogLine(id=r["id"], run_id=r["run_id"], attempt=r["attempt"],
+                         kind=r["kind"], content=r["content"])
+        for r in rows
+    ]
+    runs = [_impl_run_info(r) for r in impl_dal.list_runs(session_id)]
+    return ImplementLogResponse(session_id=session_id, status=s["status"],
+                                next_cursor=next_cursor, lines=lines, runs=runs)
+
+
+@app.get("/api/implement/{session_id}", response_model=ImplementSessionResponse)
+async def implement_status(session_id: int):
+    s = impl_dal.get_session(session_id)
+    if s is None:
+        raise HTTPException(404, detail=error_detail("session_not_found", f"session {session_id} 不存在"))
+    return _impl_session_response(s)
 
 
 @app.post("/api/stage/{stage_id}/{thread_id}/approve", response_model=StageStateResponse)

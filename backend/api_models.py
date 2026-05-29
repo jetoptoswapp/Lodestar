@@ -301,3 +301,69 @@ class DeliveryPublishResponse(BaseModel):
     target: str
     count: int
     created: list[str]      # 已建立的 issue / ticket URL
+
+
+# ---- Implement（async 實作 agent，M5）----
+class ImplementStartRequest(BaseModel):
+    thread_id: str
+    runner: str = "mock"            # registry 內的 runner choice（mock / claude-cli）
+    target_repo: str = ""           # owner/repo（mock 階段為示意值）
+    story: str = ""                 # 留空則讀該 thread 的 stories artifact
+    title: str = ""
+
+
+class ImplementStartResponse(BaseModel):
+    session_id: int
+
+
+class ImplementRunInfo(BaseModel):
+    run_id: int
+    attempt: int
+    runner: str
+    status: str                     # running/succeeded/failed/cancelled/timed_out/rejected
+    exit_code: Optional[int] = None
+    cancelled: bool = False
+    timed_out: bool = False
+    parent_run_id: Optional[int] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+
+
+class ImplementSessionResponse(BaseModel):
+    session_id: int
+    thread_id: str
+    stage: str
+    title: str
+    target_repo: str
+    runner: str
+    status: str                     # pending/running/succeeded/failed/cancelled
+    pr_url: str = ""
+    error_message: str = ""
+    created_at: Optional[float] = None
+    updated_at: Optional[float] = None
+    runs: list[ImplementRunInfo] = []
+
+
+class ImplementSessionListResponse(BaseModel):
+    sessions: list[ImplementSessionResponse]
+
+
+class ImplementCancelResponse(BaseModel):
+    session_id: int
+    cancel_requested: bool          # 是否有 active runner 被要求取消（已結束則 False）
+
+
+class ImplementLogLine(BaseModel):
+    id: int                         # 全域單調游標
+    run_id: int
+    attempt: int
+    kind: str                       # log / event / system
+    content: str
+
+
+class ImplementLogResponse(BaseModel):
+    session_id: int
+    status: str
+    next_cursor: int                # 下次 poll 帶回的 after_id
+    lines: list[ImplementLogLine]
+    runs: list[ImplementRunInfo] = []

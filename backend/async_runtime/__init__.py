@@ -12,6 +12,6 @@ plugin 只看得到 plugin_api 裡的 AgentRunner / ToolHook 契約；具體 run
 """
 from __future__ import annotations
 
-from async_runtime import impl_dal, task_registry
+from async_runtime import impl_dal, orchestrator, task_registry
 
-__all__ = ["impl_dal", "task_registry"]
+__all__ = ["impl_dal", "orchestrator", "task_registry"]
