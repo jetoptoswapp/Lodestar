@@ -46,6 +46,7 @@ from api_models import (  # noqa: E402
     PluginListResponse,
     PluginProvides,
     PluginResponse,
+    PluginToggleRequest,
     ProjectListResponse,
     ProjectResponse,
     SetProjectWorkflowRequest,
@@ -194,9 +195,67 @@ async def get_plugins():
                 enabled=dal.plugin_enabled(m.id),
                 provides=provides_by_plugin.get(m.id, PluginProvides()),
                 load_error=plugin_info.error or None,
+                builtin=m.id in plugin_loader.BUILTIN_PLUGIN_IDS,
+                discovery=plugin_info.discovery,
             )
         )
     return PluginListResponse(plugins=plugins)
+
+
+def _reload_registry() -> Registry:
+    """M4：重跑 plugin loader → 換 app.state.registry / engine（enable/disable 後用）。
+
+    load_all 會讀 plugin_state、跳過 disabled、清乾淨舊 contributions，
+    所以重跑一次即可讓 registry 反映最新啟用狀態。WorkflowEngine 無內部快取，
+    換新 Registry 即生效。
+    """
+    registry = plugin_loader.load_all()
+    app.state.registry = registry
+    app.state.engine = WorkflowEngine(registry)
+    return registry
+
+
+@app.patch("/api/plugins/{plugin_id}", response_model=PluginResponse)
+async def toggle_plugin(plugin_id: str, req: PluginToggleRequest):
+    """啟用 / 停用 plugin。內建 plugin 不可停用（會打掛核心流程）。
+
+    寫 plugin_state 後 hot-reload registry：
+    - disable → 該 plugin 不再 register，其 stage / workflow / agent 從 catalog 消失
+    - enable  → 重新 register，capability 回歸
+    """
+    reg = _registry()
+    known_ids = {p.manifest.id for p in reg.loaded_plugins}
+    if plugin_id not in known_ids:
+        raise HTTPException(404, detail=error_detail("plugin_not_found", f"plugin '{plugin_id}' 不存在"))
+    if plugin_id in plugin_loader.BUILTIN_PLUGIN_IDS and not req.enabled:
+        raise HTTPException(
+            409,
+            detail=error_detail("plugin_is_builtin", f"plugin '{plugin_id}' 是內建，不可停用"),
+        )
+
+    dal.set_plugin_enabled(plugin_id, req.enabled)
+    reg = _reload_registry()
+
+    # 回傳更新後的 plugin 狀態
+    info = next((p for p in reg.loaded_plugins if p.manifest.id == plugin_id), None)
+    if info is None:  # defensive
+        raise HTTPException(500, detail=error_detail("plugin_reload_failed", "reload 後找不到 plugin"))
+    m = info.manifest
+    provides = PluginProvides()
+    for (pid, ctype, cid) in reg.contributions:
+        if pid != plugin_id:
+            continue
+        if ctype == CAP_STAGE: provides.stages.append(cid)
+        elif ctype == CAP_WORKFLOW: provides.workflows.append(cid)
+        elif ctype == CAP_AGENT: provides.agents.append(cid)
+        elif ctype == CAP_INTEGRATION: provides.integrations.append(cid)
+    return PluginResponse(
+        id=m.id, name=m.name, version=m.version, description=m.description,
+        enabled=dal.plugin_enabled(m.id), provides=provides,
+        load_error=info.error or None,
+        builtin=m.id in plugin_loader.BUILTIN_PLUGIN_IDS,
+        discovery=info.discovery,
+    )
 
 
 @app.get("/api/models", response_model=ModelAdapterListResponse)

@@ -1,0 +1,14 @@
+# Lodestar plugin 範本 —— 把 __PLUGIN_ID__ / __PLUGIN_NAME__ / __STAGE_ID__ 全域替換成你的值，
+# 然後複製整個 plugin-template/ 目錄進 backend/plugins/<your-plugin-id>/ 並重啟 backend。
+[plugin]
+id = "__PLUGIN_ID__"
+name = "__PLUGIN_NAME__"
+version = "0.1.0"
+description = "TODO: 一句話描述這個 plugin 做什麼"
+host_api = ">=1.0,<2.0"
+entry_module = "plugins.__PLUGIN_ID__.register"
+requires_plugins = []
+
+[[contributes.stage]]
+id = "__STAGE_ID__"
+label = "TODO: stage 顯示名稱"

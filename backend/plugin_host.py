@@ -38,6 +38,8 @@ class PluginLoadInfo:
     manifest: PluginManifest
     loaded: bool
     error: str = ""
+    disabled: bool = False          # M4：user 在 plugin_state 停用 → 不 register，但仍列出
+    discovery: str = "directory"    # M4：directory（掃目錄）/ entry_point（pip install）
 
 
 @dataclass
