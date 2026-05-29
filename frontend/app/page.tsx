@@ -43,6 +43,9 @@ import {
   fetchImplementSession,
   fetchImplementLog,
   cancelImplement,
+  type StageChatMessage,
+  fetchStageHistory,
+  stageChat,
 } from "@/lib/api";
 import {
   countStoriesAndEstimate,
@@ -232,32 +235,8 @@ const AGENTS: Array<{
 ];
 
 
-// ---------- Chat（multi-agent discussion）----------
-type SpeakerId = "system_analyst" | "sales_voice" | "product_manager";
-type Chip = { label: string; selected?: boolean };
-type ChatMsg =
-  | { role: "assistant"; speaker: SpeakerId; content: string; chips?: Chip[]; multi?: boolean }
-  | { role: "user"; content: string; toAgent?: SpeakerId };
-
-// Speaker 視覺識別：peer / lead 用色彩區分，user reply 可指定 ↳ to <agent>
-const SPEAKER_STYLES: Record<SpeakerId, { abbr: string; color: string; tier: string }> = {
-  system_analyst:  { abbr: "SA", color: "#5b8cff", tier: "LEAD" },  // cobalt
-  sales_voice:     { abbr: "SV", color: "#f59e0b", tier: "PEER" },  // amber
-  product_manager: { abbr: "PM", color: "#a78bfa", tier: "PEER" },  // violet
-};
-
-const CHAT: ChatMsg[] = [
-  { role: "assistant", speaker: "sales_voice",     content: "從業務面切入：競品的 LINE Pay 已上線 2 季，Apple Pay 對 iOS 用戶轉換尤其關鍵——這兩個建議列 must-have。" },
-  { role: "assistant", speaker: "product_manager", content: "我加進來：本季 OKR 列了 PCI-DSS L1，這次重構正好一併處理；Apple Pay 同意，但要 PM 跟工程確認導入成本。" },
-  { role: "assistant", speaker: "system_analyst",  content: "好，先把要素收斂：\n· 多金流 must：信用卡 / Apple Pay / LINE Pay\n· 合規：PCI-DSS L1\n\n先確認尖峰並發等級（每秒結帳請求）？",
-    chips: [{ label: "< 500" }, { label: "500–2k" }, { label: "2k–5k", selected: true }, { label: "5k+" }] },
-  { role: "user", content: "2k–5k", toAgent: "system_analyst" },
-  { role: "assistant", speaker: "sales_voice",     content: "大促常見短暫衝到 5k+，建議留 30% headroom——架構同學要能接得住。" },
-  { role: "assistant", speaker: "product_manager", content: "headroom 我支持。卡資料處理方式選哪個？影響合規工程量。",
-    chips: [{ label: "Tokenization · 不入庫", selected: true }, { label: "入庫（PCI-DSS L1）" }] },
-  { role: "user", content: "Tokenization；PCI-DSS L1", toAgent: "product_manager" },
-  { role: "assistant", speaker: "system_analyst",  content: "整合三方意見：FR-1..4 ＋ NFR-1..4 ＋ OPS-1..2。請審閱核准；下游架構 stage 才能展開。" },
-];
+// Chat 已改吃真實 per-thread 歷史（見 ChatPanel + lib/api fetchStageHistory/stageChat）。
+// 舊的 multi-agent discussion mock（SPEAKER_STYLES / CHAT）已移除。
 
 // ============================== Page ==============================
 export default function Page() {
@@ -928,6 +907,8 @@ export default function Page() {
                       uploading={uploading}
                       onUploadAttachment={onUploadAttachment}
                       onDeleteAttachment={onDeleteAttachment}
+                      modelChoice={modelChoice}
+                      onChatArtifact={setPrdArtifact}
                     />
                   )}
                   {selected === "architecture" && (
@@ -940,6 +921,8 @@ export default function Page() {
                       onGenerate={onGenerateArch}
                       onRefine={onRefineArch}
                       onApprove={onApproveArch}
+                      modelChoice={modelChoice}
+                      onChatArtifact={setArchArtifact}
                     />
                   )}
                   {selected === "stories" && (
@@ -1610,6 +1593,7 @@ function StageHeader({
 function PrdWorkspace({
   onOpenFs, thread, artifact, status, busy, onGenerate, onRefine, onApprove,
   attachments, uploading, onUploadAttachment, onDeleteAttachment,
+  modelChoice, onChatArtifact,
 }: {
   onOpenFs: () => void;
   thread: string | null;
@@ -1623,6 +1607,8 @@ function PrdWorkspace({
   uploading: boolean;
   onUploadAttachment: (f: File) => void;
   onDeleteAttachment: (fileId: string) => void;
+  modelChoice: string;
+  onChatArtifact: (content: string) => void;
 }) {
   const hasContent = artifact.trim().length > 0;
   const isApproved = status === "approved";
@@ -1683,7 +1669,8 @@ function PrdWorkspace({
           </ToolBtn>
         </div>
       </section>
-      <ChatPanel />
+      <ChatPanel thread={thread} stageId="prd" stageLabel="SA Discovery"
+        modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
     </div>
   );
 }
@@ -1930,7 +1917,7 @@ type StageBusyLike = false | "generate" | "refine" | "chat";
 
 function ArchWorkspace({
   thread, artifact, status, busy, prdReady,
-  onGenerate, onRefine, onApprove,
+  onGenerate, onRefine, onApprove, modelChoice, onChatArtifact,
 }: {
   thread: string | null;
   artifact: string;
@@ -1940,6 +1927,8 @@ function ArchWorkspace({
   onGenerate: () => void;
   onRefine: () => void;
   onApprove: () => void;
+  modelChoice: string;
+  onChatArtifact: (content: string) => void;
 }) {
   const parsed = useMemo(() => parseArchitecture(artifact || ""), [artifact]);
   const [view, setView] = useState<"document" | "diagram">("document");
@@ -2032,7 +2021,8 @@ function ArchWorkspace({
           </ToolBtn>
         </div>
       </section>
-      <ChatPanel />
+      <ChatPanel thread={thread} stageId="architecture" stageLabel="Architecture Chat"
+        modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
     </div>
   );
 }
@@ -3765,105 +3755,129 @@ function PluginCard({ plugin, onToggle }: {
 }
 
 // ============================== Chat panel ==============================
-function ChatPanel() {
+// ============================== Chat panel（真實 per-thread stage chat）==============================
+function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated }: {
+  thread: string | null;
+  stageId: string;
+  stageLabel: string;
+  modelChoice: string;
+  onArtifactUpdated?: (content: string) => void;
+}) {
+  const [msgs, setMsgs] = useState<StageChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  // 載入該 thread + stage 的真實對話歷史（新 thread / 無對話 → 空）
+  useEffect(() => {
+    if (!thread) { setMsgs([]); return; }
+    let on = true;
+    fetchStageHistory(stageId, thread)
+      .then((m) => { if (on) setMsgs(m); })
+      .catch((e) => { if (on) setErr(`讀取對話失敗：${(e as Error).message}`); });
+    return () => { on = false; };
+  }, [thread, stageId]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, busy]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || !thread || busy) return;
+    setErr(null);
+    setInput("");
+    setMsgs((prev) => [...prev, { role: "user", content: text, created_at: null }]);
+    setBusy(true);
+    try {
+      const r = await stageChat(stageId, thread, modelChoice, text);
+      setMsgs((prev) => [...prev, { role: "assistant", content: r.ai_response, created_at: null }]);
+      if (r.updated_content && onArtifactUpdated) onArtifactUpdated(r.updated_content);
+    } catch (e) {
+      const msg = (e as Error).message;
+      setErr(`送出失敗：${msg}`);
+      setMsgs((prev) => [...prev, { role: "assistant", content: `⚠ ${msg}`, created_at: null }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disabled = !thread;
+
   return (
     <section className="rise-4 flex w-[400px] shrink-0 flex-col border-l border-[var(--rule-dark)] bg-[var(--bg-elev)]/40">
       <div className="border-b border-[var(--rule-dark)] px-6 py-4">
         <div className="flex items-center justify-between">
-          <div className="flex items-baseline gap-3">
-            <h3 className="font-[family-name:var(--font-display)] text-[17px] font-semibold text-[#e6ecf5]">PRD Discussion</h3>
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">3 agents · {CHAT.length} msgs</span>
+          <h3 className="font-[family-name:var(--font-display)] text-[17px] font-semibold text-[#e6ecf5]">{stageLabel}</h3>
+          <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
+            {msgs.length} msgs · {modelChoice}
+          </span>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
+        {msgs.length === 0 && !busy ? (
+          <div className="grid h-full place-items-center px-4 text-center">
+            <div>
+              <div className="mb-1 font-[family-name:var(--font-display)] text-[14px] text-[#cdd4df]">尚無對話</div>
+              <p className="text-[12px] leading-5 text-[var(--ink-muted)]">
+                {disabled ? "選一個專案開始。" : "在下方輸入需求或要求修正，與此 stage 的 agent 討論。"}
+              </p>
+            </div>
           </div>
-          <span className="grid h-7 w-7 place-items-center border border-[var(--rule-dark)] font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">⋯</span>
-        </div>
-        <div className="mt-2 flex items-center gap-1.5">
-          {(Object.keys(SPEAKER_STYLES) as SpeakerId[]).map((id) => {
-            const sp = SPEAKER_STYLES[id];
-            return (
-              <div key={id} className="flex items-center gap-1.5 border border-[var(--rule-dark)] py-0.5 pl-0.5 pr-2">
-                <span className="grid h-4 w-4 place-items-center font-[family-name:var(--font-display)] text-[9px] font-bold text-white" style={{ backgroundColor: sp.color }}>{sp.abbr}</span>
-                <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">{id}</span>
-                <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.18em]" style={{ color: sp.color }}>· {sp.tier}</span>
+        ) : (
+          <>
+            {msgs.map((m, i) =>
+              m.role === "user" ? (
+                <div key={i} className="flex justify-end">
+                  <div className="max-w-[88%] whitespace-pre-wrap border-l-2 border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_12%,transparent)] px-4 py-2.5 text-[13px] leading-6 text-[#e6ecf5]">
+                    {m.content}
+                  </div>
+                </div>
+              ) : (
+                <div key={i} className="flex flex-col items-start gap-1.5">
+                  <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.2em] text-[var(--ink-muted)]">{stageId} · agent</span>
+                  <div className="max-w-[92%] whitespace-pre-wrap border-l-2 border-[color-mix(in_oklab,var(--polaris)_45%,transparent)] px-3 py-1 text-[13px] leading-6 text-[#cdd4df]">
+                    {m.content}
+                  </div>
+                </div>
+              ),
+            )}
+            {busy && (
+              <div className="flex items-center gap-2 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" /> agent 回覆中…
               </div>
-            );
-          })}
-        </div>
+            )}
+            <div ref={endRef} />
+          </>
+        )}
       </div>
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
-        {CHAT.map((m, i) => <ChatMessage key={i} m={m} />)}
-      </div>
+
       <div className="border-t border-[var(--rule-dark)] p-4">
+        {err && <div className="mb-2 font-[family-name:var(--font-mono)] text-[11px] text-[#e0608a]">{err}</div>}
         <div className="flex items-end gap-2 border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2.5 focus-within:border-[var(--polaris)]">
-          <textarea rows={2} placeholder="補充需求 / 要求 SA 修正……"
-            className="flex-1 resize-none bg-transparent text-[13px] text-[#cdd4df] outline-none placeholder:text-[var(--ink-muted)]" />
-          <button className="grid h-7 w-7 shrink-0 place-items-center bg-[var(--polaris)] text-white hover:bg-[var(--polaris-hi)]"><span className="-mt-0.5 text-sm">↵</span></button>
+          <textarea
+            rows={2}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
+            disabled={disabled || busy}
+            placeholder={disabled ? "選一個專案……" : "補充需求 / 要求修正……"}
+            className="flex-1 resize-none bg-transparent text-[13px] text-[#cdd4df] outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50"
+          />
+          <button
+            onClick={() => void send()}
+            disabled={disabled || busy || !input.trim()}
+            className="grid h-7 w-7 shrink-0 place-items-center bg-[var(--polaris)] text-white transition hover:bg-[var(--polaris-hi)] disabled:opacity-40"
+          >
+            <span className="-mt-0.5 text-sm">↵</span>
+          </button>
         </div>
         <div className="mt-2 flex items-center justify-between font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-          <span>↵ send · ⌘↵ refine</span>
-          <span>tokens 1,234 / 200k</span>
+          <span>↵ send · ⇧↵ newline</span>
+          <span>{stageId}</span>
         </div>
       </div>
     </section>
-  );
-}
-
-function ChatMessage({ m }: { m: ChatMsg }) {
-  if (m.role === "user") {
-    return (
-      <div className="flex flex-col items-end gap-1">
-        {m.toAgent && (
-          <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-            ↳ to <span style={{ color: SPEAKER_STYLES[m.toAgent].color }}>{m.toAgent}</span>
-          </span>
-        )}
-        <div className="max-w-[88%] border-l-2 border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_12%,transparent)] px-4 py-2.5 text-[13px] leading-6 text-[#e6ecf5]">{m.content}</div>
-      </div>
-    );
-  }
-  const sp = SPEAKER_STYLES[m.speaker];
-  return (
-    <div className="flex flex-col items-start gap-2.5">
-      <div className="flex items-center gap-2">
-        <span
-          className="grid h-5 w-5 place-items-center font-[family-name:var(--font-display)] text-[10px] font-bold text-white"
-          style={{ backgroundColor: sp.color }}
-        >
-          {sp.abbr}
-        </span>
-        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-          {m.speaker} <span className="ml-1" style={{ color: sp.color }}>· {sp.tier}</span>
-        </span>
-      </div>
-      <div
-        className="max-w-[92%] whitespace-pre-wrap border-l-2 px-3 py-1 text-[13px] leading-6 text-[#cdd4df]"
-        style={{ borderColor: `color-mix(in oklab, ${sp.color} 50%, transparent)` }}
-      >
-        {m.content}
-      </div>
-      {m.chips && (
-        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-          {m.chips.map((c, i) => <ReplyChip key={i} label={c.label} selected={c.selected} multi={m.multi} />)}
-          {m.multi && <span className="ml-1 self-center font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">· multi-select</span>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ReplyChip({ label, selected, multi }: { label: string; selected?: boolean; multi?: boolean }) {
-  return (
-    <button className={`flex items-center gap-1.5 border px-3 py-1.5 text-[12px] transition ${
-      selected ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] text-[var(--polaris)]" : "border-[var(--rule-dark)] bg-transparent text-[#cdd4df] hover:border-[#4a5468] hover:bg-[var(--bg-elev)]"
-    }`}>
-      {multi ? (
-        <span className={`grid h-3 w-3 place-items-center border ${selected ? "border-[var(--polaris)] bg-[var(--polaris)]" : "border-[#2e3441]"}`}>
-          {selected && <span className="text-[9px] leading-none text-white">✓</span>}
-        </span>
-      ) : (
-        selected && <span className="text-[8px] leading-none">●</span>
-      )}
-      <span>{label}</span>
-    </button>
   );
 }
 

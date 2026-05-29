@@ -15,3 +15,12 @@
 
 ## 驗證 UI 不能只靠 typecheck
 - className 改動 tsc 永遠綠，但視覺/stacking 問題只能用實際瀏覽器驗（preview_eval + elementFromPoint + screenshot）。
+
+## 前端「假裝成真功能」的 M0 mock 沒接 API → 用新 thread / 空狀態驗
+- **症狀**：開新 thread，右側 chat 卻有一整段「PRD Discussion」假對話、輸入框送不出去。
+- **真因**：`ChatPanel` 是 M0 靜態 mock（寫死 `CHAT` 陣列、無 props），後端 chat（`/api/stage/{s}/chat` + `/history`）
+  其實 M1 就做好了，但前端從沒接。同類前例：workflow 可選 stage 寫死、stepper 用 mock `STAGES` 常數。
+- **修法**：元件吃 `thread`+`stageId`，mount/切換時 `fetchStageHistory` 載真實歷史（空 thread → empty state），
+  send→`stageChat`→append；`updated_content` 經 callback 回寫 artifact。移除整段 mock（含相關 type / 渲染器）。
+- **通則**：驗收任何「看起來已完成」的功能，務必開**新 / 空** thread 看是否還有殘留假資料；
+  「後端做了」≠「前端接了」，兩邊都要實際操作確認資料來自 API。
