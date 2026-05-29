@@ -32,7 +32,8 @@ def test_endpoints(tmp_db):
         sto = by_id["stories"]
         assert sto["telemetry_stage"] == "deliver"
         assert sto["depends_on"] == ["architecture"]
-        assert sto["downstream"] == []
+        # M5：implement stage depends_on stories → stories 多了下游 implement
+        assert "implement" in sto["downstream"]
         assert sto["supports_chat"] is True
 
         plugins = client.get("/api/plugins").json()["plugins"]

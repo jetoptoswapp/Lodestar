@@ -120,3 +120,18 @@ def list_messages(run_id: int, *, after_seq: int = -1) -> list[dict]:
             (run_id, after_seq),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def list_session_messages(session_id: int, *, after_id: int = 0) -> list[dict]:
+    """跨 run 取整個 session 的 log，用全域 message id 當單調游標（poll log channel 用）。
+
+    每列帶 id / run_id / attempt，前端可分段顯示。after_id 之後才回傳。
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT m.id, m.run_id, r.attempt, m.seq, m.kind, m.content, m.created_at "
+            "FROM impl_messages m JOIN impl_runs r ON m.run_id = r.run_id "
+            "WHERE r.session_id = ? AND m.id > ? ORDER BY m.id",
+            (session_id, after_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
