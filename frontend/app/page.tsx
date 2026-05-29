@@ -10,11 +10,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import {
-  MOCK_ARCH_MARKDOWN,
-  MOCK_STORIES_MARKDOWN,
-} from "@/lib/mocks";
-import {
-  countRequirements,
   countStoriesAndEstimate,
   parseArchitecture,
   parseStories,
@@ -95,12 +90,22 @@ function projectGlyph(p: Project): string {
 }
 
 // ============================== Modal state（取代 window.prompt / window.confirm）==============================
+type StageRefineKind = "prd" | "architecture" | "stories";
+const STAGE_LABEL: Record<StageRefineKind, string> = {
+  prd: "PRD", architecture: "架構", stories: "使用者故事",
+};
+const STAGE_REFINE_PLACEHOLDER: Record<StageRefineKind, string> = {
+  prd: "例：加上 OAuth 登入；NFR 並發提到 10k；補充 OPS 監控指標……",
+  architecture: "例：拆出獨立 Notification service；改用 gRPC 取代 REST；資料庫換 PostgreSQL……",
+  stories: "例：拆掉超過 4h 的故事；補上 CI/CD scaffold story；對齊 NFR 切跨 epic……",
+};
+
 type ModalState =
   | { kind: "none" }
   | { kind: "newThread" }
   | { kind: "renameThread"; threadId: string; currentName: string }
   | { kind: "confirmDeleteThread"; threadId: string; threadName: string }
-  | { kind: "refinePrd" };
+  | { kind: "refineStage"; stageId: StageRefineKind };
 
 // ============================== ModelAdapter（GET /api/models）==============================
 type ModelAdapterInfo = {
@@ -240,6 +245,14 @@ export default function Page() {
   // ===== M1.1：PRD attachments =====
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
   const [uploading, setUploading] = useState<boolean>(false);
+  // ===== M2.3：Architecture / Stories 真實 state（接 /api/stage/{sid}/{tid}）=====
+  type StageBusy = false | "generate" | "refine";
+  const [archArtifact, setArchArtifact] = useState<string>("");
+  const [archStatus, setArchStatus] = useState<string>("draft");
+  const [archBusy, setArchBusy] = useState<StageBusy>(false);
+  const [storiesArtifact, setStoriesArtifact] = useState<string>("");
+  const [storiesStatus, setStoriesStatus] = useState<string>("draft");
+  const [storiesBusy, setStoriesBusy] = useState<StageBusy>(false);
   // ===== M2 baseline：真實 thread list + plugin count + model list + modal state =====
   const [threadList, setThreadList] = useState<Project[]>([]);
   const [pluginCount, setPluginCount] = useState<number | null>(null);
@@ -257,6 +270,12 @@ export default function Page() {
     setPrdStatus("draft");
     setAttachments([]);
     setBusy(false);
+    setArchArtifact("");
+    setArchStatus("draft");
+    setArchBusy(false);
+    setStoriesArtifact("");
+    setStoriesStatus("draft");
+    setStoriesBusy(false);
   }, []);
 
   // 切換 active thread —— 同時寫 localStorage、清衍生狀態、回到 workspace / PRD
@@ -436,10 +455,34 @@ export default function Page() {
     }
   }, []);
 
+  // M2.3：拿 architecture + stories state
+  const refreshArchitecture = useCallback(async (tid: string) => {
+    try {
+      const s = await apiFetch<{ artifact: string; status: string }>(`/api/stage/architecture/${tid}`);
+      setArchArtifact(s.artifact || "");
+      setArchStatus(s.status);
+    } catch (e) {
+      // 不致命：thread 切換瞬間可能 404，silent retry by next thread change
+      console.warn("讀取 architecture 失敗：", (e as Error).message);
+    }
+  }, []);
+
+  const refreshStories = useCallback(async (tid: string) => {
+    try {
+      const s = await apiFetch<{ artifact: string; status: string }>(`/api/stage/stories/${tid}`);
+      setStoriesArtifact(s.artifact || "");
+      setStoriesStatus(s.status);
+    } catch (e) {
+      console.warn("讀取 stories 失敗：", (e as Error).message);
+    }
+  }, []);
+
   useEffect(() => {
     if (!thread) return;
     refreshPrd(thread);
-  }, [thread, refreshPrd]);
+    refreshArchitecture(thread);
+    refreshStories(thread);
+  }, [thread, refreshPrd, refreshArchitecture, refreshStories]);
 
   // 拿 attachments
   const refreshAttachments = useCallback(async (tid: string) => {
@@ -514,44 +557,124 @@ export default function Page() {
     }
   }, [thread, busy, modelChoice]);
 
-  // PRD refine：開 modal 收指令，submit 才打 API
-  const onRefine = useCallback(() => {
-    if (!thread || busy) return;
-    setModal({ kind: "refinePrd" });
-  }, [thread, busy]);
+  // ===== M2.3：Architecture / Stories handlers（與 PRD 對稱）=====
+  const onGenerateArch = useCallback(async () => {
+    if (!thread || archBusy) return;
+    setErr(null);
+    setArchBusy("generate");
+    try {
+      const data = await apiFetch<{ artifact: string }>("/api/stage/architecture/generate", {
+        method: "POST",
+        body: JSON.stringify({ thread_id: thread, model_choice: modelChoice }),
+      });
+      setArchArtifact(data.artifact || "");
+      setArchStatus("draft");
+      // 上游若 reset 下游：下游 stories 變 needs_revision
+      refreshStories(thread);
+    } catch (e) {
+      setErr(`生成架構失敗：${(e as Error).message}`);
+    } finally {
+      setArchBusy(false);
+    }
+  }, [thread, archBusy, modelChoice, refreshStories]);
 
-  const submitRefinePrd = useCallback(async (instruction: string) => {
+  const onGenerateStories = useCallback(async () => {
+    if (!thread || storiesBusy) return;
+    setErr(null);
+    setStoriesBusy("generate");
+    try {
+      const data = await apiFetch<{ artifact: string }>("/api/stage/stories/generate", {
+        method: "POST",
+        body: JSON.stringify({ thread_id: thread, model_choice: modelChoice }),
+      });
+      setStoriesArtifact(data.artifact || "");
+      setStoriesStatus("draft");
+    } catch (e) {
+      setErr(`生成使用者故事失敗：${(e as Error).message}`);
+    } finally {
+      setStoriesBusy(false);
+    }
+  }, [thread, storiesBusy, modelChoice]);
+
+  // 統一 refine：開 modal 帶 stageId
+  const onRefine = useCallback((stageId: StageRefineKind = "prd") => {
+    if (!thread) return;
+    // busy check 依 stage
+    const isBusy = stageId === "prd" ? !!busy
+      : stageId === "architecture" ? !!archBusy
+      : !!storiesBusy;
+    if (isBusy) return;
+    setModal({ kind: "refineStage", stageId });
+  }, [thread, busy, archBusy, storiesBusy]);
+
+  // 統一 submit refine：根據 modal.stageId 派到對應 endpoint + state setter
+  const submitRefine = useCallback(async (instruction: string) => {
+    if (modal.kind !== "refineStage") return;
+    const stageId = modal.stageId;
     setModal({ kind: "none" });
     if (!thread) return;
     setErr(null);
-    setBusy("refine");
+
+    const setBusyFor: Record<StageRefineKind, (b: StageBusy) => void> = {
+      prd: setBusy as (b: StageBusy) => void,
+      architecture: setArchBusy,
+      stories: setStoriesBusy,
+    };
+    const setArtFor: Record<StageRefineKind, (s: string) => void> = {
+      prd: setPrdArtifact, architecture: setArchArtifact, stories: setStoriesArtifact,
+    };
+    const setStatusFor: Record<StageRefineKind, (s: string) => void> = {
+      prd: setPrdStatus, architecture: setArchStatus, stories: setStoriesStatus,
+    };
+
+    setBusyFor[stageId]("refine");
     try {
-      const data = await apiFetch<{ artifact: string }>("/api/stage/prd/refine", {
+      const data = await apiFetch<{ artifact: string }>(`/api/stage/${stageId}/refine`, {
         method: "POST",
         body: JSON.stringify({ thread_id: thread, model_choice: modelChoice, instruction }),
       });
-      setPrdArtifact(data.artifact || "");
-      setPrdStatus("draft");
+      setArtFor[stageId](data.artifact || "");
+      setStatusFor[stageId]("draft");
+      // refine 上游 → 下游 reset
+      if (stageId === "prd") {
+        refreshArchitecture(thread);
+        refreshStories(thread);
+      } else if (stageId === "architecture") {
+        refreshStories(thread);
+      }
     } catch (e) {
-      setErr(`修訂 PRD 失敗：${(e as Error).message}`);
+      setErr(`修訂 ${STAGE_LABEL[stageId]} 失敗：${(e as Error).message}`);
     } finally {
-      setBusy(false);
+      setBusyFor[stageId](false);
     }
-  }, [thread, modelChoice]);
+  }, [modal, thread, modelChoice, refreshArchitecture, refreshStories]);
 
-  // PRD 核准 —— 呼叫 approve endpoint，更新 status
-  const onApprovePrd = useCallback(async () => {
-    if (!thread || busy || !prdArtifact.trim()) return;
+  // 統一 approve：根據 stageId 派
+  const approveStage = useCallback(async (stageId: StageRefineKind) => {
+    if (!thread) return;
+    const art = stageId === "prd" ? prdArtifact : stageId === "architecture" ? archArtifact : storiesArtifact;
+    if (!art.trim()) return;
     setErr(null);
     try {
-      const r = await apiFetch<{ status: string }>(`/api/stage/prd/${thread}/approve`, {
+      const r = await apiFetch<{ status: string }>(`/api/stage/${stageId}/${thread}/approve`, {
         method: "POST",
       });
-      setPrdStatus(r.status);
+      if (stageId === "prd") setPrdStatus(r.status);
+      else if (stageId === "architecture") setArchStatus(r.status);
+      else setStoriesStatus(r.status);
     } catch (e) {
-      setErr(`核准失敗：${(e as Error).message}`);
+      setErr(`核准 ${STAGE_LABEL[stageId]} 失敗：${(e as Error).message}`);
     }
-  }, [thread, busy, prdArtifact]);
+  }, [thread, prdArtifact, archArtifact, storiesArtifact]);
+
+  const onApprovePrd = useCallback(() => approveStage("prd"), [approveStage]);
+  const onApproveArch = useCallback(() => approveStage("architecture"), [approveStage]);
+  const onApproveStories = useCallback(() => approveStage("stories"), [approveStage]);
+
+  // Stage-specific refine wrappers — workspace 點按鈕時直接呼叫
+  const onRefinePrd = useCallback(() => onRefine("prd"), [onRefine]);
+  const onRefineArch = useCallback(() => onRefine("architecture"), [onRefine]);
+  const onRefineStories = useCallback(() => onRefine("stories"), [onRefine]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -606,6 +729,8 @@ export default function Page() {
                   selected={selected}
                   onSelect={setSelected}
                   prdStatus={prdStatus}
+                  archStatus={archStatus}
+                  storiesStatus={storiesStatus}
                   threadName={threadList.find((p) => p.thread_id === thread)?.name ?? null}
                 />
                 <div className="flex min-h-0 flex-1">
@@ -625,8 +750,30 @@ export default function Page() {
                       onDeleteAttachment={onDeleteAttachment}
                     />
                   )}
-                  {selected === "architecture" && <ArchWorkspace />}
-                  {selected === "stories"      && <StoriesWorkspace />}
+                  {selected === "architecture" && (
+                    <ArchWorkspace
+                      thread={thread}
+                      artifact={archArtifact}
+                      status={archStatus}
+                      busy={archBusy}
+                      prdReady={prdArtifact.trim().length > 0}
+                      onGenerate={onGenerateArch}
+                      onRefine={onRefineArch}
+                      onApprove={onApproveArch}
+                    />
+                  )}
+                  {selected === "stories" && (
+                    <StoriesWorkspace
+                      thread={thread}
+                      artifact={storiesArtifact}
+                      status={storiesStatus}
+                      busy={storiesBusy}
+                      archReady={archArtifact.trim().length > 0}
+                      onGenerate={onGenerateStories}
+                      onRefine={onRefineStories}
+                      onApprove={onApproveStories}
+                    />
+                  )}
                   {selected === "implement"    && <ImplementWorkspace />}
                 </div>
               </>
@@ -679,14 +826,14 @@ export default function Page() {
         onCancel={() => setModal({ kind: "none" })}
       />
       <PromptDialog
-        open={modal.kind === "refinePrd"}
-        title="修訂 PRD"
-        subtitle="POST /api/stage/prd/refine"
+        open={modal.kind === "refineStage"}
+        title={modal.kind === "refineStage" ? `修訂 ${STAGE_LABEL[modal.stageId]}` : ""}
+        subtitle={modal.kind === "refineStage" ? `POST /api/stage/${modal.stageId}/refine` : ""}
         label="修訂指令"
-        placeholder="例：加上 OAuth 登入；NFR 並發提到 10k；補充 OPS 監控指標……"
+        placeholder={modal.kind === "refineStage" ? STAGE_REFINE_PLACEHOLDER[modal.stageId] : ""}
         multiline
         submitLabel="送出修訂"
-        onSubmit={submitRefinePrd}
+        onSubmit={submitRefine}
         onCancel={() => setModal({ kind: "none" })}
       />
     </>
@@ -1043,30 +1190,30 @@ function TrashIcon() {
 }
 
 // ============================== Stage header ==============================
-function StageHeader({ selected, onSelect, prdStatus, threadName }: {
+function StageHeader({ selected, onSelect, prdStatus, archStatus, storiesStatus, threadName }: {
   selected: string;
   onSelect: (s: string) => void;
   prdStatus: string;            // M2 baseline：PRD 從真實 state 來
+  archStatus: string;           // M2.3：架構從真實 state 來
+  storiesStatus: string;        // M2.3：故事從真實 state 來
   threadName: string | null;    // 從 thread list 找對應名稱
 }) {
-  // 把 stage id 的 status 投映到 stepper（PRD 用 prop 的真實 status；其他用 STAGES default）
+  // 把後端 status 字串映成 StageStatus（draft/approved/needs_revision；其餘 fallback draft）
+  const normalize = (s: string): StageStatus =>
+    s === "approved" || s === "needs_revision" || s === "draft" ? s : "draft";
+
   const statusOf = (sid: string): StageStatus => {
-    if (sid === "prd") {
-      if (prdStatus === "approved" || prdStatus === "needs_revision" || prdStatus === "draft") {
-        return prdStatus;
-      }
-      return "draft";
-    }
+    if (sid === "prd") return normalize(prdStatus);
+    if (sid === "architecture") return normalize(archStatus);
+    if (sid === "stories") return normalize(storiesStatus);
     return STAGES.find((s) => s.id === sid)?.status ?? "draft";
   };
 
   const badgeOf = (sid: string, status: StageStatus): string => {
-    if (sid === "prd") {
-      return status === "approved" ? "CHARTED"
-        : status === "needs_revision" ? "REVISE"
-        : "CHARTING";
-    }
-    return STAGES.find((s) => s.id === sid)?.badge ?? "";
+    if (sid === "implement") return STAGES.find((s) => s.id === sid)?.badge ?? "";
+    return status === "approved" ? "CHARTED"
+      : status === "needs_revision" ? "REVISE"
+      : "CHARTING";
   };
 
   return (
@@ -1436,73 +1583,149 @@ function AttachmentChip({ a, onDelete }: { a: AttachmentInfo; onDelete: () => vo
 //
 // M2.2 mock review：解析 M2.1 真實 claude-cli E2E 輸出（含 tier line / Mermaid / sections），
 // 直接渲染 markdown 結構。M2.3 會把 markdown 來源換成 /api/stage/architecture/{thread}。
-function ArchWorkspace() {
-  const parsed = useMemo(() => parseArchitecture(MOCK_ARCH_MARKDOWN), []);
+type StageBusyLike = false | "generate" | "refine" | "chat";
+
+function ArchWorkspace({
+  thread, artifact, status, busy, prdReady,
+  onGenerate, onRefine, onApprove,
+}: {
+  thread: string | null;
+  artifact: string;
+  status: string;
+  busy: StageBusyLike;
+  prdReady: boolean;
+  onGenerate: () => void;
+  onRefine: () => void;
+  onApprove: () => void;
+}) {
+  const parsed = useMemo(() => parseArchitecture(artifact || ""), [artifact]);
   const [view, setView] = useState<"document" | "diagram">("document");
   const [activeDiagram, setActiveDiagram] = useState(0);
+  const hasContent = artifact.trim().length > 0;
+  const isApproved = status === "approved";
+  const needsRevision = status === "needs_revision";
 
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
         <ArtifactBar artifact="architecture" stage="design" op="generate_architecture" right={
           <>
-            <ViewToggle value={view} onChange={setView} />
-            <DraftPill />
+            {hasContent && <ViewToggle value={view} onChange={setView} />}
+            {hasContent && (isApproved ? <ApprovedSeal /> : <DraftPill />)}
+            {needsRevision && (
+              <span className="border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#f59e0b]">
+                needs revision
+              </span>
+            )}
           </>
         } />
-        <div className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
-          {view === "document" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <ArchDocument parsed={parsed} />
-            </div>
+        <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
+          {hasContent ? (
+            view === "document" ? (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <ArchDocument parsed={parsed} />
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="flex items-center justify-between border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[#7a8499]">
+                  <span>{`// architecture · ${parsed.mermaids.length} diagram${parsed.mermaids.length === 1 ? "" : "s"}`}</span>
+                  {parsed.mermaids.length > 1 && (
+                    <div className="flex items-center gap-1">
+                      {parsed.mermaids.map((_, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setActiveDiagram(i)}
+                          className={`border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] transition ${
+                            i === activeDiagram
+                              ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] text-[var(--polaris)]"
+                              : "border-[var(--rule-dark)] bg-transparent text-[var(--ink-muted)] hover:text-[#cdd4df]"
+                          }`}
+                        >
+                          diagram {i + 1}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <span>tier <span className="text-[var(--polaris)]">{parsed.tier ?? "—"}</span></span>
+                </div>
+                <div className="relative min-h-0 flex-1 overflow-auto p-6">
+                  {parsed.mermaids.length === 0 ? (
+                    <div className="grid h-full place-items-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                      no mermaid diagrams in this architecture
+                    </div>
+                  ) : (
+                    <MermaidDiagram code={parsed.mermaids[activeDiagram]} idPrefix={`arch-${activeDiagram}`} />
+                  )}
+                </div>
+              </div>
+            )
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="flex items-center justify-between border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[#7a8499]">
-                <span>{`// architecture · ${parsed.mermaids.length} diagram${parsed.mermaids.length === 1 ? "" : "s"}`}</span>
-                {parsed.mermaids.length > 1 && (
-                  <div className="flex items-center gap-1">
-                    {parsed.mermaids.map((_, i) => (
-                      <button
-                        key={i}
-                        onClick={() => setActiveDiagram(i)}
-                        className={`border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] transition ${
-                          i === activeDiagram
-                            ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] text-[var(--polaris)]"
-                            : "border-[var(--rule-dark)] bg-transparent text-[var(--ink-muted)] hover:text-[#cdd4df]"
-                        }`}
-                      >
-                        diagram {i + 1}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <span>tier <span className="text-[var(--polaris)]">{parsed.tier ?? "—"}</span></span>
-              </div>
-              <div className="relative min-h-0 flex-1 overflow-auto p-6">
-                {parsed.mermaids.length === 0 ? (
-                  <div className="grid h-full place-items-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
-                    no mermaid diagrams in this architecture
-                  </div>
-                ) : (
-                  <MermaidDiagram code={parsed.mermaids[activeDiagram]} idPrefix={`arch-${activeDiagram}`} />
-                )}
-              </div>
-            </div>
+            <ArchEmptyState busy={busy} thread={thread} prdReady={prdReady} onGenerate={onGenerate} />
           )}
-        </div>
+        </article>
         <BottomMeta
           left={
-            <>
-              tier <span className="text-[var(--polaris)]">{parsed.tier ?? "—"}</span> ·{" "}
-              {parsed.sections.length} sections · {parsed.mermaids.length} mermaid ·{" "}
-              {parsed.raw.length} chars · charted by software_architect
-            </>
+            hasContent ? (
+              <>
+                tier <span className="text-[var(--polaris)]">{parsed.tier ?? "—"}</span> ·{" "}
+                {parsed.sections.length} sections · {parsed.mermaids.length} mermaid ·{" "}
+                {artifact.length} chars · charted by software_architect
+              </>
+            ) : (
+              <>empty · {prdReady ? "ready to chart" : "PRD 須先有內容"}</>
+            )
           }
-          right={<>depends_on <span className="text-[#b8c0cf]">prd</span> · downstream <span className="text-[#b8c0cf]">stories</span></>}
+          right={<>thread <code className="text-[#cdd4df]">{thread ?? "(none)"}</code> · depends_on <span className="text-[#b8c0cf]">prd</span> · downstream <span className="text-[#b8c0cf]">stories</span></>}
         />
-        <OperationsRow primaryLabel="核准架構" />
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <ToolBtn onClick={onRefine} disabled={!thread || !hasContent || !!busy}>
+            {busy === "refine" ? "Refining…" : "Refine…"}
+          </ToolBtn>
+          <ToolBtn onClick={onGenerate} disabled={!thread || !prdReady || !!busy}>
+            {busy === "generate" ? "Charting…" : hasContent ? "重新生成" : "產生架構設計"}
+          </ToolBtn>
+          <ToolBtn primary onClick={onApprove} disabled={!hasContent || !!busy || isApproved}>
+            {isApproved ? "已核准 ✓" : "核准架構"}
+          </ToolBtn>
+        </div>
       </section>
       <ChatPanel />
+    </div>
+  );
+}
+
+function ArchEmptyState({ busy, thread, prdReady, onGenerate }: {
+  busy: StageBusyLike;
+  thread: string | null;
+  prdReady: boolean;
+  onGenerate: () => void;
+}) {
+  return (
+    <div className="flex h-full items-start justify-center overflow-y-auto px-10 py-12">
+      <div className="w-full max-w-xl text-center">
+        <div className="mx-auto mb-5 grid h-14 w-14 place-items-center border-2 border-[var(--polaris)] font-[family-name:var(--font-display)] text-[22px] font-semibold text-[var(--polaris)]">
+          02
+        </div>
+        <h3 className="font-[family-name:var(--font-display)] text-[26px] font-semibold text-[#e6ecf5]">
+          {prdReady ? "等待標繪架構" : "尚未具備上游需求"}
+        </h3>
+        <p className="mt-2 text-[13px] leading-6 text-[#7a8499]">
+          {prdReady
+            ? "PRD 已就緒，Architect agent 將依需求生成 tier 分級、tech stack、Mermaid 拓樸與 module layout。"
+            : "需要先在 PRD 階段完成（至少有內容）才能生成下游架構設計。"}
+        </p>
+        <div className="mx-auto my-7 h-px w-24 bg-[var(--rule-dark)]" />
+        <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          agent: software_architect · model: claude-cli
+        </div>
+        <button
+          onClick={onGenerate}
+          disabled={!thread || !prdReady || !!busy}
+          className="border-2 border-[var(--polaris)] bg-[var(--polaris)] px-8 py-3 font-[family-name:var(--font-mono)] text-[12px] uppercase tracking-[0.22em] text-white transition hover:bg-[var(--polaris-hi)] disabled:cursor-not-allowed disabled:bg-transparent disabled:text-[var(--polaris)] disabled:opacity-50"
+        >
+          {busy === "generate" ? "★  charting…（60–120s）" : "✦  產生架構設計"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1756,15 +1979,29 @@ function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChan
 
 // ============================== Stories workspace ==============================
 //
-// M2.2 mock review：解析 M2.1 E2E 真實 stories markdown（10 epics / 44 stories）。
-// M2.3 wire API 後改吃 /api/stage/stories/{thread}。
-function StoriesWorkspace() {
-  const parsed = useMemo(() => parseStories(MOCK_STORIES_MARKDOWN), []);
+// M2.3 wire 真實 API：接 /api/stage/stories/{thread}；empty state 顯示「架構未生成」提示。
+function StoriesWorkspace({
+  thread, artifact, status, busy, archReady,
+  onGenerate, onRefine, onApprove,
+}: {
+  thread: string | null;
+  artifact: string;
+  status: string;
+  busy: StageBusyLike;
+  archReady: boolean;
+  onGenerate: () => void;
+  onRefine: () => void;
+  onApprove: () => void;
+}) {
+  const parsed = useMemo(() => parseStories(artifact || ""), [artifact]);
   const counts = useMemo(() => countStoriesAndEstimate(parsed.raw), [parsed.raw]);
   const allStories = useMemo(() => parsed.epics.flatMap((e) => e.stories.map((s) => ({ epicNum: e.num, story: s }))), [parsed.epics]);
   const initialPick = allStories[0]?.story.num ?? null;
   const [picked, setPicked] = useState<string | null>(initialPick);
   const [openEpics, setOpenEpics] = useState<Set<string>>(() => new Set(parsed.epics.slice(0, 3).map((e) => e.num)));
+
+  // artifact 切換時，重置選中項到第一個（避免 stale picked 指向已不存在的 story）
+  useEffect(() => { setPicked(initialPick); }, [initialPick]);
 
   const toggleEpic = (n: string) => setOpenEpics((prev) => {
     const next = new Set(prev);
@@ -1776,17 +2013,31 @@ function StoriesWorkspace() {
     ? allStories.find(({ story }) => story.num === picked)?.story ?? null
     : null;
 
+  const hasContent = artifact.trim().length > 0;
+  const isApproved = status === "approved";
+  const needsRevision = status === "needs_revision";
+
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
         <ArtifactBar artifact="stories" stage="deliver" op="generate_user_stories" right={
           <>
-            <DraftPill />
+            {hasContent && (isApproved ? <ApprovedSeal /> : <DraftPill />)}
+            {needsRevision && (
+              <span className="border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#f59e0b]">
+                needs revision
+              </span>
+            )}
             <button className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
               Preview to GitHub
             </button>
           </>
         } />
+        {!hasContent ? (
+          <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
+            <StoriesEmptyState busy={busy} thread={thread} archReady={archReady} onGenerate={onGenerate} />
+          </article>
+        ) : (
         <div className="shadow-anvil paper-texture min-h-0 flex-1 overflow-y-auto bg-[var(--paper)] px-8 py-7">
           <div className="mb-7 border-b border-[var(--rule)] pb-5">
             <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
@@ -1892,17 +2143,64 @@ function StoriesWorkspace() {
             );
           })}
         </div>
+        )}
         <BottomMeta
-          left={`${counts.stories} stories · ${counts.epics} epics · ${counts.hours.toFixed(1)} hrs · ${parsed.raw.length} chars`}
-          right={<>depends_on <span className="text-[#b8c0cf]">architecture</span> · publish to <span className="text-[#b8c0cf]">github / jira</span></>}
+          left={
+            hasContent
+              ? `${counts.stories} stories · ${counts.epics} epics · ${counts.hours.toFixed(1)} hrs · ${parsed.raw.length} chars`
+              : <>empty · {archReady ? "ready to chart" : "需架構先有內容"}</>
+          }
+          right={<>thread <code className="text-[#cdd4df]">{thread ?? "(none)"}</code> · depends_on <span className="text-[#b8c0cf]">architecture</span> · publish to <span className="text-[#b8c0cf]">github / jira</span></>}
         />
         <div className="mt-4 flex items-center justify-end gap-2">
-          <ToolBtn>Refine…</ToolBtn>
-          <ToolBtn>手動編輯</ToolBtn>
-          <ToolBtn primary>發佈到 GitHub</ToolBtn>
+          <ToolBtn onClick={onRefine} disabled={!thread || !hasContent || !!busy}>
+            {busy === "refine" ? "Refining…" : "Refine…"}
+          </ToolBtn>
+          <ToolBtn onClick={onGenerate} disabled={!thread || !archReady || !!busy}>
+            {busy === "generate" ? "Drafting…" : hasContent ? "重新生成" : "產生使用者故事"}
+          </ToolBtn>
+          <ToolBtn primary onClick={onApprove} disabled={!hasContent || !!busy || isApproved}>
+            {isApproved ? "已核准 ✓" : "核准故事"}
+          </ToolBtn>
         </div>
       </section>
       <StoryDetail story={detail} epicNum={picked ? allStories.find(({ story }) => story.num === picked)?.epicNum ?? null : null} />
+    </div>
+  );
+}
+
+function StoriesEmptyState({ busy, thread, archReady, onGenerate }: {
+  busy: StageBusyLike;
+  thread: string | null;
+  archReady: boolean;
+  onGenerate: () => void;
+}) {
+  return (
+    <div className="flex h-full items-start justify-center overflow-y-auto px-10 py-12">
+      <div className="w-full max-w-xl text-center">
+        <div className="mx-auto mb-5 grid h-14 w-14 place-items-center border-2 border-[var(--polaris)] font-[family-name:var(--font-display)] text-[22px] font-semibold text-[var(--polaris)]">
+          03
+        </div>
+        <h3 className="font-[family-name:var(--font-display)] text-[26px] font-semibold text-[#e6ecf5]">
+          {archReady ? "等待拆故事" : "上游架構尚未就緒"}
+        </h3>
+        <p className="mt-2 text-[13px] leading-6 text-[#7a8499]">
+          {archReady
+            ? "Product Owner agent 將依 PRD + 架構，按 tier 規則拆 Epic / Story（≤4h 一條），含 AC（Gherkin）/ 估點 / Requirement IDs。"
+            : "需要先在架構階段完成（至少有內容）才能生成下游使用者故事。"}
+        </p>
+        <div className="mx-auto my-7 h-px w-24 bg-[var(--rule-dark)]" />
+        <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          agent: product_owner · model: claude-cli
+        </div>
+        <button
+          onClick={onGenerate}
+          disabled={!thread || !archReady || !!busy}
+          className="border-2 border-[var(--polaris)] bg-[var(--polaris)] px-8 py-3 font-[family-name:var(--font-mono)] text-[12px] uppercase tracking-[0.22em] text-white transition hover:bg-[var(--polaris-hi)] disabled:cursor-not-allowed disabled:bg-transparent disabled:text-[var(--polaris)] disabled:opacity-50"
+        >
+          {busy === "generate" ? "★  drafting…（120–240s）" : "✦  產生使用者故事"}
+        </button>
+      </div>
     </div>
   );
 }
