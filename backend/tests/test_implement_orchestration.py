@@ -211,6 +211,16 @@ def test_endpoint_start_mock_runs_to_pr(tmp_db):
         assert [s["session_id"] for s in sessions] == [sid]
 
 
+def test_endpoint_runners_lists_registered(tmp_db):
+    with TestClient(appmod.app) as client:
+        runners = client.get("/api/runners").json()["runners"]
+        choices = {r["choice"] for r in runners}
+        assert {"mock", "claude-cli"}.issubset(choices)
+        mock = next(r for r in runners if r["choice"] == "mock")
+        assert mock["available"] is True
+        assert mock["source_plugin"] == "builtin_implement"
+
+
 def test_endpoint_start_validation(tmp_db):
     with TestClient(appmod.app) as client:
         tid = client.post("/api/projects", json={"name": "impl"}).json()["thread_id"]

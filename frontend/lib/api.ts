@@ -166,3 +166,92 @@ export async function togglePlugin(id: string, enabled: boolean): Promise<Plugin
     body: JSON.stringify({ enabled }),
   });
 }
+
+// ============================================================
+//  Runners + Implement（async 實作 agent，M5）
+// ============================================================
+export type RunnerInfo = {
+  choice: string;
+  available: boolean;
+  source_plugin: string | null;
+};
+
+export type ImplementRun = {
+  run_id: number;
+  attempt: number;
+  runner: string;
+  status: string;                 // running/succeeded/failed/cancelled/timed_out/rejected
+  exit_code: number | null;
+  cancelled: boolean;
+  timed_out: boolean;
+  parent_run_id: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+};
+
+export type ImplementSession = {
+  session_id: number;
+  thread_id: string;
+  stage: string;
+  title: string;
+  target_repo: string;
+  runner: string;
+  status: string;                 // pending/running/succeeded/failed/cancelled
+  pr_url: string;
+  error_message: string;
+  created_at: number | null;
+  updated_at: number | null;
+  runs: ImplementRun[];
+};
+
+export type ImplementLogLine = {
+  id: number;
+  run_id: number;
+  attempt: number;
+  kind: string;                   // log/event/system
+  content: string;
+};
+
+export type ImplementLog = {
+  session_id: number;
+  status: string;
+  next_cursor: number;
+  lines: ImplementLogLine[];
+  runs: ImplementRun[];
+};
+
+export async function fetchRunners(): Promise<RunnerInfo[]> {
+  const r = await apiCall<{ runners: RunnerInfo[] }>("/api/runners");
+  return r.runners;
+}
+
+export async function startImplement(body: {
+  thread_id: string;
+  runner: string;
+  target_repo?: string;
+  story?: string;
+  title?: string;
+}): Promise<{ session_id: number }> {
+  return apiCall("/api/implement/start", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function fetchImplementSession(sessionId: number): Promise<ImplementSession> {
+  return apiCall(`/api/implement/${sessionId}`);
+}
+
+export async function fetchImplementSessions(threadId: string): Promise<ImplementSession[]> {
+  const r = await apiCall<{ sessions: ImplementSession[] }>(
+    `/api/implement/threads/${threadId}/sessions`,
+  );
+  return r.sessions;
+}
+
+export async function fetchImplementLog(sessionId: number, afterId = 0): Promise<ImplementLog> {
+  return apiCall(`/api/implement/${sessionId}/log?after_id=${afterId}`);
+}
+
+export async function cancelImplement(
+  sessionId: number,
+): Promise<{ session_id: number; cancel_requested: boolean }> {
+  return apiCall(`/api/implement/${sessionId}/cancel`, { method: "POST" });
+}
