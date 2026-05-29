@@ -197,6 +197,80 @@ class AttachmentListResponse(BaseModel):
 # ============================================================
 #  Delivery publish（M2.5）—— stories → DeliveryItem → IntegrationSpec.publish
 # ============================================================
+# ============================================================
+#  Workflow / Agent CRUD（M3）
+# ============================================================
+class AgentBindingPayload(BaseModel):
+    agent_id: str
+    role: str = "lead"          # lead / peer / subagent
+
+
+class WorkflowStagePayload(BaseModel):
+    """workflow_definitions.stages_json 內每個 stage entry。
+
+    spec §6.4 extension：agent_bindings 1:N + collab_mode。
+    """
+    stage_id: str
+    depends_on: list[str] = []
+    agent_bindings: list[AgentBindingPayload] = []
+    collab_mode: str = "single"      # single / discussion / dispatch
+
+
+class WorkflowUpsertRequest(BaseModel):
+    id: str                          # workflow id（user 自訂，e.g. "checkout-flow"）
+    label: str
+    description: str = ""
+    stages: list[WorkflowStagePayload]
+
+
+class WorkflowResponse(BaseModel):
+    id: str
+    label: str
+    description: str = ""
+    stages: list[dict]               # 直接吐 stages JSON（含 agent_bindings + collab_mode）
+    source: str                      # "builtin" / "user"
+    source_plugin: Optional[str] = None
+    created_at: Optional[float] = None
+
+
+class WorkflowListResponse(BaseModel):
+    workflows: list[WorkflowResponse]
+
+
+class AgentUpsertRequest(BaseModel):
+    agent_id: str
+    name: str
+    role: str                        # stage_id（prd / architecture / stories / 自訂）
+    system_prompt: str = ""
+    model_choice: str = "claude-cli"
+    max_iterations: int = 1
+    enabled: bool = True
+    tools: list[str] = []
+
+
+class AgentResponse(BaseModel):
+    agent_id: str
+    name: str
+    role: str
+    system_prompt: str = ""
+    model_choice: str = "claude-cli"
+    max_iterations: int = 1
+    enabled: bool = True
+    tools: list[str] = []
+    source: str                      # "builtin" / "user"
+    created_at: Optional[float] = None
+    updated_at: Optional[float] = None
+
+
+class AgentListResponse(BaseModel):
+    agents: list[AgentResponse]
+
+
+class SetProjectWorkflowRequest(BaseModel):
+    workflow_id: Optional[str] = None    # None → 解除綁定 → lazy default
+
+
+# ============================================================
 class DeliveryItemPreview(BaseModel):
     """來自 IntegrationSpec.preview() 的一筆預覽。"""
     target: str

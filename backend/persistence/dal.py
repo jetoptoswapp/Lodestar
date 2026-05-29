@@ -395,3 +395,135 @@ def delete_attachment(file_id: str) -> Optional[dict]:
             return None
         conn.execute("DELETE FROM stage_attachments WHERE file_id = ?", (file_id,))
     return dict(row)
+
+
+# ============================================================
+#  M3：workflow_definitions / agents CRUD（user-defined）
+# ============================================================
+import json as _json
+
+
+def list_workflow_definitions() -> list[dict]:
+    """列 user-defined workflows（不含 builtin plugin 提供的）。
+
+    回傳 dict 帶 stages_json 解析後的 list（前端用）。
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, label, description, stages_json, source_plugin, created_at "
+            "FROM workflow_definitions ORDER BY created_at ASC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["stages"] = _json.loads(d.pop("stages_json") or "[]")
+        except Exception:
+            d["stages"] = []
+        out.append(d)
+    return out
+
+
+def get_workflow_definition(wf_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, label, description, stages_json, source_plugin, created_at "
+            "FROM workflow_definitions WHERE id = ?",
+            (wf_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    try:
+        d["stages"] = _json.loads(d.pop("stages_json") or "[]")
+    except Exception:
+        d["stages"] = []
+    return d
+
+
+def upsert_workflow_definition(
+    *, wf_id: str, label: str, description: str,
+    stages: list[dict], source_plugin: str = "user",
+) -> None:
+    """插入或更新 workflow。stages 是 list[{stage_id, depends_on[], agent_bindings[{agent_id, role}], collab_mode}]。"""
+    payload = _json.dumps(stages, ensure_ascii=False)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO workflow_definitions (id, label, description, stages_json, source_plugin) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "label = excluded.label, description = excluded.description, "
+            "stages_json = excluded.stages_json, source_plugin = excluded.source_plugin",
+            (wf_id, label, description, payload, source_plugin),
+        )
+
+
+def delete_workflow_definition(wf_id: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM workflow_definitions WHERE id = ?", (wf_id,))
+        return cur.rowcount > 0
+
+
+def list_agents() -> list[dict]:
+    """列 user-saved agents（不含純 in-memory 的 builtin seed）。"""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT agent_id, name, role, system_prompt, model_choice, max_iterations, "
+            "       enabled, tools, created_at, updated_at "
+            "FROM agents ORDER BY created_at ASC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["enabled"] = bool(d["enabled"])
+        try:
+            d["tools"] = _json.loads(d.pop("tools") or "[]")
+        except Exception:
+            d["tools"] = []
+        out.append(d)
+    return out
+
+
+def get_agent(agent_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT agent_id, name, role, system_prompt, model_choice, max_iterations, "
+            "       enabled, tools, created_at, updated_at FROM agents WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["enabled"] = bool(d["enabled"])
+    try:
+        d["tools"] = _json.loads(d.pop("tools") or "[]")
+    except Exception:
+        d["tools"] = []
+    return d
+
+
+def upsert_agent(
+    *, agent_id: str, name: str, role: str, system_prompt: str,
+    model_choice: str = "claude-cli", max_iterations: int = 1,
+    enabled: bool = True, tools: Optional[list[str]] = None,
+) -> None:
+    payload = _json.dumps(tools or [], ensure_ascii=False)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO agents (agent_id, name, role, system_prompt, model_choice, "
+            "                   max_iterations, enabled, tools) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(agent_id) DO UPDATE SET "
+            "name = excluded.name, role = excluded.role, system_prompt = excluded.system_prompt, "
+            "model_choice = excluded.model_choice, max_iterations = excluded.max_iterations, "
+            "enabled = excluded.enabled, tools = excluded.tools, "
+            "updated_at = strftime('%s','now')",
+            (agent_id, name, role, system_prompt, model_choice, max_iterations,
+             1 if enabled else 0, payload),
+        )
+
+
+def delete_agent(agent_id: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+        return cur.rowcount > 0

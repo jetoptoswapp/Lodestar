@@ -31,6 +31,9 @@ from fastapi.responses import FileResponse  # noqa: E402
 import plugin_loader  # noqa: E402
 from api_errors import error_detail  # noqa: E402
 from api_models import (  # noqa: E402
+    AgentListResponse,
+    AgentResponse,
+    AgentUpsertRequest,
     AttachmentListResponse,
     AttachmentResponse,
     CreateProjectRequest,
@@ -45,6 +48,7 @@ from api_models import (  # noqa: E402
     PluginResponse,
     ProjectListResponse,
     ProjectResponse,
+    SetProjectWorkflowRequest,
     StageActionResponse,
     StageCatalogItem,
     StageCatalogResponse,
@@ -59,6 +63,9 @@ from api_models import (  # noqa: E402
     StageStatusItem,
     StageStatusesResponse,
     UpdateProjectRequest,
+    WorkflowListResponse,
+    WorkflowResponse,
+    WorkflowUpsertRequest,
 )
 from delivery_parser import parse_stories_to_delivery_items  # noqa: E402
 from parsers import parse as parse_attachment  # noqa: E402
@@ -220,6 +227,224 @@ async def get_models():
     # 排序：可用優先、再按 model_choice 字母序，呈現穩定
     items.sort(key=lambda m: (not m.is_available, m.model_choice))
     return ModelAdapterListResponse(models=items)
+
+
+# ============================================================
+#  M3：Workflows CRUD（POST/PUT/DELETE/GET）
+# ============================================================
+def _builtin_workflow_to_response(wf, source_plugin: str) -> WorkflowResponse:
+    """把 in-memory builtin WorkflowSpec 投映成 API response。"""
+    # 舊式 builtin（agent_bindings: dict[stage_id, str]）→ 投映成 stage entries
+    stages = []
+    for sid in wf.stages:
+        bindings = wf.agent_bindings.get(sid, ())
+        # 兼容兩種形狀：tuple[AgentBinding] / str
+        binding_list: list[dict] = []
+        if isinstance(bindings, (list, tuple)):
+            for b in bindings:
+                if hasattr(b, "agent_id"):
+                    binding_list.append({"agent_id": b.agent_id, "role": b.role})
+                elif isinstance(b, str):
+                    binding_list.append({"agent_id": b, "role": "lead"})
+        elif isinstance(bindings, str):
+            binding_list.append({"agent_id": bindings, "role": "lead"})
+
+        stages.append({
+            "stage_id": sid,
+            "depends_on": list(wf.edges_override.get(sid, ())),
+            "agent_bindings": binding_list,
+            "collab_mode": wf.collab_mode.get(sid, "single"),
+        })
+    return WorkflowResponse(
+        id=wf.id, label=wf.label, description=wf.description,
+        stages=stages, source="builtin", source_plugin=source_plugin or None,
+        created_at=None,
+    )
+
+
+@app.get("/api/workflows", response_model=WorkflowListResponse)
+async def list_workflows():
+    """合併 builtin（in-memory plugin 註冊）+ user-defined（DB）workflows。"""
+    reg = _registry()
+    owner = {cid: pid for (pid, ctype, cid) in reg.contributions if ctype == CAP_WORKFLOW}
+    out: list[WorkflowResponse] = []
+    for wf_id, wf in reg.workflows.items():
+        out.append(_builtin_workflow_to_response(wf, owner.get(wf_id, "")))
+    for d in dal.list_workflow_definitions():
+        if d["id"] in reg.workflows:
+            continue   # builtin 同 id 優先（user 不應覆寫 plugin workflow）
+        out.append(WorkflowResponse(
+            id=d["id"], label=d["label"], description=d["description"],
+            stages=d["stages"], source="user", source_plugin=None,
+            created_at=d["created_at"],
+        ))
+    return WorkflowListResponse(workflows=out)
+
+
+@app.post("/api/workflows", response_model=WorkflowResponse, status_code=201)
+async def create_workflow(req: WorkflowUpsertRequest):
+    return _save_workflow(req, allow_existing=False)
+
+
+@app.put("/api/workflows/{wf_id}", response_model=WorkflowResponse)
+async def update_workflow(wf_id: str, req: WorkflowUpsertRequest):
+    if req.id != wf_id:
+        raise HTTPException(400, detail=error_detail("workflow_id_mismatch", "URL id 與 body id 不一致"))
+    if dal.get_workflow_definition(wf_id) is None:
+        raise HTTPException(404, detail=error_detail("workflow_not_found", f"workflow '{wf_id}' 不存在"))
+    return _save_workflow(req, allow_existing=True)
+
+
+def _save_workflow(req: WorkflowUpsertRequest, *, allow_existing: bool) -> WorkflowResponse:
+    """upsert workflow + validate stages."""
+    reg = _registry()
+    # 不允許覆寫 builtin
+    if req.id in reg.workflows:
+        raise HTTPException(409, detail=error_detail("workflow_is_builtin", f"workflow '{req.id}' 是 builtin，不能 user 覆寫"))
+    if not allow_existing and dal.get_workflow_definition(req.id) is not None:
+        raise HTTPException(409, detail=error_detail("workflow_exists", f"workflow '{req.id}' 已存在；改用 PUT 更新"))
+    # 驗證每個 stage 都已註冊
+    stage_ids = [s.stage_id for s in req.stages]
+    if len(stage_ids) != len(set(stage_ids)):
+        raise HTTPException(400, detail=error_detail("workflow_duplicate_stage", "workflow 內 stage_id 重複"))
+    unregistered = [sid for sid in stage_ids if sid not in reg.stages]
+    if unregistered:
+        raise HTTPException(400, detail=error_detail(
+            "workflow_unknown_stage",
+            f"未註冊的 stage：{unregistered}（目前 catalog：{sorted(reg.stages.keys())}）",
+        ))
+    # 驗 depends_on：每個 dep 都要在 workflow.stages 內、且必須在當前 stage 之前
+    in_order_ids = []
+    for s in req.stages:
+        for dep in s.depends_on:
+            if dep not in in_order_ids:
+                raise HTTPException(400, detail=error_detail(
+                    "workflow_invalid_dependency",
+                    f"stage '{s.stage_id}' depends_on '{dep}'，但 '{dep}' 不在前面（防環）",
+                ))
+        in_order_ids.append(s.stage_id)
+    # 驗 collab_mode
+    for s in req.stages:
+        if s.collab_mode not in ("single", "discussion", "dispatch"):
+            raise HTTPException(400, detail=error_detail(
+                "workflow_invalid_collab_mode",
+                f"collab_mode '{s.collab_mode}' 不在 single / discussion / dispatch 內",
+            ))
+
+    stages_payload = [s.model_dump() for s in req.stages]
+    dal.upsert_workflow_definition(
+        wf_id=req.id, label=req.label, description=req.description,
+        stages=stages_payload, source_plugin="user",
+    )
+    saved = dal.get_workflow_definition(req.id)
+    assert saved is not None
+    return WorkflowResponse(
+        id=saved["id"], label=saved["label"], description=saved["description"],
+        stages=saved["stages"], source="user", source_plugin=None,
+        created_at=saved["created_at"],
+    )
+
+
+@app.delete("/api/workflows/{wf_id}")
+async def delete_workflow(wf_id: str):
+    reg = _registry()
+    if wf_id in reg.workflows:
+        raise HTTPException(409, detail=error_detail("workflow_is_builtin", f"workflow '{wf_id}' 是 builtin，不能刪除"))
+    ok = dal.delete_workflow_definition(wf_id)
+    if not ok:
+        raise HTTPException(404, detail=error_detail("workflow_not_found", f"workflow '{wf_id}' 不存在"))
+    return {"deleted": wf_id}
+
+
+# ============================================================
+#  M3：Agents CRUD（POST/PUT/DELETE/GET）
+# ============================================================
+def _builtin_agent_to_response(agent_id: str, spec, source_plugin: str) -> AgentResponse:
+    return AgentResponse(
+        agent_id=agent_id, name=spec.name, role=spec.role,
+        system_prompt=spec.system_prompt, model_choice=spec.model_choice,
+        max_iterations=spec.max_iterations, enabled=spec.enabled,
+        tools=list(spec.tools), source="builtin",
+        created_at=None, updated_at=None,
+    )
+
+
+@app.get("/api/agents", response_model=AgentListResponse)
+async def list_agents_endpoint():
+    """合併 builtin seed agents + user-defined（DB）；user 同 id 覆蓋 builtin。"""
+    reg = _registry()
+    out: dict[str, AgentResponse] = {}
+    for agent_id, spec in reg.agents.items():
+        out[agent_id] = _builtin_agent_to_response(agent_id, spec, "")
+    for a in dal.list_agents():
+        out[a["agent_id"]] = AgentResponse(
+            agent_id=a["agent_id"], name=a["name"], role=a["role"],
+            system_prompt=a["system_prompt"], model_choice=a["model_choice"],
+            max_iterations=a["max_iterations"], enabled=a["enabled"],
+            tools=a["tools"], source="user",
+            created_at=a["created_at"], updated_at=a["updated_at"],
+        )
+    return AgentListResponse(agents=list(out.values()))
+
+
+@app.post("/api/agents", response_model=AgentResponse, status_code=201)
+async def create_agent(req: AgentUpsertRequest):
+    return _save_agent(req, allow_existing=False)
+
+
+@app.put("/api/agents/{agent_id}", response_model=AgentResponse)
+async def update_agent(agent_id: str, req: AgentUpsertRequest):
+    if req.agent_id != agent_id:
+        raise HTTPException(400, detail=error_detail("agent_id_mismatch", "URL id 與 body id 不一致"))
+    return _save_agent(req, allow_existing=True)
+
+
+def _save_agent(req: AgentUpsertRequest, *, allow_existing: bool) -> AgentResponse:
+    if req.max_iterations < 1:
+        raise HTTPException(400, detail=error_detail("invalid_iterations", "max_iterations 必須 ≥ 1"))
+    if not allow_existing and dal.get_agent(req.agent_id) is not None:
+        raise HTTPException(409, detail=error_detail("agent_exists", f"agent '{req.agent_id}' 已存在；改用 PUT"))
+    dal.upsert_agent(
+        agent_id=req.agent_id, name=req.name, role=req.role,
+        system_prompt=req.system_prompt, model_choice=req.model_choice,
+        max_iterations=req.max_iterations, enabled=req.enabled,
+        tools=list(req.tools),
+    )
+    saved = dal.get_agent(req.agent_id)
+    assert saved is not None
+    return AgentResponse(
+        agent_id=saved["agent_id"], name=saved["name"], role=saved["role"],
+        system_prompt=saved["system_prompt"], model_choice=saved["model_choice"],
+        max_iterations=saved["max_iterations"], enabled=saved["enabled"],
+        tools=saved["tools"], source="user",
+        created_at=saved["created_at"], updated_at=saved["updated_at"],
+    )
+
+
+@app.delete("/api/agents/{agent_id}")
+async def delete_agent_endpoint(agent_id: str):
+    ok = dal.delete_agent(agent_id)
+    if not ok:
+        raise HTTPException(404, detail=error_detail("agent_not_found", f"agent '{agent_id}' 不存在"))
+    return {"deleted": agent_id}
+
+
+# ============================================================
+#  M3：per-thread workflow 綁定
+# ============================================================
+@app.post("/api/projects/{thread_id}/workflow", response_model=ProjectResponse)
+async def set_project_workflow_endpoint(thread_id: str, req: SetProjectWorkflowRequest):
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    # 驗 workflow_id 存在（builtin OR user）；None 表示解除綁定
+    if req.workflow_id is not None:
+        reg = _registry()
+        if req.workflow_id not in reg.workflows and dal.get_workflow_definition(req.workflow_id) is None:
+            raise HTTPException(404, detail=error_detail("workflow_not_found", f"workflow '{req.workflow_id}' 不存在"))
+    dal.set_project_workflow(thread_id, req.workflow_id)
+    project = dal.get_project(thread_id)
+    assert project is not None
+    return ProjectResponse(**project)
 
 
 @app.get("/api/integrations")

@@ -115,17 +115,63 @@ class WorkflowEngine:
 
     # ------- workflow resolution -------
     def active_workflow_for(self, thread_id: str) -> WorkflowSpec:
-        """thread 綁的 workflow → 或 'default' → 或 lazy 全 stage（無 workflow 時）。"""
+        """thread 綁的 workflow → builtin in-memory → user-defined（DB）→ default → lazy。
+
+        M3：user-defined workflow（DB workflow_definitions 表）也納入解析鏈。
+        順序：
+          1. project.workflow_id 對應 builtin registry
+          2. project.workflow_id 對應 DB user workflow → 即時轉成 WorkflowSpec
+          3. 'default' builtin
+          4. lazy 全 stage（M0 fallback）
+        """
+        from plugin_api.workflow import AgentBinding
+
         project = dal.get_project(thread_id)
         wf_id = project["workflow_id"] if project else None
-        if wf_id and wf_id in self._reg.workflows:
-            return self._reg.workflows[wf_id]
+
+        if wf_id:
+            if wf_id in self._reg.workflows:
+                return self._reg.workflows[wf_id]
+            user_wf = dal.get_workflow_definition(wf_id)
+            if user_wf is not None:
+                return self._user_workflow_to_spec(user_wf)
+
         if "default" in self._reg.workflows:
             return self._reg.workflows["default"]
+
         # 無 workflow（M0 狀態 / 全新環境）：用 registry 所有 stage 組 lazy workflow
         return WorkflowSpec(
             id="__lazy__", label="Lazy",
             stages=tuple(self._reg.stages.keys()),
+        )
+
+    @staticmethod
+    def _user_workflow_to_spec(d: dict) -> WorkflowSpec:
+        """把 DB workflow_definitions row（含 stages_json 解析後的 list）轉 WorkflowSpec。"""
+        from plugin_api.workflow import AgentBinding
+        stages_payload = d.get("stages") or []
+        stage_ids = tuple(s["stage_id"] for s in stages_payload)
+        edges: dict[str, tuple[str, ...]] = {}
+        bindings: dict[str, tuple[AgentBinding, ...]] = {}
+        collab: dict[str, str] = {}
+        for s in stages_payload:
+            sid = s["stage_id"]
+            if s.get("depends_on"):
+                edges[sid] = tuple(s["depends_on"])
+            ab = s.get("agent_bindings") or []
+            if ab:
+                bindings[sid] = tuple(
+                    AgentBinding(agent_id=b["agent_id"], role=b.get("role", "lead"))
+                    for b in ab if b.get("agent_id")
+                )
+            mode = s.get("collab_mode", "single")
+            if mode and mode != "single":
+                collab[sid] = mode
+        return WorkflowSpec(
+            id=d["id"], label=d["label"], description=d.get("description", ""),
+            stages=stage_ids, edges_override=edges,
+            agent_bindings=bindings, collab_mode=collab,
+            source_plugin="user",
         )
 
     # ------- dispatch -------
