@@ -47,6 +47,8 @@ class PluginResponse(BaseModel):
     provides: PluginProvides
     requires_rebuild: bool = False      # plugin 帶前端 renderer 時 true
     load_error: Optional[str] = None    # 載入失敗原因（host_api 不符 / import 例外）
+    builtin: bool = False               # M4：內建 plugin（不可 disable）
+    discovery: str = "directory"        # M4：directory / entry_point
 
 
 class PluginListResponse(BaseModel):
