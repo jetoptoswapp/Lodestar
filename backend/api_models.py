@@ -303,6 +303,17 @@ class DeliveryPublishResponse(BaseModel):
     created: list[str]      # 已建立的 issue / ticket URL
 
 
+# ---- Runners（async runner 清單，M5）----
+class RunnerInfo(BaseModel):
+    choice: str
+    available: bool
+    source_plugin: Optional[str] = None
+
+
+class RunnerListResponse(BaseModel):
+    runners: list[RunnerInfo]
+
+
 # ---- Implement（async 實作 agent，M5）----
 class ImplementStartRequest(BaseModel):
     thread_id: str

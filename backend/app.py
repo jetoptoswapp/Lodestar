@@ -75,6 +75,8 @@ from api_models import (  # noqa: E402
     ImplementCancelResponse,
     ImplementLogLine,
     ImplementLogResponse,
+    RunnerInfo,
+    RunnerListResponse,
 )
 from async_runtime import impl_dal, orchestrator, task_registry  # noqa: E402
 from plugin_api import ToolHook  # noqa: E402
@@ -84,6 +86,7 @@ from persistence import dal, migrations  # noqa: E402
 from plugin_host import (  # noqa: E402
     CAP_AGENT,
     CAP_INTEGRATION,
+    CAP_RUNNER,
     CAP_STAGE,
     CAP_WORKFLOW,
     Registry,
@@ -298,6 +301,26 @@ async def get_models():
     # 排序：可用優先、再按 model_choice 字母序，呈現穩定
     items.sort(key=lambda m: (not m.is_available, m.model_choice))
     return ModelAdapterListResponse(models=items)
+
+
+@app.get("/api/runners", response_model=RunnerListResponse)
+async def get_runners():
+    """列出已註冊的 async AgentRunner（implement 面板的 runner picker 用）。
+
+    registry 存的是 class（非 instance），instantiate 後檢查 is_available；
+    unavailable（如環境缺 claude CLI）仍列出但標示，讓 UI 提示。
+    """
+    reg = _registry()
+    owner = {cid: pid for (pid, ctype, cid) in reg.contributions if ctype == CAP_RUNNER}
+    items: list[RunnerInfo] = []
+    for choice, runner_cls in reg.runners.items():
+        try:
+            available = bool(runner_cls().is_available())
+        except Exception:  # noqa: BLE001
+            available = False
+        items.append(RunnerInfo(choice=choice, available=available, source_plugin=owner.get(choice)))
+    items.sort(key=lambda r: (not r.available, r.choice))
+    return RunnerListResponse(runners=items)
 
 
 # ============================================================

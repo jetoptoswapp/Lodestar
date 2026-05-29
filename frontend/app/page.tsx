@@ -19,6 +19,10 @@ import {
   type Plugin,
   type Workflow,
   type WorkflowStage,
+  type ImplementSession,
+  type ImplementRun,
+  type ImplementLogLine,
+  type RunnerInfo,
   apiCall,
   createAgent,
   createWorkflow,
@@ -31,6 +35,11 @@ import {
   togglePlugin,
   updateAgent,
   updateWorkflow,
+  fetchRunners,
+  startImplement,
+  fetchImplementSession,
+  fetchImplementLog,
+  cancelImplement,
 } from "@/lib/api";
 import {
   countStoriesAndEstimate,
@@ -922,7 +931,14 @@ export default function Page() {
                       onPublish={() => setPublishOpen(true)}
                     />
                   )}
-                  {selected === "implement"    && <ImplementWorkspace />}
+                  {selected === "implement"    && (
+                    <ImplementWorkspace
+                      thread={thread}
+                      storiesArtifact={storiesArtifact}
+                      storiesApproved={storiesStatus === "approved"}
+                      onSetError={(m) => setErr(m)}
+                    />
+                  )}
                 </div>
               </>
             )}
@@ -1501,6 +1517,8 @@ function StageHeader({
     if (sid === "prd") return normalize(prdStatus);
     if (sid === "architecture") return normalize(archStatus);
     if (sid === "stories") return normalize(storiesStatus);
+    // M5.3：implement 依賴 stories——stories 核准前 locked，核准後可進入（draft）
+    if (sid === "implement") return storiesStatus === "approved" ? "draft" : "locked";
     return STAGES.find((s) => s.id === sid)?.status ?? "draft";
   };
 
@@ -2597,125 +2615,259 @@ function KV({ k, v }: { k: string; v: string }) {
   );
 }
 
-// ============================== Implementation workspace（M5 preview · dispatch mode）==============================
-function ImplementWorkspace() {
+// ============================== Implementation workspace（M5：async runner + fix-loop ≤3）==============================
+function ImplStatusPill({ status }: { status: string }) {
+  const map: Record<string, { c: "approved" | "chart" | "muted"; t: string }> = {
+    pending: { c: "muted", t: "PENDING" },
+    running: { c: "chart", t: "RUNNING" },
+    succeeded: { c: "approved", t: "SUCCEEDED" },
+    failed: { c: "muted", t: "FAILED" },
+    cancelled: { c: "muted", t: "CANCELLED" },
+  };
+  const m = map[status] ?? { c: "muted" as const, t: status.toUpperCase() };
+  return <Pill color={m.c}>{m.t}</Pill>;
+}
+
+function ImplSmallLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.2em] text-[var(--ink-muted)]">
+      {children}
+    </span>
+  );
+}
+
+function ImplLockedNotice() {
+  return (
+    <div className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-[var(--paper)] px-10 py-16 text-center">
+      <span className="grid h-12 w-12 place-items-center rounded-full border border-[var(--rule)] text-[var(--ink-muted)]">🔒</span>
+      <div className="font-[family-name:var(--font-display)] text-[18px] font-semibold text-[#e6ecf5]">使用者故事尚未核准</div>
+      <p className="max-w-md text-[13px] leading-6 text-[var(--ink-muted)]">
+        自動實作依賴已核准的 stories。先到「使用者故事」階段生成並核准後，即可在此啟動 async 實作 agent。
+      </p>
+    </div>
+  );
+}
+
+function ImplPrBanner({ url }: { url: string }) {
+  return (
+    <a href={url} target="_blank" rel="noreferrer"
+      className="flex items-center gap-3 border-b border-[color-mix(in_oklab,var(--approved)_40%,transparent)] bg-[color-mix(in_oklab,var(--approved)_10%,transparent)] px-6 py-3 transition hover:bg-[color-mix(in_oklab,var(--approved)_18%,transparent)]">
+      <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--approved)]">PR opened</span>
+      <code className="truncate text-[12px] text-[#cdd4df]">{url}</code>
+      <span className="ml-auto font-[family-name:var(--font-mono)] text-[10px] text-[var(--approved)]">開啟 ↗</span>
+    </a>
+  );
+}
+
+function ImplFailBanner({ msg }: { msg: string }) {
+  return (
+    <div className="border-b border-[color-mix(in_oklab,#e0608a_40%,transparent)] bg-[color-mix(in_oklab,#e0608a_10%,transparent)] px-6 py-3">
+      <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#e0608a]">failed</span>
+      <span className="ml-3 text-[12px] text-[#cdd4df]">{msg}</span>
+    </div>
+  );
+}
+
+function ImplAttemptChip({ run }: { run: ImplementRun }) {
+  const tone =
+    run.status === "succeeded" ? "var(--approved)"
+    : run.status === "running" ? "var(--polaris)"
+    : run.status === "rejected" ? "#e0a05b"
+    : "var(--ink-muted)";
+  return (
+    <span className="flex items-center gap-1.5 border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider"
+      style={{ color: tone, borderColor: `color-mix(in oklab, ${tone} 40%, transparent)` }}>
+      attempt {run.attempt} · {run.status}
+      {run.exit_code != null && run.status !== "running" ? ` · exit ${run.exit_code}` : ""}
+    </span>
+  );
+}
+
+function ImplementWorkspace({
+  thread, storiesArtifact, storiesApproved, onSetError,
+}: {
+  thread: string | null;
+  storiesArtifact: string;
+  storiesApproved: boolean;
+  onSetError: (m: string) => void;
+}) {
+  const [runners, setRunners] = useState<RunnerInfo[]>([]);
+  const [runner, setRunner] = useState<string>("mock");
+  const [targetRepo, setTargetRepo] = useState<string>("");
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [session, setSession] = useState<ImplementSession | null>(null);
+  const [lines, setLines] = useState<ImplementLogLine[]>([]);
+  const [starting, setStarting] = useState(false);
+  const cursorRef = useRef(0);
+  const logBottomRef = useRef<HTMLDivElement>(null);
+
+  // runner 清單（data-driven：第三方 runner plugin 會自動出現）
+  useEffect(() => {
+    let on = true;
+    fetchRunners()
+      .then((rs) => {
+        if (!on) return;
+        setRunners(rs);
+        const firstAvail = rs.find((r) => r.available);
+        setRunner(firstAvail ? firstAvail.choice : rs[0]?.choice ?? "mock");
+      })
+      .catch(() => {/* 靜默；仍可手選 mock */});
+    return () => { on = false; };
+  }, []);
+
+  const status = session?.status ?? "idle";
+  const polling = status === "running" || status === "pending";
+
+  // poll status + log（session 在跑時，遞迴 setTimeout；完成後再 drain 一次補尾）
+  useEffect(() => {
+    if (sessionId == null) return;
+    let on = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const drainLog = async () => {
+      const log = await fetchImplementLog(sessionId, cursorRef.current);
+      if (!on) return;
+      if (log.lines.length) {
+        cursorRef.current = log.next_cursor;
+        setLines((prev) => [...prev, ...log.lines]);
+      }
+    };
+
+    const tick = async () => {
+      try {
+        const s = await fetchImplementSession(sessionId);
+        if (!on) return;
+        setSession(s);
+        await drainLog();
+        if (!on) return;
+        if (s.status === "running" || s.status === "pending") {
+          timer = setTimeout(tick, 700);
+        } else {
+          await drainLog(); // 終局再補一次，確保尾端輸出不漏
+        }
+      } catch (e) {
+        if (on) onSetError(`讀取實作狀態失敗：${(e as Error).message}`);
+      }
+    };
+    tick();
+    return () => { on = false; if (timer) clearTimeout(timer); };
+  }, [sessionId, onSetError]);
+
+  // log 自動捲到底
+  useEffect(() => { logBottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [lines]);
+
+  const canStart = !!thread && storiesApproved && !polling && !starting;
+  const runs = session?.runs ?? [];
+
+  const start = async () => {
+    if (!thread) return;
+    setStarting(true);
+    onSetError("");
+    setLines([]); cursorRef.current = 0; setSession(null); setSessionId(null);
+    try {
+      const { session_id } = await startImplement({
+        thread_id: thread, runner, target_repo: targetRepo.trim(),
+        story: storiesArtifact, title: "Implement",
+      });
+      setSessionId(session_id);
+    } catch (e) {
+      onSetError(`啟動實作失敗：${(e as Error).message}`);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (sessionId == null) return;
+    try { await cancelImplement(sessionId); }
+    catch (e) { onSetError(`取消失敗：${(e as Error).message}`); }
+  };
+
+  const selStyle =
+    "border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[11px] text-[#cdd4df] focus:border-[var(--polaris)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50";
+
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
         <ArtifactBar artifact="implement" stage="deliver" op="auto_implement" right={
           <>
-            <Pill color="chart">DISPATCH MODE</Pill>
-            <Pill color="muted">M5 PREVIEW</Pill>
+            {status !== "idle" && <ImplStatusPill status={status} />}
+            <Pill color="muted">FIX-LOOP ≤3</Pill>
           </>
         } />
-        <div className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)]">
-          {/* Lead 分派指令 */}
-          <div className="border-b border-[var(--rule)] px-6 py-5">
-            <div className="mb-3 flex items-center gap-2">
-              <span className="grid h-5 w-5 place-items-center bg-[var(--polaris)] font-[family-name:var(--font-display)] text-[10px] font-bold text-white">IL</span>
-              <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-                implementation_lead<span className="ml-1 text-[var(--polaris)]">· LEAD</span>
-              </span>
-              <span className="ml-auto font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                processing · US-2 · 信用卡 + 3DS 流程
-              </span>
+
+        {!storiesApproved ? (
+          <ImplLockedNotice />
+        ) : (
+          <div className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)]">
+            {/* 控制列 */}
+            <div className="flex flex-wrap items-end gap-4 border-b border-[var(--rule)] px-6 py-5">
+              <label className="flex flex-col gap-1">
+                <ImplSmallLabel>runner</ImplSmallLabel>
+                <select value={runner} onChange={(e) => setRunner(e.target.value)} disabled={polling} className={selStyle}>
+                  {runners.length === 0 && <option value="mock">mock</option>}
+                  {runners.map((r) => (
+                    <option key={r.choice} value={r.choice}>
+                      {r.choice}{r.available ? "" : "（不可用）"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex min-w-[220px] flex-1 flex-col gap-1">
+                <ImplSmallLabel>target repo · owner/repo（mock）</ImplSmallLabel>
+                <input value={targetRepo} onChange={(e) => setTargetRepo(e.target.value)} disabled={polling}
+                  placeholder="SheldonChangL/lodestar"
+                  className={selStyle + " w-full"} />
+              </label>
+              <div className="ml-auto flex items-center gap-2">
+                {polling ? (
+                  <ToolBtn onClick={cancel}>取消</ToolBtn>
+                ) : (
+                  <ToolBtn primary onClick={start} disabled={!canStart}>
+                    {starting ? "啟動中…" : status === "idle" ? "開始自動實作" : "重新實作"}
+                  </ToolBtn>
+                )}
+              </div>
             </div>
-            <div className="mb-4 text-[13px] leading-6 text-[#cdd4df]">
-              拆分為前端 / 後端任務並分派給 subagents：
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <DispatchTaskCard to="frontend_engineer" abbr="FE" color="#a78bfa" tasks={["結帳表單 UI（含 Apple Pay 按鈕）", "3DS challenge modal", "錯誤訊息 i18n"]} />
-              <DispatchTaskCard to="backend_engineer"  abbr="BE" color="#5b8cff" tasks={["Stripe tokenization endpoint", "3DS callback signature 驗證", "pytest 18 cases"]} />
+
+            {session?.pr_url ? <ImplPrBanner url={session.pr_url} /> : null}
+            {status === "failed" && session?.error_message ? <ImplFailBanner msg={session.error_message} /> : null}
+
+            {runs.length > 0 && (
+              <div className="flex flex-wrap gap-2 border-b border-[var(--rule)] px-6 py-3">
+                {runs.map((r) => <ImplAttemptChip key={r.run_id} run={r} />)}
+              </div>
+            )}
+
+            {/* log stream */}
+            <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+              <div className="mb-2 flex items-center gap-2 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                {polling && <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />}
+                log · {polling ? "streaming" : status === "idle" ? "idle" : "complete"}
+              </div>
+              {lines.length === 0 ? (
+                <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                  尚無輸出。選 runner（mock = 安全 dry-run）後按「開始自動實作」。
+                </div>
+              ) : (
+                <ul className="space-y-0.5 font-[family-name:var(--font-mono)] text-[11px] leading-5">
+                  {lines.map((l) => (
+                    <li key={l.id} className={l.kind === "system" ? "text-[#e0a05b]" : "text-[#cdd4df]"}>
+                      <span className="opacity-40">[a{l.attempt}]</span> {l.content.replace(/\n$/, "")}
+                    </li>
+                  ))}
+                  <div ref={logBottomRef} />
+                </ul>
+              )}
             </div>
           </div>
-          {/* Subagent 並排 panes（streaming log） */}
-          <div className="grid min-h-0 flex-1 grid-cols-2 gap-px bg-[var(--rule)]">
-            <SubagentPane abbr="FE" color="#a78bfa" name="frontend_engineer" status="running" stats={{ commits: "14", files: "8", pr: "#142 draft" }} logs={[
-              { t: "ok",  msg: "scaffolded checkout/Page.tsx" },
-              { t: "ok",  msg: "added 3DSChallengeModal component" },
-              { t: "ok",  msg: "wired Stripe.js client" },
-              { t: "run", msg: "running typecheck..." },
-              { t: "run", msg: "test: checkout flow happy path" },
-            ]} />
-            <SubagentPane abbr="BE" color="#5b8cff" name="backend_engineer" status="running" stats={{ commits: "22", files: "12", pr: "#143 merged" }} logs={[
-              { t: "ok",  msg: "tokenization handler" },
-              { t: "ok",  msg: "Stripe customer + intent api" },
-              { t: "ok",  msg: "3DS callback verified signature" },
-              { t: "ok",  msg: "pytest 18 passed" },
-              { t: "run", msg: "deploying preview environment..." },
-            ]} />
-          </div>
-        </div>
-        <BottomMeta left={<>3 agents · 1 lead + 2 subagents · dispatch · processing <span className="text-[var(--polaris)]">1/8 stories</span></>} right={<>merging into <code className="text-[#cdd4df]">us-2-impl</code> · sha · pending</>} />
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <ToolBtn>暫停</ToolBtn>
-          <ToolBtn>取消</ToolBtn>
-          <ToolBtn primary>合併 PR</ToolBtn>
-        </div>
+        )}
+
+        <BottomMeta
+          left={<>runner <code className="text-[#cdd4df]">{runner}</code> · fix-loop 硬上限 3 · 成功開 PR</>}
+          right={session ? <>session #{session.session_id} · {status}</> : <>尚未啟動</>}
+        />
       </section>
-      <ChatPanel />
-    </div>
-  );
-}
-
-function DispatchTaskCard({ to, abbr, color, tasks }: { to: string; abbr: string; color: string; tasks: string[] }) {
-  return (
-    <div className="border border-[var(--paper-edge)] bg-[var(--bg)] p-3">
-      <div className="mb-2 flex items-center gap-2">
-        <span className="grid h-4 w-4 place-items-center font-[family-name:var(--font-display)] text-[9px] font-bold text-white" style={{ backgroundColor: color }}>{abbr}</span>
-        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">↳ to {to}</span>
-        <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.18em]" style={{ color }}>· SUBAGENT</span>
-      </div>
-      <ul className="space-y-1">
-        {tasks.map((t) => (
-          <li key={t} className="flex items-start gap-2 text-[12px] text-[#cdd4df]">
-            <span className="mt-1.5 inline-block h-1 w-1 shrink-0 rounded-full bg-[var(--ink-muted)]" />
-            <span>{t}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function SubagentPane({ abbr, color, name, status, stats, logs }: {
-  abbr: string; color: string; name: string; status: string;
-  stats: Record<string, string>; logs: { t: "ok" | "run" | "warn"; msg: string }[];
-}) {
-  return (
-    <div className="flex flex-col bg-[var(--paper)] p-5">
-      <div className="mb-3 flex items-center justify-between border-b border-[var(--rule)] pb-3">
-        <div className="flex items-center gap-2">
-          <span className="grid h-6 w-6 place-items-center font-[family-name:var(--font-display)] text-[11px] font-bold text-white" style={{ backgroundColor: color }}>{abbr}</span>
-          <div className="leading-tight">
-            <div className="font-[family-name:var(--font-display)] text-[13px] font-semibold text-[#e6ecf5]">{name}</div>
-            <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.18em]" style={{ color }}>· SUBAGENT</span>
-          </div>
-        </div>
-        <span className="flex items-center gap-1.5 border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider"
-          style={{ color, borderColor: `color-mix(in oklab, ${color} 40%, transparent)` }}>
-          <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
-          {status}
-        </span>
-      </div>
-      <div className="mb-3 grid grid-cols-3 gap-2">
-        {Object.entries(stats).map(([k, v]) => (
-          <div key={k}>
-            <div className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">{k}</div>
-            <div className="text-[13px] text-[#cdd4df]">{v}</div>
-          </div>
-        ))}
-      </div>
-      <div className="min-h-0 flex-1">
-        <div className="mb-2 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">log · streaming</div>
-        <ul className="space-y-1 font-[family-name:var(--font-mono)] text-[11px] leading-5">
-          {logs.map((l, i) => (
-            <li key={i} className={l.t === "ok" ? "text-[var(--approved)]" : l.t === "run" ? "text-[var(--polaris)]" : "text-[var(--ink-muted)]"}>
-              <span className="opacity-50">[{String(i + 1).padStart(2, "0")}]</span> {l.t === "ok" ? "✓" : l.t === "run" ? "▸" : "·"} {l.msg}
-            </li>
-          ))}
-        </ul>
-      </div>
     </div>
   );
 }
