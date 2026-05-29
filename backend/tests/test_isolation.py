@@ -20,8 +20,7 @@ FORBIDDEN_HOST_MODULES = {
     "api_models",
     "api_errors",
     "model_adapters",
-    "implement_runtime",   # M5：async long-running runtime（預留）
-    "impl_runtime",
+    "async_runtime",       # M5：async long-running runtime（host 層；plugin 只准 import plugin_api）
 }
 
 
@@ -45,3 +44,17 @@ def test_plugins_only_import_plugin_api():
         if bad:
             offenders[str(py.relative_to(_BACKEND))] = sorted(bad)
     assert not offenders, f"plugin 不得 import host 內部模組: {offenders}"
+
+
+def test_async_runtime_in_forbidden_set():
+    """M5 鐵則：async_runtime（host 長時 runtime）必須在禁用清單，plugin 不得 import。"""
+    assert "async_runtime" in FORBIDDEN_HOST_MODULES
+
+
+def test_builtin_implement_only_imports_plugin_api():
+    """builtin_implement 帶具體 runner / hook，仍只能依賴 plugin_api。"""
+    impl_dir = _PLUGINS / "builtin_implement"
+    assert impl_dir.exists(), "builtin_implement plugin 不存在"
+    for py in impl_dir.rglob("*.py"):
+        bad = _imported_top_modules(py) & FORBIDDEN_HOST_MODULES
+        assert not bad, f"{py.name} 不得 import host 模組: {sorted(bad)}"

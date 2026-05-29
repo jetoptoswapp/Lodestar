@@ -1,6 +1,6 @@
 -- ai-tool-v3 DB schema（SQLite 單檔 WAL）。唯一碰 DB 的是 DAL 層。
 -- 對應 spec 附錄 C：核心 / agent 客製化 / sync-AI 遙測。
--- async 實作 agent 表（impl_*）M5 才建，刻意不在此（與 sync 遙測不共用 run_id 形狀）。
+-- async 實作 agent 表（impl_*）見檔尾：獨立命名空間，run_id 用 INTEGER（與 sync 遙測 TEXT 形狀刻意不同）。
 
 -- ===== 核心（host / stage / workflow / plugin）=====
 CREATE TABLE IF NOT EXISTS projects (
@@ -185,3 +185,52 @@ CREATE TABLE IF NOT EXISTS harness_validation_results (
     created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_harness_validation_run ON harness_validation_results (run_id, id);
+
+-- ===== async 實作 agent（M5，獨立命名空間）=====
+-- 與 sync 遙測（harness_*）完全分離：run_id 用 INTEGER AUTOINCREMENT，不共用形狀。
+-- host 的 async_runtime 層是唯一寫入者；plugin 永遠拿不到 connection。
+
+-- 一次「對某 story 的實作請求」。一個 session 內含 ≤3 次 fix-loop 嘗試（impl_runs）。
+CREATE TABLE IF NOT EXISTS impl_sessions (
+    session_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id    TEXT NOT NULL,
+    stage        TEXT NOT NULL DEFAULT 'implement',       -- 觸發此 session 的 stage
+    title        TEXT NOT NULL DEFAULT '',                -- story / 目標標題
+    target_repo  TEXT NOT NULL DEFAULT '',                -- owner/repo（mock 階段為示意值）
+    runner       TEXT NOT NULL DEFAULT '',                -- runner choice（claude-cli / mock）
+    status       TEXT NOT NULL DEFAULT 'pending',         -- pending/running/succeeded/failed/cancelled
+    pr_url       TEXT NOT NULL DEFAULT '',                -- 開 PR 後填（mock 階段為示意 url）
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at   REAL NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at   REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_impl_sessions_thread ON impl_sessions (thread_id, created_at DESC);
+
+-- session 內單次嘗試（attempt 1..3）。parent_run_id 串 fix-loop；dispatch_role 預留 §6.4 dispatch。
+CREATE TABLE IF NOT EXISTS impl_runs (
+    run_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    INTEGER NOT NULL REFERENCES impl_sessions (session_id) ON DELETE CASCADE,
+    attempt       INTEGER NOT NULL DEFAULT 1,             -- fix-loop 第幾次（硬上限 3）
+    runner        TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'running',        -- running/succeeded/failed/cancelled/timed_out
+    exit_code     INTEGER,
+    cancelled     INTEGER NOT NULL DEFAULT 0,
+    timed_out     INTEGER NOT NULL DEFAULT 0,
+    last_output   TEXT NOT NULL DEFAULT '',
+    parent_run_id INTEGER,                                -- 上一 attempt 的 run_id（fix-loop / dispatch）
+    dispatch_role TEXT NOT NULL DEFAULT '',               -- '' / lead / subagent（§6.4 dispatch 預留）
+    started_at    REAL NOT NULL DEFAULT (strftime('%s','now')),
+    ended_at      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_impl_runs_session ON impl_runs (session_id, attempt);
+
+-- 每次 run 的串流 log / 事件（SSE log channel 的持久化）。seq 保序。
+CREATE TABLE IF NOT EXISTS impl_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     INTEGER NOT NULL REFERENCES impl_runs (run_id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL DEFAULT 0,                -- run 內排序
+    kind       TEXT NOT NULL DEFAULT 'log',              -- log / event / system
+    content    TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_impl_messages_run ON impl_messages (run_id, seq);

@@ -32,7 +32,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 _PLUGINS_DIR = _BACKEND_DIR / "plugins"
 
 # 內建 plugin（固定清單，僅用於標記來源 / UI badge；載入機制與第三方完全相同）
-BUILTIN_PLUGIN_IDS = {"builtin_integrations", "builtin_core_stages", "builtin_agents", "builtin_models"}
+BUILTIN_PLUGIN_IDS = {"builtin_integrations", "builtin_core_stages", "builtin_agents", "builtin_models", "builtin_implement"}
 
 # M4：第三方 plugin 用 pip install 後，在自己的 pyproject 宣告 entry-point group：
 #   [project.entry-points."lodestar.plugins"]
