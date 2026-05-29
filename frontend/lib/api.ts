@@ -203,6 +203,23 @@ export async function stageApprove(stageId: string, threadId: string): Promise<{
   return apiCall(`/api/stage/${stageId}/${threadId}/approve`, { method: "POST" });
 }
 
+// ---- Stage chat（SA discovery 等對話）----
+export type StageChatMessage = { role: string; content: string; created_at: number | null };
+
+export async function fetchStageHistory(stageId: string, threadId: string): Promise<StageChatMessage[]> {
+  const r = await apiCall<{ messages: StageChatMessage[] }>(`/api/stage/${stageId}/history/${threadId}`);
+  return r.messages;
+}
+
+export async function stageChat(
+  stageId: string, threadId: string, modelChoice: string, userInput: string,
+): Promise<{ ai_response: string; updated_content: string | null }> {
+  return apiCall(`/api/stage/${stageId}/chat`, {
+    method: "POST",
+    body: JSON.stringify({ thread_id: threadId, model_choice: modelChoice, user_input: userInput }),
+  });
+}
+
 // RCA-3：核准的 rca_plan → 建 workflow（rca_plan_{tid}）並 rebind thread
 export async function applyRcaPlan(threadId: string): Promise<Workflow> {
   return apiCall<Workflow>(`/api/projects/${threadId}/rca/apply-plan`, { method: "POST" });
