@@ -16,6 +16,7 @@ import {
   type AgentBinding as ApiAgentBinding,
   type CollabMode as ApiCollabMode,
   type CollabRole as ApiCollabRole,
+  type Plugin,
   type Workflow,
   type WorkflowStage,
   apiCall,
@@ -24,8 +25,10 @@ import {
   deleteAgentApi,
   deleteWorkflowApi,
   fetchAgents,
+  fetchPlugins,
   fetchWorkflows,
   setProjectWorkflow,
+  togglePlugin,
   updateAgent,
   updateWorkflow,
 } from "@/lib/api";
@@ -216,11 +219,6 @@ const AGENTS: Array<{
   { id: "backend_engineer",    name: "Backend Engineer",    stage: "implement",    collab: "subagent", subagentOf: "implementation_lead", model: "claude-cli", iter: 3, enabled: false, seed: "builtin_implement", prompt: "（M5 subagent）後端：API、DB、migrations、pytest…",            skills: ["FastAPI", "SQL", "pytest"],          tools: ["bash", "file-edit"] },
 ];
 
-const PLUGINS = [
-  { id: "builtin_integrations", name: "Built-in Delivery Integrations", version: "1.0.0", desc: "GitHub / Jira / GitLab delivery targets（preview-before-publish）", provides: { stages: [], workflows: [], agents: [], integrations: ["github", "jira", "gitlab"] }, enabled: true,  builtin: true, requiresRebuild: false, loadError: null as string | null },
-  { id: "builtin_core_stages",  name: "Core Requirement Stages",        version: "(planned · M1)", desc: "PRD / Architecture / Stories 內建 stage", provides: { stages: ["prd", "architecture", "stories"], workflows: ["default"], agents: [], integrations: [] }, enabled: false, builtin: true, requiresRebuild: false, loadError: "尚未實作（M1 milestone）" },
-  { id: "builtin_agents",       name: "Built-in Stage Agents",          version: "(planned · M2)", desc: "PRD / Architecture / Stories 對應 seed agents", provides: { stages: [], workflows: [], agents: ["system_analyst", "software_architect", "product_owner"], integrations: [] }, enabled: false, builtin: true, requiresRebuild: false, loadError: "尚未實作（M2 milestone）" },
-];
 
 // ---------- Chat（multi-agent discussion）----------
 type SpeakerId = "system_analyst" | "sales_voice" | "product_manager";
@@ -288,6 +286,7 @@ export default function Page() {
   // M3：workflows / agents 真實 list（給 /workflows, /agents 頁面與 thread switcher 共用）
   const [workflowList, setWorkflowList] = useState<Workflow[]>([]);
   const [agentList, setAgentList] = useState<Agent[]>([]);
+  const [pluginList, setPluginList] = useState<Plugin[]>([]);   // M4
   // M3：Agent editor modal state
   const [agentEditor, setAgentEditor] = useState<{ open: boolean; initial: Agent | null }>({ open: false, initial: null });
   // M3：delete confirm modal（共用給 workflow / agent 刪除）
@@ -421,20 +420,46 @@ export default function Page() {
       setErr(`讀取 agents 失敗：${(e as Error).message}`);
     }
   }, []);
+  const refreshPlugins = useCallback(async () => {
+    try {
+      setPluginList(await fetchPlugins());
+    } catch (e) {
+      setErr(`讀取 plugins 失敗：${(e as Error).message}`);
+    }
+  }, []);
 
-  // 啟動時抓一次（thread switcher dropdown 用得到）
+  // 啟動時抓一次（thread switcher dropdown / plugins view 用得到）
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
-        const [wfs, ags] = await Promise.all([fetchWorkflows(), fetchAgents()]);
+        const [wfs, ags, plugs] = await Promise.all([fetchWorkflows(), fetchAgents(), fetchPlugins()]);
         if (!mounted) return;
         setWorkflowList(wfs);
         setAgentList(ags);
+        setPluginList(plugs);
       } catch { /* silent */ }
     })();
     return () => { mounted = false; };
   }, []);
+
+  // ===== M4：plugin enable / disable —— toggle 後 refetch plugins + catalog 相關 list =====
+  const onTogglePlugin = useCallback(async (id: string, enabled: boolean) => {
+    setErr(null);
+    try {
+      await togglePlugin(id, enabled);
+      // plugin 變動會影響 catalog（stages）/ workflows / agents / plugin count → 全部 refetch
+      const [plugs, wfs, ags] = await Promise.all([fetchPlugins(), fetchWorkflows(), fetchAgents()]);
+      setPluginList(plugs);
+      setWorkflowList(wfs);
+      setAgentList(ags);
+      setPluginCount(plugs.filter((p) => p.enabled && !p.load_error).length);
+    } catch (e) {
+      setErr(`切換 plugin 失敗：${(e as Error).message}`);
+      // 失敗時 refetch 還原 UI
+      refreshPlugins();
+    }
+  }, [refreshPlugins]);
 
   // ===== M3：thread workflow switcher =====
   const [currentProjectWorkflowId, setCurrentProjectWorkflowId] = useState<string | null>(null);
@@ -919,7 +944,7 @@ export default function Page() {
                 onDelete={(a) => setDeleteConfirm({ kind: "agent", id: a.agent_id, name: a.name })}
               />
             )}
-            {nav === "plugins"   && <PluginsView />}
+            {nav === "plugins"   && <PluginsView plugins={pluginList} onToggle={onTogglePlugin} />}
             {/* BuildSeal 只在無 ChatPanel 的 view 顯示，避免跟 footer 的「↵ send · ⌘↵ refine」overlap */}
             <BuildSeal visible={nav !== "workspace"} />
           </main>
@@ -3420,66 +3445,106 @@ function AgentCard({ agent, onEdit, onDelete }: {
 }
 
 // ============================== Plugins view ==============================
-function PluginsView() {
+// ============================== Plugins view（M4：API-driven enable/disable）==============================
+function PluginsView({ plugins, onToggle }: {
+  plugins: Plugin[];
+  onToggle: (id: string, enabled: boolean) => void;
+}) {
+  const loaded = plugins.filter((p) => p.enabled && !p.load_error).length;
   return (
     <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
       <ViewHeader title="Plugins" sub="所有功能都是 plugin —— 內建與第三方走同一套 API" right={
         <div className="flex items-center gap-3 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-          <span>installed · {PLUGINS.length}</span>
+          <span>discovered · {plugins.length}</span>
           <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
-          <span className="text-[var(--approved)]">{PLUGINS.filter((p) => p.enabled).length} loaded</span>
+          <span className="text-[var(--approved)]">{loaded} loaded</span>
         </div>
       } />
       <div className="min-h-0 flex-1 overflow-y-auto p-8">
-        <div className="grid grid-cols-2 gap-4">
-          {PLUGINS.map((p) => (
-            <div key={p.id} className={`flex flex-col border p-5 ${p.enabled ? "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40" : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/20"}`}>
-              <div className="mb-3 flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{p.id}</code>
-                    {p.builtin && <Pill color="chart">BUILTIN</Pill>}
-                  </div>
-                  <h3 className="mt-1 font-[family-name:var(--font-display)] text-[18px] font-semibold leading-tight text-[#e6ecf5]">{p.name}</h3>
-                  <div className="mt-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">version · <span className="text-[#cdd4df]">{p.version}</span></div>
-                </div>
-                <label className="relative inline-flex cursor-pointer items-center gap-2">
-                  <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{p.enabled ? "enabled" : "disabled"}</span>
-                  <span className={`relative inline-block h-4 w-7 transition ${p.enabled ? "bg-[var(--polaris)]" : "bg-[var(--rule-dark)]"}`}>
-                    <span className={`absolute top-0.5 h-3 w-3 bg-white transition ${p.enabled ? "left-3" : "left-0.5"}`} />
-                  </span>
-                </label>
-              </div>
-              <p className="mb-4 text-[13px] leading-6 text-[#97a0b3]">{p.desc}</p>
-              <div className="mb-4 space-y-2">
-                <SectionLabel>PROVIDES</SectionLabel>
-                <div className="flex flex-col gap-1.5">
-                  {(["stages", "workflows", "agents", "integrations"] as const).map((cat) =>
-                    p.provides[cat].length > 0 ? (
-                      <div key={cat} className="flex items-baseline gap-2">
-                        <span className="w-24 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{cat}</span>
-                        <div className="flex flex-wrap gap-1">
-                          {p.provides[cat].map((x) => (
-                            <code key={x} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px] tracking-wider text-[#cdd4df]">{x}</code>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null
-                  )}
-                </div>
-              </div>
-              {p.loadError && (
-                <div className="mb-3 border-l-2 border-[var(--locked)] bg-[var(--bg)] px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                  load_error · {p.loadError}
-                </div>
-              )}
-              <div className="mt-auto flex items-center justify-between border-t border-[var(--rule-dark)] pt-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                <span>host_api · &gt;=1.0,&lt;2.0</span>
-                <button className="border border-[var(--rule-dark)] px-3 py-1 text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">manifest</button>
-              </div>
-            </div>
-          ))}
+        {plugins.length === 0 ? (
+          <div className="border border-dashed border-[var(--rule-dark)] py-12 text-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            無 plugins（loading…）
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4">
+            {plugins.map((p) => (
+              <PluginCard key={p.id} plugin={p} onToggle={onToggle} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PluginCard({ plugin, onToggle }: {
+  plugin: Plugin;
+  onToggle: (id: string, enabled: boolean) => void;
+}) {
+  const p = plugin;
+  const hasProvides = p.provides.stages.length || p.provides.workflows.length || p.provides.agents.length || p.provides.integrations.length;
+  // builtin 不可停用；toggle 只在非 builtin 開放
+  const canToggle = !p.builtin;
+  return (
+    <div className={`flex flex-col border p-5 ${p.enabled ? "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40" : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/20 opacity-70"}`}>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="font-[family-name:var(--font-mono)] text-[11px] tracking-wider text-[var(--polaris)]">{p.id}</code>
+            {p.builtin ? <Pill color="approved">BUILTIN</Pill> : <Pill color="muted">3RD-PARTY</Pill>}
+            <span className="border border-[var(--rule-dark)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[var(--ink-muted)]">
+              {p.discovery === "entry_point" ? "pip" : "dir"}
+            </span>
+          </div>
+          <h3 className="mt-1 font-[family-name:var(--font-display)] text-[18px] font-semibold leading-tight text-[#e6ecf5]">{p.name}</h3>
+          <div className="mt-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">version · <span className="text-[#cdd4df]">{p.version}</span></div>
         </div>
+        <button
+          onClick={() => canToggle && onToggle(p.id, !p.enabled)}
+          disabled={!canToggle}
+          title={canToggle ? (p.enabled ? "停用此 plugin" : "啟用此 plugin") : "內建 plugin 不可停用"}
+          className={`flex shrink-0 items-center gap-2 ${canToggle ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
+        >
+          <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{p.enabled ? "enabled" : "disabled"}</span>
+          <span className={`relative inline-block h-4 w-7 transition ${p.enabled ? "bg-[var(--polaris)]" : "bg-[var(--rule-dark)]"}`}>
+            <span className={`absolute top-0.5 h-3 w-3 bg-white transition-all ${p.enabled ? "left-3.5" : "left-0.5"}`} />
+          </span>
+        </button>
+      </div>
+      <p className="mb-4 text-[13px] leading-6 text-[#97a0b3]">{p.description}</p>
+      {hasProvides ? (
+        <div className="mb-4 space-y-2">
+          <SectionLabel>PROVIDES</SectionLabel>
+          <div className="flex flex-col gap-1.5">
+            {(["stages", "workflows", "agents", "integrations"] as const).map((cat) =>
+              p.provides[cat].length > 0 ? (
+                <div key={cat} className="flex items-baseline gap-2">
+                  <span className="w-24 shrink-0 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{cat}</span>
+                  <div className="flex flex-wrap gap-1">
+                    {p.provides[cat].map((x) => (
+                      <code key={x} className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px] tracking-wider text-[#cdd4df]">{x}</code>
+                    ))}
+                  </div>
+                </div>
+              ) : null
+            )}
+          </div>
+        </div>
+      ) : (
+        !p.enabled && (
+          <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+            （停用中 · 啟用後顯示貢獻）
+          </div>
+        )
+      )}
+      {p.load_error && (
+        <div className="mb-3 border-l-2 border-[#f59e0b] bg-[color-mix(in_oklab,#f59e0b_8%,transparent)] px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] tracking-wider text-[#f59e0b]">
+          load_error · {p.load_error}
+        </div>
+      )}
+      <div className="mt-auto flex items-center justify-between border-t border-[var(--rule-dark)] pt-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+        <span>discovery · <span className="text-[#cdd4df]">{p.discovery}</span></span>
+        {p.requires_rebuild && <Pill color="muted">requires rebuild</Pill>}
       </div>
     </div>
   );
