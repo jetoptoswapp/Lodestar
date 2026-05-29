@@ -192,3 +192,36 @@ class AttachmentResponse(BaseModel):
 
 class AttachmentListResponse(BaseModel):
     attachments: list[AttachmentResponse]
+
+
+# ============================================================
+#  Delivery publish（M2.5）—— stories → DeliveryItem → IntegrationSpec.publish
+# ============================================================
+class DeliveryItemPreview(BaseModel):
+    """來自 IntegrationSpec.preview() 的一筆預覽。"""
+    target: str
+    destination: str
+    title: str
+    labels: list[str]
+    estimate: int
+    group: str
+    body_preview: str
+
+
+class DeliveryPreviewResponse(BaseModel):
+    target: str
+    config: dict
+    item_count: int
+    items: list[DeliveryItemPreview]
+
+
+class DeliveryPublishRequest(BaseModel):
+    target: str             # github / jira / gitlab / 其他 registered integration
+    config: dict            # 對應 IntegrationSpec.config_schema 的 fields
+
+
+class DeliveryPublishResponse(BaseModel):
+    success: bool
+    target: str
+    count: int
+    created: list[str]      # 已建立的 issue / ticket URL

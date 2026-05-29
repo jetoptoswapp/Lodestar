@@ -9,6 +9,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog, PromptDialog } from "@/components/Modal";
+import { PublishModal } from "@/components/PublishModal";
 import {
   countStoriesAndEstimate,
   parseArchitecture,
@@ -263,6 +264,8 @@ export default function Page() {
     return window.localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL;
   });
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
+  // M2.5：Publish modal 開啟旗標（獨立 state，因為它是 multi-step internal state machine）
+  const [publishOpen, setPublishOpen] = useState(false);
 
   // 清掉所有 per-thread 衍生狀態（切 thread / 刪除後重置 UI 用）
   const resetThreadDerivedState = useCallback(() => {
@@ -772,6 +775,7 @@ export default function Page() {
                       onGenerate={onGenerateStories}
                       onRefine={onRefineStories}
                       onApprove={onApproveStories}
+                      onPublish={() => setPublishOpen(true)}
                     />
                   )}
                   {selected === "implement"    && <ImplementWorkspace />}
@@ -835,6 +839,13 @@ export default function Page() {
         submitLabel="送出修訂"
         onSubmit={submitRefine}
         onCancel={() => setModal({ kind: "none" })}
+      />
+      {/* M2.5：Stories → GitHub / Jira / GitLab publish */}
+      <PublishModal
+        open={publishOpen}
+        thread={thread}
+        apiBase={API_BASE}
+        onClose={() => setPublishOpen(false)}
       />
     </>
   );
@@ -1982,7 +1993,7 @@ function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChan
 // M2.3 wire 真實 API：接 /api/stage/stories/{thread}；empty state 顯示「架構未生成」提示。
 function StoriesWorkspace({
   thread, artifact, status, busy, archReady,
-  onGenerate, onRefine, onApprove,
+  onGenerate, onRefine, onApprove, onPublish,
 }: {
   thread: string | null;
   artifact: string;
@@ -1992,6 +2003,7 @@ function StoriesWorkspace({
   onGenerate: () => void;
   onRefine: () => void;
   onApprove: () => void;
+  onPublish: () => void;
 }) {
   const parsed = useMemo(() => parseStories(artifact || ""), [artifact]);
   const counts = useMemo(() => countStoriesAndEstimate(parsed.raw), [parsed.raw]);
@@ -2028,8 +2040,12 @@ function StoriesWorkspace({
                 needs revision
               </span>
             )}
-            <button className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
-              Preview to GitHub
+            <button
+              onClick={onPublish}
+              disabled={!hasContent}
+              className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Publish to tracker
             </button>
           </>
         } />
@@ -2159,8 +2175,11 @@ function StoriesWorkspace({
           <ToolBtn onClick={onGenerate} disabled={!thread || !archReady || !!busy}>
             {busy === "generate" ? "Drafting…" : hasContent ? "重新生成" : "產生使用者故事"}
           </ToolBtn>
-          <ToolBtn primary onClick={onApprove} disabled={!hasContent || !!busy || isApproved}>
+          <ToolBtn onClick={onApprove} disabled={!hasContent || !!busy || isApproved}>
             {isApproved ? "已核准 ✓" : "核准故事"}
+          </ToolBtn>
+          <ToolBtn primary onClick={onPublish} disabled={!hasContent}>
+            發佈到 tracker…
           </ToolBtn>
         </div>
       </section>
