@@ -8,3 +8,4 @@ pypdf>=4.0
 python-docx>=1.1
 pytesseract>=0.3.10
 Pillow>=10.0
+cryptography>=42.0      # integration credential keystore（Fernet 對稱加密）
