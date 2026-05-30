@@ -1,5 +1,32 @@
 # Lessons（從使用者修正中累積，避免重蹈覆轍）
 
+## React：把「吃參數的 callback」直接綁 onClick → event 被當成第一個參數（隱性 bug）
+- **症狀**：PRD「Refine…」modal 標題顯示「修訂 undefined」、API 路徑變 `/api/stage/[object Object]/refine`、送出丟 TypeError、靜默失敗。
+- **真因**：`onRefine = (stageId="prd") => ...` 這種吃參數的 callback，若被 `<button onClick={onRefine}>` 直接綁，
+  React 會把 SyntheticEvent 當 `stageId` 傳入 → `STAGE_LABEL[event]`=undefined、`${event}`="[object Object]"、`setBusyFor[event]` 不是函式而 throw。
+  對照組（architecture/stories）有用 wrapper `() => onRefine("architecture")` 包好就沒事 → **同一份 callback 三處用法不一致** 是嗅覺點。
+- **修法**：綁定處一律用 arrow wrapper：`onClick={() => onRefine("prd")}`（或傳已包好的 `onRefinePrd`）。**勿** `onClick={fnNeedingArg}`。
+- **稽核法**：grep `onClick=\{[a-zA-Z_]\w*\}`（裸 identifier），逐一確認該 fn 不吃「非 event」參數；吃參數者必須在綁定處用 arrow 包。
+
+## React/Next：初始 state 勿在 render 期讀 window（hydration mismatch）
+- **症狀**：`useState(() => window.innerWidth >= 1024)` 在 SSR（window undefined）與 client 初值不同 → hydration mismatch（dev overlay「1 Issue」）。
+- **修法**：初值用與 SSR 一致的常數（如 `useState(true)`），在 **mount 後的 useEffect** 內讀 window 再 `setState`。window 只在 effect 讀 = SSR-safe。
+
+## 安全：機密（token/PAT）勿存瀏覽器 localStorage → 用 server-side keystore
+- localStorage 會被 XSS 讀取且持久留存。改：後端 Fernet 加密存 DB（`keystore.py` + `integration_secrets` 表），
+  明文永不回傳前端（GET 只回「是否已設定」+ 非機密欄）；preview/publish 由後端從 keystore 合併機密。
+- 金鑰：env `LODESTAR_KEYSTORE_KEY` 優先（正式部署），否則本機 `data/.keystore.key`（0600，gitignore）。升級時清掉 legacy localStorage key。
+
+## GUI 測試：preview 工具在此 Next16/React19 app 的限制（用 eval 取代 click/screenshot）
+- **preview_click 觸發不到 React onClick**：回報「Successfully clicked」但 state 不變（全域，連 nav / 側欄鈕都一樣）。
+  早期 resize 後甚至會點到「錯的座標」（曾誤觸 stage 按鈕，造成假象 bug）。**改用 `preview_eval` 原生 `.click()`**。
+- **抓真實「浮層擋點擊」bug**：原生 click 會繞過 hit-testing，所以要另用 `document.elementFromPoint(cx,cy)`
+  確認元素是否真的在最上層（這才等同真實滑鼠）。本輪用此法確認 nav/model popover/modal 皆無遮擋。
+- **React controlled input 要用 native setter + dispatch**：`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set` 後 `dispatchEvent(new Event('input',{bubbles:true}))`；select 用 change、Enter 用 KeyboardEvent。
+- **同一個 eval tick 內「設值+送出」會 race**：React 狀態還沒 commit，submit 會用到舊值（曾因此建出名稱錯誤的 thread）。**設值與點擊分兩次 eval 呼叫**。
+- **preview_screenshot 在 `window.location.reload()` 後會 render 破圖**（內容擠左上角），但 DOM 實際正常；`preview_resize` 可重置。驗證一律以 eval 量測為準，screenshot 僅輔助。
+- **等 claude-cli 生成**：用 `run_in_background` 的 bash 迴圈 grep 後端 log 的 `POST .../generate 200`（注意 `grep -c` 多行回傳會讓 `[ -gt ]` 比較式報錯，用單一數字）。
+
 ## 前端：popover/dropdown 被同層內容蓋過、看似半透明 → 檢查祖先的 transform/filter（stacking context 陷阱）
 - **症狀**：model selector popover 內容後面透出主內容（stepper / 討論面板）的文字，看起來「太透明」。
 - **真因不是透明度**：popover 背景其實是 opaque（`--paper` #1f2733、opacity 1）。問題是 **z-index 失效**——
