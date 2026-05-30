@@ -26,6 +26,7 @@ from plugin_api import (
 from plugin_api.harness import HarnessContext
 
 from ._shared import (
+    collab_discussion_prefix,
     extract_content_block,
     format_attachments as _format_attachments,
     format_conversation as _format_conversation,
@@ -104,6 +105,7 @@ def _analysis_generate(ctx: StageContext, run) -> StageResult:
         "INTAKE": ctx.upstream_artifacts.get("rca_intake", "(empty)"),
         "ATTACHMENTS": _format_attachments(ctx.metadata.get("attachments", [])),
     })
+    prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
     result = run.harnessed_step(
         telemetry_stage="rca_analysis", operation="generate_rca_analysis",
         prompt=prompt, metadata={"thread_id": ctx.thread_id}, max_iterations=1,

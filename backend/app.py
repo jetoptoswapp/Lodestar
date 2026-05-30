@@ -85,6 +85,7 @@ from async_runtime import impl_dal, orchestrator, task_registry  # noqa: E402
 from plugin_api import ToolHook  # noqa: E402
 from delivery_parser import parse_stories_to_delivery_items  # noqa: E402
 from parsers import parse as parse_attachment  # noqa: E402
+import keystore  # noqa: E402
 from persistence import dal, migrations  # noqa: E402
 from plugin_host import (  # noqa: E402
     CAP_AGENT,
@@ -187,6 +188,28 @@ async def get_stages():
     return StageCatalogResponse(stages=_build_catalog(_registry()))
 
 
+def _declared_provides(manifest) -> PluginProvides:
+    """從 manifest 宣告（plugin.toml `[[contributes.*]]`）反推 provides。
+    用於 disabled / 未註冊 plugin —— 沒有 live contribution 時仍能讓 UI 正確分類
+    並預覽「啟用後會提供什麼」（否則停用的 feature plugin 會被誤丟進「系統零件」區）。
+    """
+    c = getattr(manifest, "contributes", None) or {}
+
+    def ids(key: str) -> list[str]:
+        return [
+            item["id"]
+            for item in c.get(key, [])
+            if isinstance(item, dict) and item.get("id")
+        ]
+
+    return PluginProvides(
+        stages=ids("stage"),
+        workflows=ids("workflow"),
+        agents=ids("agent"),
+        integrations=ids("integration"),
+    )
+
+
 @app.get("/api/plugins", response_model=PluginListResponse)
 async def get_plugins():
     reg = _registry()
@@ -205,6 +228,10 @@ async def get_plugins():
     plugins: list[PluginResponse] = []
     for plugin_info in reg.loaded_plugins:
         m = plugin_info.manifest
+        # 已註冊（enabled）→ 用 live contribution；未註冊（disabled / 載入失敗）→
+        # fallback 用 manifest 宣告值，讓前端 isFeature 分類正確、停用後仍留在「你的功能」區。
+        live = provides_by_plugin.get(m.id)
+        provides = live if live is not None else _declared_provides(m)
         plugins.append(
             PluginResponse(
                 id=m.id,
@@ -212,7 +239,7 @@ async def get_plugins():
                 version=m.version,
                 description=m.description,
                 enabled=dal.plugin_enabled(m.id),
-                provides=provides_by_plugin.get(m.id, PluginProvides()),
+                provides=provides,
                 load_error=plugin_info.error or None,
                 builtin=m.id in plugin_loader.BUILTIN_PLUGIN_IDS,
                 discovery=plugin_info.discovery,
@@ -627,6 +654,68 @@ async def get_integrations():
     }
 
 
+# ---- Integration credential keystore（server-side；機密明文不回傳前端）----
+def _integration_or_404(target: str):
+    integ = _registry().integrations.get(target)
+    if integ is None:
+        raise HTTPException(
+            404, detail=error_detail("integration_not_found", f"integration '{target}' 未註冊")
+        )
+    return integ
+
+
+def _secret_field_keys(integ) -> set[str]:
+    """config_schema 中 type == 'password' 的欄位 = 機密欄。"""
+    fields = (getattr(integ, "config_schema", None) or {}).get("fields", [])
+    return {f["key"] for f in fields if isinstance(f, dict) and f.get("type") == "password" and f.get("key")}
+
+
+def _credentials_status(target: str, integ) -> dict:
+    """回傳已存憑證的狀態：機密欄只回「是否已設定」，非機密欄回實際值。明文機密不外洩。"""
+    stored = keystore.get_credentials(target)
+    secret_keys = _secret_field_keys(integ)
+    return {
+        "target": target,
+        "has_credentials": bool(stored),
+        "secret_fields_set": sorted(k for k in stored if k in secret_keys),
+        "values": {k: v for k, v in stored.items() if k not in secret_keys},
+    }
+
+
+def _effective_config(target: str, req_config: dict) -> dict:
+    """合併 keystore 已存 config 與 request config：request 非空值覆蓋，其餘（如機密）沿用 keystore。"""
+    merged = dict(keystore.get_credentials(target))
+    for k, v in (req_config or {}).items():
+        if v not in (None, ""):
+            merged[k] = v
+    return merged
+
+
+@app.get("/api/integrations/{target}/credentials")
+async def get_integration_credentials(target: str):
+    integ = _integration_or_404(target)
+    return _credentials_status(target, integ)
+
+
+@app.put("/api/integrations/{target}/credentials")
+async def put_integration_credentials(target: str, config: dict):
+    """儲存（加密）integration 憑證。空字串欄位不覆寫既有值（方便只更新 token 或只更新 repo）。"""
+    integ = _integration_or_404(target)
+    merged = dict(keystore.get_credentials(target))
+    for k, v in (config or {}).items():
+        if v not in (None, ""):
+            merged[k] = str(v)
+    keystore.set_credentials(target, merged)
+    return _credentials_status(target, integ)
+
+
+@app.delete("/api/integrations/{target}/credentials", status_code=204)
+async def delete_integration_credentials(target: str):
+    _integration_or_404(target)
+    keystore.delete_credentials(target)
+    return None
+
+
 # ============================================================
 #  Helpers（dispatch / error mapping）
 # ============================================================
@@ -793,7 +882,8 @@ async def stories_preview_delivery(thread_id: str, req: DeliveryPublishRequest):
             400,
             detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
         )
-    items = parse_stories_to_delivery_items(artifact, target_project=req.config.get("repo", ""))
+    cfg = _effective_config(req.target, req.config)  # 合併 keystore 機密（如 token）
+    items = parse_stories_to_delivery_items(artifact, target_project=cfg.get("repo", ""))
     if not items:
         raise HTTPException(
             400,
@@ -802,7 +892,8 @@ async def stories_preview_delivery(thread_id: str, req: DeliveryPublishRequest):
                 "stories 解析不出任何 DeliveryItem；檢查 heading shape：## Epic N: / ### Story N.M —",
             ),
         )
-    previews = integ.preview(items, req.config)
+    previews = integ.preview(items, cfg)
+    # 回傳不含合併後機密（response.config 僅回 client 原送值，避免 keystore token 外洩）
     return DeliveryPreviewResponse(
         target=req.target, config=req.config, item_count=len(items),
         items=[DeliveryItemPreview(**p) for p in previews],
@@ -830,12 +921,13 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
             400,
             detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
         )
-    items = parse_stories_to_delivery_items(artifact, target_project=req.config.get("repo", ""))
+    cfg = _effective_config(req.target, req.config)  # 合併 keystore 機密（如 token）
+    items = parse_stories_to_delivery_items(artifact, target_project=cfg.get("repo", ""))
     if not items:
         raise HTTPException(400, detail=error_detail("stories_unparseable", "stories 解析失敗"))
 
     # 真實 publish（GitHub 已實作；jira / gitlab stub 會回 success=False）
-    result = await asyncio.to_thread(integ.publish, items, req.config)
+    result = await asyncio.to_thread(integ.publish, items, cfg)
     dal.append_event(
         thread_id, "stories",
         event_type="delivery_published" if result.success else "delivery_publish_failed",
@@ -855,6 +947,7 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
 def _impl_run_info(r: dict) -> ImplementRunInfo:
     return ImplementRunInfo(
         run_id=r["run_id"], attempt=r["attempt"], runner=r["runner"], status=r["status"],
+        dispatch_role=r["dispatch_role"] if "dispatch_role" in r.keys() else "",
         exit_code=r["exit_code"], cancelled=bool(r["cancelled"]), timed_out=bool(r["timed_out"]),
         parent_run_id=r["parent_run_id"], started_at=r["started_at"], ended_at=r["ended_at"],
     )
@@ -892,9 +985,10 @@ async def implement_start(req: ImplementStartRequest):
         raise HTTPException(400, detail=error_detail("story_empty", "沒有 story 可實作：先生成 stories 或於請求帶 story"))
     hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
     title = req.title.strip() or f"Implement {req.thread_id[:8]}"
+    mode = req.mode if req.mode in ("single", "roles") else "single"
     session_id = orchestrator.start_session(
         thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
-        target_repo=req.target_repo, title=title, hooks=hooks,
+        target_repo=req.target_repo, title=title, hooks=hooks, mode=mode,
     )
     return ImplementStartResponse(session_id=session_id)
 

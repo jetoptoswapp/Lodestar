@@ -242,6 +242,7 @@ const AGENTS: Array<{
 export default function Page() {
   const [nav, setNav] = useState<string>("workspace");
   const [selected, setSelected] = useState<string>("prd");
+  // 初始恆為 true（與 SSR 一致，避免 hydration mismatch）；窄螢幕在 mount 後的 effect 收合。
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [docFs, setDocFs] = useState(false);
 
@@ -696,12 +697,16 @@ export default function Page() {
       });
       setPrdArtifact(data.artifact || "");
       setPrdStatus("draft");
+      // 上游 PRD 重生若改變 artifact，後端會把已核准的下游標 needs_revision；
+      // 同步重抓 architecture / stories 讓 UI 反映（與 onGenerateArch / submitRefine 一致）。
+      refreshArchitecture(thread);
+      refreshStories(thread);
     } catch (e) {
       setErr(`生成 PRD 失敗：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
-  }, [thread, busy, modelChoice]);
+  }, [thread, busy, modelChoice, refreshArchitecture, refreshStories]);
 
   // ===== M2.3：Architecture / Stories handlers（與 PRD 對稱）=====
   const onGenerateArch = useCallback(async () => {
@@ -835,6 +840,21 @@ export default function Page() {
     return () => window.removeEventListener("keydown", onKey);
   }, [onNewThread]);
 
+  // 響應式最小防護：mount 後若為窄螢幕（<1024）先收合；之後只在「跨越斷點變窄」時自動收合，
+  // 不自動展開 → 尊重使用者在窄螢幕手動展開的選擇。window 僅在 effect 內讀取（SSR-safe）。
+  useEffect(() => {
+    const BP = 1024;
+    if (window.innerWidth < BP) setSidebarOpen(false);
+    let wasWide = window.innerWidth >= BP;
+    const onResize = () => {
+      const isWide = window.innerWidth >= BP;
+      if (wasWide && !isWide) setSidebarOpen(false);
+      wasWide = isWide;
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const showSidebar = nav === "workspace";
 
   return (
@@ -901,7 +921,7 @@ export default function Page() {
                       status={prdStatus}
                       busy={busy}
                       onGenerate={onGenerate}
-                      onRefine={onRefine}
+                      onRefine={onRefinePrd}
                       onApprove={onApprovePrd}
                       attachments={attachments}
                       uploading={uploading}
@@ -2367,7 +2387,7 @@ function StoriesWorkspace({
               disabled={!hasContent}
               className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Publish to tracker
+              發佈到 tracker…
             </button>
           </>
         } />
@@ -2692,7 +2712,7 @@ function ImplAttemptChip({ run }: { run: ImplementRun }) {
   return (
     <span className="flex items-center gap-1.5 border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider"
       style={{ color: tone, borderColor: `color-mix(in oklab, ${tone} 40%, transparent)` }}>
-      attempt {run.attempt} · {run.status}
+      {run.dispatch_role ? `${run.dispatch_role} · ` : ""}attempt {run.attempt} · {run.status}
       {run.exit_code != null && run.status !== "running" ? ` · exit ${run.exit_code}` : ""}
     </span>
   );
@@ -2708,6 +2728,7 @@ function ImplementWorkspace({
 }) {
   const [runners, setRunners] = useState<RunnerInfo[]>([]);
   const [runner, setRunner] = useState<string>("mock");
+  const [mode, setMode] = useState<"single" | "roles">("single");
   const [targetRepo, setTargetRepo] = useState<string>("");
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [session, setSession] = useState<ImplementSession | null>(null);
@@ -2782,7 +2803,7 @@ function ImplementWorkspace({
     try {
       const { session_id } = await startImplement({
         thread_id: thread, runner, target_repo: targetRepo.trim(),
-        story: storiesArtifact, title: "Implement",
+        story: storiesArtifact, title: "Implement", mode,
       });
       setSessionId(session_id);
     } catch (e) {
@@ -2828,7 +2849,14 @@ function ImplementWorkspace({
                   ))}
                 </select>
               </label>
-              <label className="flex min-w-[220px] flex-1 flex-col gap-1">
+              <label className="flex flex-col gap-1">
+                <ImplSmallLabel>模式</ImplSmallLabel>
+                <select value={mode} onChange={(e) => setMode(e.target.value as "single" | "roles")} disabled={polling} className={selStyle}>
+                  <option value="single">單一 fix-loop</option>
+                  <option value="roles">多角色 pipeline</option>
+                </select>
+              </label>
+              <label className="flex min-w-[200px] flex-1 flex-col gap-1">
                 <ImplSmallLabel>target repo · owner/repo（mock）</ImplSmallLabel>
                 <input value={targetRepo} onChange={(e) => setTargetRepo(e.target.value)} disabled={polling}
                   placeholder="SheldonChangL/lodestar"
@@ -3539,7 +3567,7 @@ function AgentsView({ agents, onNew, onEdit, onDelete }: {
                   role · {role}
                 </span>
                 <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                  {inRole.length} agents
+                  {inRole.length} {inRole.length === 1 ? "agent" : "agents"}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -3809,7 +3837,7 @@ function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated
         <div className="flex items-center justify-between">
           <h3 className="font-[family-name:var(--font-display)] text-[17px] font-semibold text-[#e6ecf5]">{stageLabel}</h3>
           <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-            {msgs.length} msgs · {modelChoice}
+            {msgs.length} {msgs.length === 1 ? "msg" : "msgs"} · {modelChoice}
           </span>
         </div>
       </div>

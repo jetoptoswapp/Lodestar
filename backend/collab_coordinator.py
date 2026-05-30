@@ -21,6 +21,7 @@ import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import Optional
 
 from plugin_api import AgentSpec
@@ -68,9 +69,14 @@ def _split_roles(bindings: tuple[AgentBinding, ...]):
 #  共享脈絡（upstream artifacts + 現有草稿 + 附件提示）
 # ============================================================
 def _context_block(stage, ctx) -> str:
-    parts = [f"# RCA stage：{stage.label}（{stage.id}）"]
+    parts = [f"# 階段：{stage.label}（{stage.id}）"]
     for key, val in (ctx.upstream_artifacts or {}).items():
         parts.append(f"\n## 上游 · {key}\n{val}")
+    if ctx.conversation:
+        convo = "\n\n".join(
+            f"{'User' if r == 'user' else 'Assistant'}:\n{c}" for r, c in ctx.conversation
+        )
+        parts.append(f"\n## 需求脈絡 / 既有對話\n{convo}")
     if ctx.current_artifact:
         parts.append(f"\n## 目前草稿\n{ctx.current_artifact}")
     atts = ctx.metadata.get("attachments", []) if ctx.metadata else []
@@ -89,6 +95,13 @@ def _runner(registry, thread_id: str, stage_id: str, agent: AgentSpec) -> Harnes
 # ============================================================
 def run_discussion(registry, *, thread_id, stage, ctx, model_choice,
                    leads, peers) -> str:
+    """peer 各自發言 → lead 以「該 stage 自己的 generate」彙整（stage-aware，非寫死 RCA）。
+
+    關鍵：lead 不再用寫死的合成 prompt，而是把多方發言當 conversation 注入後呼叫
+    stage.generate —— 自動套用該階段的正式格式（PRD / 架構 / 故事 / RCA…）並吸收討論。
+    """
+    if stage.generate is None:
+        raise CollabError(f"stage '{stage.id}' 無 generate handler，無法以 collab 合成")
     shared = _context_block(stage, ctx)
     lead_spec = resolve_agent(registry, leads[0].agent_id) if leads else None
     peer_specs = [s for s in (resolve_agent(registry, b.agent_id) for b in peers) if s is not None]
@@ -97,13 +110,15 @@ def run_discussion(registry, *, thread_id, stage, ctx, model_choice,
     if lead_spec is None:
         raise CollabError(f"stage '{stage.id}' discussion 無可解析的 agent")
 
-    transcript: list[str] = []
+    turns: list[tuple[str, str]] = []   # (specialist 名, 發言)
     for spec in peer_specs:
+        prior = "\n\n".join(f"{n}:\n{t}" for n, t in turns) or "(尚無)"
         prompt = (
             f"{spec.system_prompt}\n\n{shared}\n\n"
-            f"## 目前討論\n{chr(10).join(transcript) or '(尚無)'}\n\n"
-            f"你是討論中的 specialist（{spec.name}）。給出你的角度：候選原因、佐證、以及一項下一步檢查。"
-            f"精簡，最後由 lead 彙整。"
+            f"## 目前討論\n{prior}\n\n"
+            f"你是本階段（{stage.label}）討論中的 specialist（{spec.name}）。"
+            f"從你的專業角度提出觀點、具體建議、以及要注意的風險或缺漏。"
+            f"精簡扼要；最終由 lead 彙整成正式產物。"
         )
         res = _runner(registry, thread_id, stage.id, spec).harnessed_step(
             telemetry_stage=stage.telemetry_stage, operation=f"discuss_{stage.id}",
@@ -111,21 +126,16 @@ def run_discussion(registry, *, thread_id, stage, ctx, model_choice,
         )
         turn = res.raw_output.strip()
         if turn:
-            transcript.append(f"### {spec.name}\n{turn}")
+            turns.append((spec.name, turn))
             dal.append_message(thread_id, stage.id, "assistant", f"**{spec.name}（peer）**\n\n{turn}")
 
-    lead_prompt = (
-        f"{lead_spec.system_prompt}\n\n{shared}\n\n"
-        f"## 多方討論\n{chr(10).join(transcript) or '(無 peer 發言)'}\n\n"
-        f"你是 lead（{lead_spec.name}）。彙整以上討論成本 stage 的最終結果："
-        f"排序的候選根因表（至少 3 個，含信心、證據、下一步檢查），"
-        f"並於結尾聲明這些是候選假設、待工程師確認、非結論。"
+    # lead 合成：走該 stage 的 generate，把「既有對話 + 多方討論」以 conversation 注入。
+    conv = ctx.conversation + tuple(
+        ("assistant", f"{name}（specialist）:\n{text}") for name, text in turns
     )
-    res = _runner(registry, thread_id, stage.id, lead_spec).harnessed_step(
-        telemetry_stage=stage.telemetry_stage, operation=f"generate_{stage.id}",
-        prompt=lead_prompt, metadata={"thread_id": thread_id, "agent_id": lead_spec.agent_id}, max_iterations=1,
-    )
-    return res.raw_output.strip()
+    res = stage.generate(replace(ctx, conversation=conv),
+                         _runner(registry, thread_id, stage.id, lead_spec))
+    return (res.artifact or "").strip()
 
 
 # ============================================================
@@ -150,6 +160,9 @@ def _parse_subtasks(text: str, n: int) -> list[str]:
 
 def run_dispatch(registry, *, thread_id, stage, ctx, model_choice,
                  leads, subs) -> str:
+    """lead 拆任務 → subagent 平行 → lead 以該 stage 的 generate 合併（stage-aware）。"""
+    if stage.generate is None:
+        raise CollabError(f"stage '{stage.id}' 無 generate handler，無法以 collab 合成")
     shared = _context_block(stage, ctx)
     lead_spec = resolve_agent(registry, leads[0].agent_id) if leads else None
     sub_specs = [s for s in (resolve_agent(registry, b.agent_id) for b in subs) if s is not None][:_MAX_SUBAGENTS]
@@ -161,7 +174,7 @@ def run_dispatch(registry, *, thread_id, stage, ctx, model_choice,
     # 1) lead 拆任務
     split_prompt = (
         f"{lead_spec.system_prompt}\n\n{shared}\n\n"
-        f"把此 RCA 拆成 {len(sub_specs)} 個聚焦子任務（每個 specialist 一個）。"
+        f"把本階段（{stage.label}）拆成 {len(sub_specs)} 個聚焦子任務（每個 specialist 一個）。"
         f"只輸出一個 JSON 字串陣列（子任務描述），不要其他文字。"
     )
     split_out = _runner(registry, thread_id, stage.id, lead_spec).harnessed_step(
@@ -176,7 +189,7 @@ def run_dispatch(registry, *, thread_id, stage, ctx, model_choice,
         prompt = (
             f"{spec.system_prompt}\n\n{shared}\n\n"
             f"你的聚焦子任務：{task}\n"
-            f"產出此角度的候選原因、佐證（引用資料）、與一項下一步檢查。"
+            f"從你的專業角度產出此子任務的具體內容、建議與佐證；精簡扼要，供 lead 彙整。"
         )
         out = _runner(registry, thread_id, stage.id, spec).harnessed_step(
             telemetry_stage=stage.telemetry_stage, operation=f"dispatch_worker_{stage.id}",
@@ -194,19 +207,13 @@ def run_dispatch(registry, *, thread_id, stage, ctx, model_choice,
         if out:
             dal.append_message(thread_id, stage.id, "assistant", f"**{spec.name}（subagent）**\n\n{out}")
 
-    # 3) lead 合併
-    joined = "\n\n".join(f"### {spec.name}\n{out}" for spec, out in findings if out) or "(無 subagent 產出)"
-    merge_prompt = (
-        f"{lead_spec.system_prompt}\n\n{shared}\n\n"
-        f"## Subagent findings\n{joined}\n\n"
-        f"合併成最終結果：排序候選根因表（至少 3 個，含信心、證據、下一步檢查），"
-        f"並於結尾聲明這些是候選假設、待工程師確認、非結論。"
+    # 3) lead 合併：走該 stage 的 generate，把「既有對話 + subagent 產出」以 conversation 注入。
+    conv = ctx.conversation + tuple(
+        ("assistant", f"{spec.name}（subagent）:\n{out}") for spec, out in findings if out
     )
-    res = _runner(registry, thread_id, stage.id, lead_spec).harnessed_step(
-        telemetry_stage=stage.telemetry_stage, operation=f"generate_{stage.id}",
-        prompt=merge_prompt, metadata={"thread_id": thread_id, "agent_id": lead_spec.agent_id}, max_iterations=1,
-    )
-    return res.raw_output.strip()
+    res = stage.generate(replace(ctx, conversation=conv),
+                         _runner(registry, thread_id, stage.id, lead_spec))
+    return (res.artifact or "").strip()
 
 
 # ============================================================

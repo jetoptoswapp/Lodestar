@@ -98,6 +98,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
+-- Integration credential keystore（server-side，取代瀏覽器 localStorage 存 token）。
+-- ciphertext = Fernet 加密後的 JSON config（含 PAT 等機密）；明文永不落地、也不回傳前端。
+CREATE TABLE IF NOT EXISTS integration_secrets (
+    target     TEXT PRIMARY KEY,        -- github / jira / gitlab
+    ciphertext TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 -- M1.1：stage 上傳附件（inline 進 SA prompt 用）
 CREATE TABLE IF NOT EXISTS stage_attachments (
     file_id       TEXT PRIMARY KEY,                 -- uuid hex

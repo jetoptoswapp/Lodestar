@@ -8,12 +8,18 @@
 //   3. publishing：呼 /publish；spinner（GitHub 大批 issue 可能 ~30s）
 //   4. result   ：顯示成功 / 失敗 + 已建立的 URL（外連到 issue）
 //
-// 憑證儲存：token 存 localStorage（self-hosted dev 工具；有警示），其餘 config 也快取。
+// 憑證儲存：機密（token）走 server-side keystore（Fernet 加密），明文不進瀏覽器、不存 localStorage。
+//   開啟時 GET 憑證狀態（非機密欄回填、機密欄只知是否已設定）；預覽前 PUT 儲存。
 // 取消任何 step 都會關 modal 並 reset 內部 state。
 
 import { useEffect, useMemo, useState } from "react";
 
-const STORAGE_PREFIX = "lodestar.publish";
+type CredentialsStatus = {
+  target: string;
+  has_credentials: boolean;
+  secret_fields_set: string[];   // 已設定的機密欄 key（不含明文值）
+  values: Record<string, string>;  // 非機密欄（如 repo）的回填值
+};
 
 type IntegrationField = {
   key: string;
@@ -64,6 +70,18 @@ export function PublishModal({
   const [config, setConfig] = useState<Record<string, string>>({});
   const [step, setStep] = useState<Step>({ kind: "config" });
   const [error, setError] = useState<string | null>(null);
+  const [cred, setCred] = useState<CredentialsStatus | null>(null);
+
+  // 升級遷移：一次性清除舊版殘留在 localStorage 的憑證（機密已改存 server-side keystore）。
+  useEffect(() => {
+    try {
+      Object.keys(window.localStorage)
+        .filter((k) => k.startsWith("lodestar.publish"))
+        .forEach((k) => window.localStorage.removeItem(k));
+    } catch {
+      /* localStorage 不可用時忽略 */
+    }
+  }, []);
 
   // 開 modal：fetch integrations + restore cached config
   useEffect(() => {
@@ -81,12 +99,21 @@ export function PublishModal({
       .catch((e) => setError(`讀取 integrations 失敗：${e.message}`));
   }, [open, apiBase]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 切 target：載對應 cached config
+  // 切 target / 開啟：從 server-side keystore 載已存憑證狀態。
+  // 非機密欄（如 repo）回填值；機密欄（token）只知是否已設定、留空待輸入。
   useEffect(() => {
-    if (!selectedTarget) return;
-    const cached = window.localStorage.getItem(`${STORAGE_PREFIX}.${selectedTarget}`);
-    setConfig(cached ? JSON.parse(cached) : {});
-  }, [selectedTarget]);
+    if (!open || !selectedTarget) return;
+    let alive = true;
+    fetch(`${apiBase}/api/integrations/${selectedTarget}/credentials`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: CredentialsStatus | null) => {
+        if (!alive) return;
+        setCred(d);
+        setConfig(d?.values ?? {});
+      })
+      .catch(() => { if (alive) { setCred(null); setConfig({}); } });
+    return () => { alive = false; };
+  }, [open, selectedTarget, apiBase]);
 
   // Esc 關閉 + lock body scroll
   useEffect(() => {
@@ -106,15 +133,22 @@ export function PublishModal({
   const currentIntegration = integrations.find((i) => i.target === selectedTarget);
   const fields = currentIntegration?.config_schema?.fields ?? [];
 
-  const persistConfig = (next: Record<string, string>) => {
-    setConfig(next);
-    window.localStorage.setItem(`${STORAGE_PREFIX}.${selectedTarget}`, JSON.stringify(next));
+  // 把目前 config（含機密）加密存到 server-side keystore；空字串欄位後端不覆寫既有值。
+  const saveCredentials = async () => {
+    const r = await fetch(`${apiBase}/api/integrations/${selectedTarget}/credentials`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    if (r.ok) setCred(await r.json());
   };
 
   const onPreview = async () => {
     if (!thread) return;
     setError(null);
     try {
+      // 先把含機密的 config 存進 keystore；後續 preview/publish 只送非機密、機密由後端合併。
+      await saveCredentials();
       const r = await fetch(`${apiBase}/api/stage/stories/${thread}/preview-delivery`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -181,7 +215,8 @@ export function PublishModal({
               onSelectTarget={setSelectedTarget}
               fields={fields}
               config={config}
-              onUpdateConfig={persistConfig}
+              onUpdateConfig={setConfig}
+              cred={cred}
             />
           )}
 
@@ -276,14 +311,16 @@ function Footer({ step, hasThread, onPreview, onConfirm, onBack, onClose }: {
 // ============================================================
 //  Config / Preview / Publishing / Result steps
 // ============================================================
-function ConfigStep({ integrations, selectedTarget, onSelectTarget, fields, config, onUpdateConfig }: {
+function ConfigStep({ integrations, selectedTarget, onSelectTarget, fields, config, onUpdateConfig, cred }: {
   integrations: IntegrationInfo[];
   selectedTarget: string;
   onSelectTarget: (t: string) => void;
   fields: IntegrationField[];
   config: Record<string, string>;
   onUpdateConfig: (c: Record<string, string>) => void;
+  cred: CredentialsStatus | null;
 }) {
+  const savedSecret = (key: string) => cred?.secret_fields_set?.includes(key) ?? false;
   return (
     <div className="space-y-5">
       <div>
@@ -322,16 +359,21 @@ function ConfigStep({ integrations, selectedTarget, onSelectTarget, fields, conf
         <div className="space-y-3">
           {fields.map((f) => (
             <div key={f.key}>
-              <label className="mb-1 block font-[family-name:var(--font-sans)] text-[13px] text-[#cdd4df]">
+              <label className="mb-1 flex items-center gap-2 font-[family-name:var(--font-sans)] text-[13px] text-[#cdd4df]">
                 {f.label}
-                {f.required && <span className="ml-1 text-[#f47171]">*</span>}
+                {f.required && !savedSecret(f.key) && <span className="text-[#f47171]">*</span>}
+                {savedSecret(f.key) && (
+                  <span className="border border-[var(--approved)]/40 px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[var(--approved)]">
+                    ✓ 已儲存
+                  </span>
+                )}
               </label>
               <input
                 type={f.type}
                 value={config[f.key] ?? ""}
                 onChange={(e) => onUpdateConfig({ ...config, [f.key]: e.target.value })}
                 className="w-full border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2 font-[family-name:var(--font-mono)] text-[12.5px] text-[#e6ecf5] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--polaris)]"
-                placeholder={f.type === "password" ? "••••••" : ""}
+                placeholder={savedSecret(f.key) ? "•••••• 已儲存（留空沿用）" : f.type === "password" ? "••••••" : ""}
                 autoComplete={f.type === "password" ? "new-password" : "off"}
                 spellCheck={false}
               />
@@ -339,7 +381,7 @@ function ConfigStep({ integrations, selectedTarget, onSelectTarget, fields, conf
           ))}
         </div>
         <p className="mt-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-          ⓘ 設定值（含 token）會存在瀏覽器 localStorage 方便重複使用。生產環境應改用 server-side keystore。
+          ⓘ 機密（token）以 server-side keystore（Fernet）加密儲存，明文不留在瀏覽器；留空表示沿用已儲存值。
         </p>
       </div>
     </div>

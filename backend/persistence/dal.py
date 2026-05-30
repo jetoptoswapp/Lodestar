@@ -102,6 +102,31 @@ def plugin_states() -> dict[str, bool]:
     return {r["plugin_id"]: bool(r["enabled"]) for r in rows}
 
 
+# ---- integration credential keystore（密文存放層；加解密在 host 層 keystore.py）----
+def set_integration_secret(target: str, ciphertext: str, updated_at: float) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO integration_secrets (target, ciphertext, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(target) DO UPDATE SET ciphertext = excluded.ciphertext, "
+            "updated_at = excluded.updated_at",
+            (target, ciphertext, updated_at),
+        )
+
+
+def get_integration_secret(target: str) -> Optional[str]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT ciphertext FROM integration_secrets WHERE target = ?", (target,)
+        ).fetchone()
+    return row["ciphertext"] if row else None
+
+
+def delete_integration_secret(target: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM integration_secrets WHERE target = ?", (target,))
+    return cur.rowcount > 0
+
+
 # ============================================================
 #  Projects（thread = project entry）
 # ============================================================

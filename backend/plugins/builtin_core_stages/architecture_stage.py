@@ -24,6 +24,7 @@ from plugin_api import (
 from plugin_api.harness import HarnessContext
 
 from ._shared import (
+    collab_discussion_prefix,
     extract_content_block,
     format_attachments,
     format_conversation,
@@ -85,6 +86,7 @@ def _arch_generate(ctx: StageContext, run) -> StageResult:
     prompt = run.render_prompt("architect.md", {
         "PRD_DRAFT": _upstream_prd(ctx),
     })
+    prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
     result = run.harnessed_step(
         telemetry_stage="design", operation="generate_architecture",
         prompt=prompt, metadata={"thread_id": ctx.thread_id},

@@ -39,6 +39,17 @@ backend/.venv/bin/pip install -r backend/requirements.txt
 cd frontend && npm install && cd ..
 ```
 
+### 機密 / 憑證（credential keystore）
+
+Integration 憑證（GitHub PAT 等）以 **server-side keystore（Fernet 加密）** 儲存，明文不留在瀏覽器。
+
+- **開發**：金鑰自動生成於 `backend/data/.keystore.key`（權限 0600，已 gitignore），免設定。
+- **正式部署**：建議用環境變數 `LODESTAR_KEYSTORE_KEY` 注入金鑰（base64 Fernet key），由外部秘密管理（vault / k8s secret）統一保管、不落專案目錄：
+  ```bash
+  export LODESTAR_KEYSTORE_KEY="$(backend/.venv/bin/python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())')"
+  ```
+  > 換金鑰會使既有密文無法解密（keystore 視為無憑證、需重新輸入），請妥善保存。
+
 ---
 
 ## 專案結構

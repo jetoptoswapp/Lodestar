@@ -205,9 +205,11 @@ class WorkflowEngine:
 
         current = dal.get_artifact(thread_id, stage_id) or ""
 
-        # 3. conversation history（chat / refine 用）
+        # 3. conversation history —— chat / refine / generate 皆載入。
+        #    generate 也載入：讓「先在 chat 描述需求 → 生成」能納入對話（修正先前 generate 忽略對話），
+        #    且 collab 討論的 peers/lead 看得到既有需求脈絡。無對話時為 ()，行為不變。
         conv: tuple = ()
-        if op in ("chat", "refine"):
+        if op in ("chat", "refine", "generate"):
             msgs = dal.list_messages(thread_id, stage_id, limit=50)
             conv = tuple((m["role"], m["content"]) for m in msgs)
 

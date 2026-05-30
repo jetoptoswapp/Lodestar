@@ -248,3 +248,96 @@ def test_endpoint_cancel_finished_session(tmp_db):
         # 不存在 session → 404
         assert client.post("/api/implement/999999/cancel").status_code == 404
         assert client.get("/api/implement/999999").status_code == 404
+
+
+# ============ 多角色 pipeline（lead → RD → tester → reviewer → 回圈）============
+def test_roles_happy_path_opens_pr(tmp_db):
+    sid, cwd = _new_session(runner="fake")
+    runner = FakeRunner([
+        RunResult(0, "PLAN: build X"),       # lead
+        RunResult(0, "implemented"),         # rd
+        RunResult(0, "tests pass"),          # tester
+        RunResult(0, "REVIEW: APPROVED"),    # reviewer → 通過
+    ])
+    res = asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=runner, story="As a user...", cwd=cwd, target_repo="o/r"))
+    assert res["status"] == "succeeded" and res["mode"] == "roles"
+    assert "MOCK" in res["pr_url"]
+    assert runner.calls == 4
+    roles = [r["dispatch_role"] for r in impl_dal.list_runs(sid)]
+    assert roles == ["lead", "rd", "tester", "reviewer"]
+
+
+def test_roles_reviewer_requests_changes_then_approves(tmp_db):
+    sid, cwd = _new_session(runner="fake")
+    runner = FakeRunner([
+        RunResult(0, "PLAN"),                            # lead（一次）
+        RunResult(0, "impl v1"),                         # rd #1
+        RunResult(0, "pass"),                            # tester #1
+        RunResult(0, "REVIEW: CHANGES_REQUESTED: fix"),  # reviewer #1 → 回圈
+        RunResult(0, "impl v2"),                         # rd #2
+        RunResult(0, "pass"),                            # tester #2
+        RunResult(0, "REVIEW: APPROVED"),                # reviewer #2 → 通過
+    ])
+    res = asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=runner, story="x", cwd=cwd, target_repo="o/r"))
+    assert res["status"] == "succeeded" and res["attempts"] == 2
+    assert runner.calls == 7
+    roles = [r["dispatch_role"] for r in impl_dal.list_runs(sid)]
+    assert roles == ["lead", "rd", "tester", "reviewer", "rd", "tester", "reviewer"]
+
+
+def test_roles_tester_fail_skips_reviewer_then_recovers(tmp_db):
+    sid, cwd = _new_session(runner="fake")
+    runner = FakeRunner([
+        RunResult(0, "PLAN"),          # lead
+        RunResult(0, "impl"),          # rd #1
+        RunResult(1, "test failed"),   # tester #1 失敗 → 跳過 reviewer、回圈
+        RunResult(0, "impl2"),         # rd #2
+        RunResult(0, "pass"),          # tester #2
+        RunResult(0, "looks good"),    # reviewer #2（無 CHANGES → 通過）
+    ])
+    res = asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=runner, story="x", cwd=cwd, target_repo="o/r"))
+    assert res["status"] == "succeeded" and res["attempts"] == 2
+    roles = [r["dispatch_role"] for r in impl_dal.list_runs(sid)]
+    assert roles == ["lead", "rd", "tester", "rd", "tester", "reviewer"]
+
+
+def test_roles_max_attempts_when_reviewer_keeps_rejecting(tmp_db):
+    sid, cwd = _new_session(runner="fake")
+    # 單一 result 重複：rd/tester 視為 ok（exit 0），reviewer 永遠 CHANGES_REQUESTED
+    runner = FakeRunner([RunResult(0, "REVIEW: CHANGES_REQUESTED")])
+    res = asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=runner, story="x", cwd=cwd))
+    assert res["status"] == "failed" and res["reason"] == "max_attempts"
+    assert res["attempts"] == 3
+    assert impl_dal.get_session(sid)["status"] == "failed"
+
+
+def test_roles_cancel_is_terminal(tmp_db):
+    sid, cwd = _new_session(runner="fake")
+    runner = FakeRunner([RunResult(0, "PLAN"), RunResult(-1, cancelled=True)])  # lead ok → rd cancelled
+    res = asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=runner, story="x", cwd=cwd))
+    assert res["status"] == "cancelled"
+    assert impl_dal.get_session(sid)["status"] == "cancelled"
+
+
+def test_roles_http_start_with_mock_runner(tmp_db):
+    with TestClient(appmod.app) as client:
+        tid = client.post("/api/projects", json={"name": "impl-roles"}).json()["thread_id"]
+        r = client.post("/api/implement/start", json={
+            "thread_id": tid, "runner": "mock", "story": "As a user I want X.", "mode": "roles",
+        })
+        assert r.status_code == 200
+        sid = r.json()["session_id"]
+        # poll 到背景 task 完成
+        for _ in range(100):
+            sess = client.get(f"/api/implement/{sid}").json()
+            if sess["status"] in ("succeeded", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
+        assert sess["status"] == "succeeded"      # mock reviewer 無 CHANGES → 通過開 PR
+        roles = [run["dispatch_role"] for run in sess["runs"]]
+        assert roles[:4] == ["lead", "rd", "tester", "reviewer"]

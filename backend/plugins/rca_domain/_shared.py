@@ -23,6 +23,20 @@ def format_conversation(conv: tuple, *, ai_label: str = "RCA") -> str:
     return "\n\n".join(lines)
 
 
+def collab_discussion_prefix(conversation: tuple) -> str:
+    """collab（§6.4）：coordinator 把 peer/subagent 發言以 conversation 注入 generate 時，
+    前綴成「多方討論」區塊；單代理模式（空）→ 回 ""（no-op，行為不變）。"""
+    if not conversation:
+        return ""
+    body = format_conversation(conversation, ai_label="Specialist")
+    return (
+        "## 多方討論（specialists 的觀點）\n"
+        f"{body}\n\n"
+        "請整合上述各方觀點，再依本階段規範產出最終、完整的成果。\n\n"
+        "---\n\n"
+    )
+
+
 # ============================================================
 #  Attachments block（M1.3 path-passing；M1.1 inline fallback）
 # ============================================================
