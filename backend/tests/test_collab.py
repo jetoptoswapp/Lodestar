@@ -87,6 +87,42 @@ def test_dispatch_mode(tmp_db):
     assert len(sub_msgs) == 2                                   # 2 個 subagent 平行各產出
 
 
+def test_discussion_prd_is_stage_aware(tmp_db):
+    """§6.4 stage-aware：PRD 以 discussion 跑 → peer 發言 + lead 走「PRD 自己的 generate」彙整。
+
+    驗證：(1) requirements_panel 綁定正確；(2) 2 個 peer 各發言；(3) lead 合成的 generate
+    prompt 吸收了多方討論（peer 發言被當 conversation 注入）；(4) 產出非 RCA 根因表。
+    """
+    import plugin_loader as L
+    from persistence import dal
+    reg = L.load_all()
+    assert reg.workflows["requirements_panel"].collab_mode.get("prd") == "discussion"
+    binds = reg.workflows["requirements_panel"].agent_bindings["prd"]
+    assert sorted(b.role for b in binds) == ["lead", "peer", "peer"]
+
+    captured: list[str] = []
+
+    def _invoke(p):
+        captured.append(p)
+        return "# PRD\n## 1. 功能需求\nFR-1 使用者可登入。\n## 2. 非功能需求\nNFR-1 並發 1000。"
+
+    reg.model_adapters["claude-cli"] = ModelAdapter(
+        model_choice="claude-cli", invoke=_invoke, is_available=lambda: True,
+        description="mock", max_context_tokens=100000, prompt_budget_tokens=90000,
+        response_budget_tokens=2000)
+
+    dal.create_project("tp", "panel", workflow_id="requirements_panel")
+    engine = WorkflowEngine(reg)
+    out = engine.dispatch(thread_id="tp", stage_id="prd", op="generate")
+
+    assert out["error_code"] == ""
+    assert "PRD" in out["artifact"] and "Candidate Root Causes" not in out["artifact"]
+    peer_msgs = [m for m in dal.list_messages("tp", "prd") if "peer" in m["content"]]
+    assert len(peer_msgs) == 2                       # PM + Security peers 各發言
+    # 最後一次 invoke = lead 的 PRD generate；應已含被注入為 conversation 的多方發言
+    assert "specialist" in captured[-1].lower()
+
+
 def test_single_mode_unaffected(tmp_db):
     """rca_single 的 rca_analysis 仍走 stage handler（非 collab）→ 不產 peer/subagent 訊息。"""
     import plugin_loader as L

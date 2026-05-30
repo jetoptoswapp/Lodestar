@@ -26,6 +26,7 @@ from plugin_api import (
 from plugin_api.harness import HarnessContext
 
 from ._shared import (
+    collab_discussion_prefix,
     extract_content_block,
     format_attachments,
     format_conversation,
@@ -136,6 +137,7 @@ def _stories_generate(ctx: StageContext, run) -> StageResult:
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
     })
+    prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
     result = run.harnessed_step(
         telemetry_stage="deliver", operation="generate_user_stories",
         prompt=prompt, metadata={"thread_id": ctx.thread_id},

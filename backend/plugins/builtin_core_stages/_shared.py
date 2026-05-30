@@ -26,6 +26,26 @@ def format_conversation(conv: tuple, *, ai_label: str = "AI") -> str:
 
 
 # ============================================================
+#  Collab discussion 前綴（§6.4）—— generate 收到注入的多方發言時前綴進 prompt
+# ============================================================
+def collab_discussion_prefix(conversation: tuple) -> str:
+    """collab 模式下 coordinator 會把 peer/subagent 發言以 conversation 注入 generate。
+
+    回傳要前綴進 prompt 的「多方討論」區塊；conversation 為空（單代理模式）→ 回 ""（no-op，
+    行為與原本完全一致）。
+    """
+    if not conversation:
+        return ""
+    body = format_conversation(conversation, ai_label="Specialist")
+    return (
+        "## 多方討論（specialists 的觀點）\n"
+        f"{body}\n\n"
+        "請整合上述各方觀點，再依本階段規範產出最終、完整的成果。\n\n"
+        "---\n\n"
+    )
+
+
+# ============================================================
 #  Attachments block（M1.3 path-passing；M1.1 inline fallback）
 # ============================================================
 def format_attachments(attachments: list) -> str:

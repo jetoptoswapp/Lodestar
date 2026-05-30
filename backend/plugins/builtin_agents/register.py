@@ -33,6 +33,18 @@ _PM_SYSTEM_PROMPT = (
     "heading shapes (`## Epic N:` / `### Story N.M — `)."
 )
 
+# PRD 討論 panel 的 peer 視角（requirements_panel workflow 用）——與 lead SA 互補。
+_PRD_PM_PEER_PROMPT = (
+    "你是資深產品經理（PM）。從商業與產品視角檢視這份需求：目標客群與痛點是否清楚、"
+    "優先級與範圍是否合理、有沒有遺漏的關鍵使用情境或競品考量、成功指標（KPI）為何。"
+    "給出具體建議與你認為 PRD 必須補強的點。"
+)
+_PRD_SEC_PEER_PROMPT = (
+    "你是資深資安與合規顧問。從安全、隱私、法規（如 GDPR / PCI）與風險視角檢視這份需求："
+    "登入與權限、個資處理、稽核、攻擊面、合規義務有沒有被涵蓋。"
+    "點出風險與 PRD 必須補上的非功能性需求（NFR）。"
+)
+
 
 def register(host: PluginHost) -> None:
     host.register_agent(AgentSpec(
@@ -62,6 +74,29 @@ def register(host: PluginHost) -> None:
         name="PM Agent (Stories)",
         role="stories",
         system_prompt=_PM_SYSTEM_PROMPT,
+        model_choice="claude-cli",
+        skills=(),
+        tools=(),
+        max_iterations=1,
+        enabled=True,
+    ))
+    # PRD 討論 panel 的 peer agents（與 seed_prd lead 互補；requirements_panel workflow 綁定）。
+    host.register_agent(AgentSpec(
+        agent_id="seed_prd_pm",
+        name="PM Perspective (PRD)",
+        role="prd",
+        system_prompt=_PRD_PM_PEER_PROMPT,
+        model_choice="claude-cli",
+        skills=(),
+        tools=(),
+        max_iterations=1,
+        enabled=True,
+    ))
+    host.register_agent(AgentSpec(
+        agent_id="seed_prd_security",
+        name="Security & Compliance (PRD)",
+        role="prd",
+        system_prompt=_PRD_SEC_PEER_PROMPT,
         model_choice="claude-cli",
         skills=(),
         tools=(),
