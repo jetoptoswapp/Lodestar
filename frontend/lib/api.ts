@@ -254,6 +254,7 @@ export type ImplementRun = {
   attempt: number;
   runner: string;
   status: string;                 // running/succeeded/failed/cancelled/timed_out/rejected
+  dispatch_role: string;          // 多角色模式：lead/rd/tester/reviewer（單一模式為空）
   exit_code: number | null;
   cancelled: boolean;
   timed_out: boolean;
@@ -304,6 +305,7 @@ export async function startImplement(body: {
   target_repo?: string;
   story?: string;
   title?: string;
+  mode?: "single" | "roles";
 }): Promise<{ session_id: number }> {
   return apiCall("/api/implement/start", { method: "POST", body: JSON.stringify(body) });
 }

@@ -2712,7 +2712,7 @@ function ImplAttemptChip({ run }: { run: ImplementRun }) {
   return (
     <span className="flex items-center gap-1.5 border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider"
       style={{ color: tone, borderColor: `color-mix(in oklab, ${tone} 40%, transparent)` }}>
-      attempt {run.attempt} · {run.status}
+      {run.dispatch_role ? `${run.dispatch_role} · ` : ""}attempt {run.attempt} · {run.status}
       {run.exit_code != null && run.status !== "running" ? ` · exit ${run.exit_code}` : ""}
     </span>
   );
@@ -2728,6 +2728,7 @@ function ImplementWorkspace({
 }) {
   const [runners, setRunners] = useState<RunnerInfo[]>([]);
   const [runner, setRunner] = useState<string>("mock");
+  const [mode, setMode] = useState<"single" | "roles">("single");
   const [targetRepo, setTargetRepo] = useState<string>("");
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [session, setSession] = useState<ImplementSession | null>(null);
@@ -2802,7 +2803,7 @@ function ImplementWorkspace({
     try {
       const { session_id } = await startImplement({
         thread_id: thread, runner, target_repo: targetRepo.trim(),
-        story: storiesArtifact, title: "Implement",
+        story: storiesArtifact, title: "Implement", mode,
       });
       setSessionId(session_id);
     } catch (e) {
@@ -2848,7 +2849,14 @@ function ImplementWorkspace({
                   ))}
                 </select>
               </label>
-              <label className="flex min-w-[220px] flex-1 flex-col gap-1">
+              <label className="flex flex-col gap-1">
+                <ImplSmallLabel>模式</ImplSmallLabel>
+                <select value={mode} onChange={(e) => setMode(e.target.value as "single" | "roles")} disabled={polling} className={selStyle}>
+                  <option value="single">單一 fix-loop</option>
+                  <option value="roles">多角色 pipeline</option>
+                </select>
+              </label>
+              <label className="flex min-w-[200px] flex-1 flex-col gap-1">
                 <ImplSmallLabel>target repo · owner/repo（mock）</ImplSmallLabel>
                 <input value={targetRepo} onChange={(e) => setTargetRepo(e.target.value)} disabled={polling}
                   placeholder="SheldonChangL/lodestar"

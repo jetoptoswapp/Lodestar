@@ -321,6 +321,7 @@ class ImplementStartRequest(BaseModel):
     target_repo: str = ""           # owner/repo（mock 階段為示意值）
     story: str = ""                 # 留空則讀該 thread 的 stories artifact
     title: str = ""
+    mode: str = "single"            # single = fix-loop；roles = lead→RD→tester→reviewer pipeline
 
 
 class ImplementStartResponse(BaseModel):
@@ -332,6 +333,7 @@ class ImplementRunInfo(BaseModel):
     attempt: int
     runner: str
     status: str                     # running/succeeded/failed/cancelled/timed_out/rejected
+    dispatch_role: str = ""         # 多角色模式：lead / rd / tester / reviewer（單一模式為空）
     exit_code: Optional[int] = None
     cancelled: bool = False
     timed_out: bool = False

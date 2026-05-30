@@ -12,6 +12,7 @@ endpoint 層負責 choice→class→instance 解析 + 背景 task 生命週期�
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -153,6 +154,177 @@ async def run_implementation(
     return {"status": "failed", "reason": "max_attempts", "attempts": max_attempts}
 
 
+# ============================================================
+#  多角色 pipeline（§6.4 dispatch 的實作面）：lead → RD → tester → reviewer → 失敗回圈
+# ============================================================
+ROLE_PIPELINE = ("lead", "rd", "tester", "reviewer")
+
+_CHANGES_REQUESTED_RE = re.compile(r"CHANGES[_\s]?REQUESTED", re.IGNORECASE)
+
+
+def _role_prompt(role: str, *, story: str, plan: str, feedback: str, attempt: int) -> str:
+    story = story.strip() or "(no story provided)"
+    if role == "lead":
+        return (
+            "You are the LEAD engineer. Break the user story into a concrete, ordered "
+            "implementation plan: the modules/files to create or change and the tests to add. "
+            "Be specific and concise — the RD will implement exactly this plan.\n\n"
+            f"--- STORY ---\n{story}\n--- END STORY ---\n"
+        )
+    if role == "rd":
+        p = (
+            "You are the RD (developer). Implement the plan in the working directory. "
+            "Never push to protected branches (main/master/release/production).\n\n"
+            f"--- STORY ---\n{story}\n\n--- PLAN ---\n{plan or '(no plan)'}\n"
+        )
+        if feedback:
+            p += f"\n[Attempt {attempt}] Address this review/test feedback:\n{feedback[-1200:]}\n"
+        return p
+    if role == "tester":
+        return (
+            "You are the TESTER. Write and run tests covering the implemented story. "
+            "Exit non-zero if any test fails.\n\n"
+            f"--- STORY ---\n{story}\n\n--- PLAN ---\n{plan or '(no plan)'}\n"
+        )
+    # reviewer
+    return (
+        "You are the REVIEWER. Review the implementation and tests for correctness, "
+        "security, and completeness. Finish your reply with EXACTLY one verdict line:\n"
+        "  REVIEW: APPROVED\n"
+        "or\n"
+        "  REVIEW: CHANGES_REQUESTED: <one-line reason>\n\n"
+        f"--- STORY ---\n{story}\n"
+    )
+
+
+def _reviewer_approved(output: str) -> bool:
+    """reviewer 通過判定：明確 CHANGES_REQUESTED → 不通過；否則（含無明確標記）→ 通過。"""
+    return not _CHANGES_REQUESTED_RE.search(output or "")
+
+
+async def _run_role(
+    *, session_id: int, runner: AgentRunner, role: str, attempt: int,
+    prompt: str, cwd: str, timeout: int, hooks: list, parent: Optional[int],
+):
+    """跑單一角色一次：建 run（標 dispatch_role）→ runner.run → finish_run。
+
+    回 (run_id, result)。HookAbort 直接上拋給呼叫端做終局處理。
+    """
+    run_id = impl_dal.create_run(
+        session_id=session_id, attempt=attempt, runner=runner.name,
+        parent_run_id=parent, dispatch_role=role,
+    )
+    impl_dal.append_message(run_id, kind="system", content=f"[{role}] attempt {attempt}")
+
+    def _on_log(chunk: str, _rid: int = run_id) -> None:
+        impl_dal.append_message(_rid, content=chunk)
+
+    result = await runner.run(cwd=cwd, prompt=prompt, timeout=timeout, on_log=_on_log, hooks=hooks)
+    impl_dal.finish_run(run_id, status=_status_from_result(result), exit_code=result.exit_code,
+                        cancelled=result.cancelled, timed_out=result.timed_out,
+                        last_output=result.last_output)
+    return run_id, result
+
+
+async def run_implementation_roles(
+    *,
+    session_id: int,
+    runner: AgentRunner,
+    story: str,
+    cwd: str,
+    target_repo: str = "",
+    hooks: Optional[list[ToolHook]] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    open_pr: Optional[PrOpener] = None,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> dict:
+    """多角色 pipeline：lead 拆計畫 → (RD 實作 → tester 測 → reviewer 審) 回圈。
+
+    回圈條件（硬上限 max_attempts）：RD/tester 失敗（exit≠0）或 reviewer CHANGES_REQUESTED →
+    帶回饋重做 RD。reviewer APPROVED 且 tester 通過 → 開 PR 收工。
+    cancelled / timed_out / HookAbort 任一角色觸發 → 終局（與單一 fix-loop 一致）。
+    全程重用同一個 runner（角色差異在 prompt），每個角色一筆 impl_runs（dispatch_role 標記）。
+    """
+    hooks = hooks or []
+    open_pr = open_pr or _default_open_pr
+    impl_dal.update_session(session_id, status="running")
+
+    def _terminal(result, attempt: int) -> Optional[dict]:
+        """cancelled / timed_out → 回終局 summary；否則 None（非終局）。"""
+        if result.cancelled:
+            impl_dal.update_session(session_id, status="cancelled")
+            return {"status": "cancelled", "attempts": attempt}
+        if result.timed_out:
+            impl_dal.update_session(session_id, status="failed", error_message="timed out")
+            return {"status": "failed", "reason": "timed_out", "attempts": attempt}
+        return None
+
+    try:
+        # 0) lead 拆計畫（一次）
+        _, lead_res = await _run_role(
+            session_id=session_id, runner=runner, role="lead", attempt=1,
+            prompt=_role_prompt("lead", story=story, plan="", feedback="", attempt=1),
+            cwd=cwd, timeout=timeout, hooks=hooks, parent=None,
+        )
+        term = _terminal(lead_res, 1)
+        if term:
+            return term
+        plan = lead_res.last_output if lead_res.ok else ""
+
+        # 1) RD → tester → reviewer 回圈
+        feedback = ""
+        parent: Optional[int] = None
+        for attempt in range(1, max_attempts + 1):
+            rd_id, rd_res = await _run_role(
+                session_id=session_id, runner=runner, role="rd", attempt=attempt,
+                prompt=_role_prompt("rd", story=story, plan=plan, feedback=feedback, attempt=attempt),
+                cwd=cwd, timeout=timeout, hooks=hooks, parent=parent,
+            )
+            parent = rd_id
+            term = _terminal(rd_res, attempt)
+            if term:
+                return term
+            if not rd_res.ok:
+                feedback = f"RD 實作失敗：\n{rd_res.last_output}"
+                continue
+
+            _, test_res = await _run_role(
+                session_id=session_id, runner=runner, role="tester", attempt=attempt,
+                prompt=_role_prompt("tester", story=story, plan=plan, feedback="", attempt=attempt),
+                cwd=cwd, timeout=timeout, hooks=hooks, parent=parent,
+            )
+            term = _terminal(test_res, attempt)
+            if term:
+                return term
+            if not test_res.ok:
+                feedback = f"測試失敗：\n{test_res.last_output}"
+                continue
+
+            _, rev_res = await _run_role(
+                session_id=session_id, runner=runner, role="reviewer", attempt=attempt,
+                prompt=_role_prompt("reviewer", story=story, plan=plan, feedback="", attempt=attempt),
+                cwd=cwd, timeout=timeout, hooks=hooks, parent=parent,
+            )
+            term = _terminal(rev_res, attempt)
+            if term:
+                return term
+            if rev_res.ok and _reviewer_approved(rev_res.last_output):
+                pr_url = open_pr(session_id, target_repo, rd_res.last_output)
+                impl_dal.update_session(session_id, status="succeeded", pr_url=pr_url)
+                _log.info("session %s (roles) approved on attempt %s → %s", session_id, attempt, pr_url)
+                return {"status": "succeeded", "attempts": attempt, "pr_url": pr_url, "mode": "roles"}
+            feedback = f"Reviewer 要求修改：\n{rev_res.last_output}"
+
+    except HookAbort as exc:
+        impl_dal.update_session(session_id, status="failed", error_message=str(exc))
+        _log.info("session %s (roles) rejected by hook %s", session_id, exc.hook_name)
+        return {"status": "failed", "reason": "hook_abort", "hook": exc.hook_name, "mode": "roles"}
+
+    impl_dal.update_session(session_id, status="failed",
+                            error_message=f"{max_attempts} 輪後 reviewer 仍未通過")
+    return {"status": "failed", "reason": "max_attempts", "attempts": max_attempts, "mode": "roles"}
+
+
 def start_session(
     *,
     thread_id: str,
@@ -164,6 +336,7 @@ def start_session(
     hooks: Optional[list[ToolHook]] = None,
     timeout: int = DEFAULT_TIMEOUT,
     open_pr: Optional[PrOpener] = None,
+    mode: str = "single",
 ) -> int:
     """建立 session + 背景跑 fix-loop。立刻回 session_id（非阻塞）。
 
@@ -176,10 +349,11 @@ def start_session(
     )
     cwd = str(work_dir_for(session_id))
     _ACTIVE_RUNNERS[session_id] = runner
+    _driver = run_implementation_roles if mode == "roles" else run_implementation
 
     async def _supervised() -> dict:
         try:
-            return await run_implementation(
+            return await _driver(
                 session_id=session_id, runner=runner, story=story, cwd=cwd,
                 target_repo=target_repo, hooks=hooks, timeout=timeout, open_pr=open_pr,
             )

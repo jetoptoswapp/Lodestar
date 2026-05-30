@@ -947,6 +947,7 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
 def _impl_run_info(r: dict) -> ImplementRunInfo:
     return ImplementRunInfo(
         run_id=r["run_id"], attempt=r["attempt"], runner=r["runner"], status=r["status"],
+        dispatch_role=r["dispatch_role"] if "dispatch_role" in r.keys() else "",
         exit_code=r["exit_code"], cancelled=bool(r["cancelled"]), timed_out=bool(r["timed_out"]),
         parent_run_id=r["parent_run_id"], started_at=r["started_at"], ended_at=r["ended_at"],
     )
@@ -984,9 +985,10 @@ async def implement_start(req: ImplementStartRequest):
         raise HTTPException(400, detail=error_detail("story_empty", "沒有 story 可實作：先生成 stories 或於請求帶 story"))
     hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
     title = req.title.strip() or f"Implement {req.thread_id[:8]}"
+    mode = req.mode if req.mode in ("single", "roles") else "single"
     session_id = orchestrator.start_session(
         thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
-        target_repo=req.target_repo, title=title, hooks=hooks,
+        target_repo=req.target_repo, title=title, hooks=hooks, mode=mode,
     )
     return ImplementStartResponse(session_id=session_id)
 
