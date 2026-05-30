@@ -11,7 +11,7 @@ import logging
 from collections import defaultdict
 from typing import Any, Optional
 
-from plugin_api import StageContext
+from plugin_api import StageContext, SEVERITY_FAIL
 from plugin_api.stage import StageChatResult, StageResult
 from plugin_api.workflow import WorkflowSpec, normalize_bindings
 
@@ -174,6 +174,11 @@ class WorkflowEngine:
             source_plugin="user",
         )
 
+    def _judge_model_choice(self) -> str:
+        """judge 用的 model_choice。M1 預設回 ""（judge 關閉：預設不跑、零成本、零行為改變）；
+        未來從 app_settings 讀 per-stage / 全域 judge model 開關以啟用語義驗證。"""
+        return ""
+
     # ------- dispatch -------
     def dispatch(
         self, *, thread_id: str, stage_id: str, op: str,
@@ -238,7 +243,8 @@ class WorkflowEngine:
             focus_section=focus_section,
             metadata={"attachments": attachments},
         )
-        runner = HarnessRunner(self._reg, thread_id, stage_id, model_choice)
+        runner = HarnessRunner(self._reg, thread_id, stage_id, model_choice,
+                               judge_model_choice=self._judge_model_choice())
 
         # 5. 派發 handler
         new_artifact = current
@@ -295,6 +301,11 @@ class WorkflowEngine:
             error_message = repr(exc)
             log.exception("dispatch %s/%s/%s unexpected", thread_id, stage_id, op)
 
+        # 本次 harnessed_step 的 validations（collab 分支不經此 runner → 空）。
+        # has_fail：judge 等 fail 級 validator 未通過（含跑滿 fix-loop 仍未解）。
+        validations = list(getattr(runner, "_last_validations", []))
+        has_fail = any(o.severity == SEVERITY_FAIL for o in validations)
+
         # 6. host owns I/O：寫 artifact / reset 下游 / 記 revision
         downstream_reset: list[str] = []
         if new_artifact and new_artifact != current and not error_code:
@@ -311,10 +322,11 @@ class WorkflowEngine:
                 content_length=len(new_artifact),
             )
 
-        # 7. status：generate/refine 成功 → 至少 draft（已 approved 者保留）
+        # 7. status：generate/refine 成功 → needs_revision（judge fail 未解）或 draft（已 approved 者保留）
         if not error_code and op in ("generate", "refine"):
             if dal.get_stage_status(thread_id, stage_id) != "approved":
-                dal.set_stage_status(thread_id, stage_id, "draft")
+                dal.set_stage_status(thread_id, stage_id,
+                                     "needs_revision" if has_fail else "draft")
 
         # 8. on_complete_state_extra（spec §6.1：stage 個性 side-effect 寫進 event）
         if state_extra and not error_code:
@@ -340,4 +352,9 @@ class WorkflowEngine:
             "downstream_reset": downstream_reset,
             "error_code": error_code,
             "error_message": error_message,
+            "validations": [
+                {"validator": o.validator, "severity": o.severity, "message": o.message,
+                 "fix_hint": o.fix_hint, "detail": o.detail}
+                for o in validations
+            ],
         }

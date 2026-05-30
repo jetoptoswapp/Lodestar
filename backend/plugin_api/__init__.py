@@ -3,6 +3,7 @@ from plugin_api.common import DeliveryItem, DeliveryPublishResult
 from plugin_api.harness import (
     HarnessContext, HarnessResult, HarnessValidationOutcome, ValidatorFn,
     SEVERITY_WARN, SEVERITY_FAIL,
+    JudgeFn, JudgeVerdict, make_judge_validator,
 )
 from plugin_api.stage import (
     AgentSpec, SkillSpec, StageContext, StageResult, StageChatResult,
@@ -20,6 +21,7 @@ __all__ = [
     "DeliveryItem", "DeliveryPublishResult",
     "HarnessContext", "HarnessResult", "HarnessValidationOutcome", "ValidatorFn",
     "SEVERITY_WARN", "SEVERITY_FAIL",
+    "JudgeFn", "JudgeVerdict", "make_judge_validator",
     "AgentSpec", "SkillSpec", "StageContext", "StageResult", "StageChatResult",
     "StageSpec", "StageGenerateFn", "StageRefineFn", "StageChatFn",
     "WorkflowSpec", "AgentBinding", "CollabMode", "CollabRole", "normalize_bindings",

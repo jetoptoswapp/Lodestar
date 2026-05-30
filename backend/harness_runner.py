@@ -21,7 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from plugin_api import AgentSpec, HarnessResult, HarnessValidationOutcome
+from plugin_api import AgentSpec, HarnessResult, HarnessValidationOutcome, JudgeFn, JudgeVerdict
 from plugin_api.harness import (
     ERROR_HARNESS_INTERNAL,
     ERROR_MODEL_MALFORMED,
@@ -49,18 +49,22 @@ class HarnessRunner:
         thread_id: str,
         stage_id: str = "",
         model_choice: str = "claude-cli",
+        judge_model_choice: str = "",
     ) -> None:
         self._reg = registry
         self.thread_id = thread_id
         self.stage_id = stage_id
         self.model_choice = model_choice
+        # judge 用的 model（空字串 = judge 關閉，預設不跑）。設為某 model_choice 才啟用 judge；
+        # 可與生成 model 相同或不同（不同 → 增加判決獨立性）。
+        self.judge_model_choice = judge_model_choice
         # fix-loop 用：記下上次 run 的 validation outcomes，供 feedback_block 取用
         self._last_validations: list[HarnessValidationOutcome] = []
 
     # ============ harnessed_step ============
     def harnessed_step(
         self, *, telemetry_stage: str, operation: str, prompt: str,
-        metadata: dict, max_iterations: int = 1,
+        metadata: dict, max_iterations: Optional[int] = None,
     ) -> HarnessResult:
         adapter = self._reg.model_adapters.get(self.model_choice)
         if adapter is None:
@@ -69,71 +73,119 @@ class HarnessRunner:
                               message=f"ModelAdapter '{self.model_choice}' 未註冊")
 
         validators = self._reg.validators.get((telemetry_stage, operation), [])
-        run_id = str(uuid.uuid4())
-        started = time.time()
-        last_output = ""
-        last_validations: list[HarnessValidationOutcome] = []
-        error_code = ""
-        error_message = ""
+        eff_max = self._effective_max_iterations(max_iterations)
+        prev_run_id: Optional[str] = None
         prompt_now = prompt
+        result_this: Optional[HarnessResult] = None
 
-        for iteration in range(max(1, max_iterations)):
+        for iteration in range(eff_max):
+            iter_run_id = str(uuid.uuid4())
+            started = time.time()
+            last_output = ""
+            error_code = ""
+            error_message = ""
+            outcomes: list[HarnessValidationOutcome] = []
+
             try:
                 last_output = adapter.invoke(prompt_now)
             except RuntimeError as exc:
                 error_code = ERROR_MODEL_UNKNOWN
                 error_message = str(exc)
                 log.warning("harness model error (run=%s, iter=%d): %s",
-                            run_id, iteration, exc)
-                break
+                            iter_run_id, iteration, exc)
             except Exception as exc:  # noqa: BLE001
                 error_code = ERROR_HARNESS_INTERNAL
                 error_message = repr(exc)
-                log.exception("harness internal error (run=%s)", run_id)
-                break
+                log.exception("harness internal error (run=%s)", iter_run_id)
+            else:
+                if not last_output or not last_output.strip():
+                    error_code = ERROR_MODEL_MALFORMED
+                    error_message = "empty model output"
+                else:
+                    ctx = HarnessContext(
+                        thread_id=self.thread_id,
+                        stage=telemetry_stage,
+                        operation=operation,
+                        model_choice=self.model_choice,
+                        prompt=prompt_now,
+                        metadata=metadata or {},
+                        judge=self._make_judge_callable(
+                            telemetry_stage, operation, iter_run_id),
+                    )
+                    for vfn in validators:
+                        try:
+                            outcomes.extend(vfn(last_output, ctx) or [])
+                        except Exception as exc:  # noqa: BLE001
+                            log.exception("validator raised; skipping: %s", exc)
 
-            if not last_output or not last_output.strip():
-                error_code = ERROR_MODEL_MALFORMED
-                error_message = "empty model output"
-                break
-
-            ctx = HarnessContext(
-                thread_id=self.thread_id,
-                stage=telemetry_stage,
-                operation=operation,
-                model_choice=self.model_choice,
-                prompt=prompt_now,
-                metadata=metadata or {},
+            ended = time.time()
+            result_this = HarnessResult(
+                run_id=iter_run_id,
+                raw_output=last_output,
+                validations=outcomes,
+                error_code=error_code,
+                error_message=error_message,
             )
-            outcomes: list[HarnessValidationOutcome] = []
-            for vfn in validators:
-                try:
-                    outcomes.extend(vfn(last_output, ctx) or [])
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("validator raised; skipping: %s", exc)
-            last_validations = outcomes
+            self._last_validations = outcomes
+            # 每輪記一筆 harness_runs，用 parent_run_id 串接 fix-loop（多輪可追蹤）
+            self._record_run(iter_run_id, telemetry_stage, operation, started, ended,
+                             result_this, parent_run_id=prev_run_id)
 
             has_fail = any(o.severity == SEVERITY_FAIL for o in outcomes)
-            if not has_fail:
-                # spec §11：validator 預設 warn-only → 通過，break loop
-                break
-            # 有 fail → fix-loop：把 fix_hint 附在 prompt 後再試一輪
-            self._last_validations = outcomes
+            if error_code or not has_fail:
+                # model 出錯 / 無 fail（含 warn-only 通過）→ 收工，回本輪
+                return result_this
+            # 有 fail 且還有額度 → fix-loop：串 parent、把 fix_hint 附在 prompt 後再試一輪
+            prev_run_id = iter_run_id
             prompt_now = prompt + "\n\n" + self.feedback_block(
                 telemetry_stage=telemetry_stage, operation=operation,
             )
 
-        ended = time.time()
+        # 跑滿 max_iterations 仍有 fail：回最後一輪（validations 帶 fail，status=needs_revision）
+        return result_this
+
+    # ============ judge（LLM-as-judge） ============
+    def _make_judge_callable(self, telemetry_stage: str, operation: str,
+                             parent_run_id: str) -> Optional[JudgeFn]:
+        """組一個注入給 HarnessContext.judge 的 callable；judge adapter 未註冊 → None
+        （judge validator 會因 ctx.judge is None 而靜默跳過）。每次 judge model call 也記一筆
+        harness_runs（operation=judge_*、parent=當輪主 run、model_choice=judge model），可追蹤。
+
+        註：judge run 先於當輪主 run 寫入（judge 在 validator 內執行、主 run 在迴圈末記），
+        harness_runs.parent_run_id 無 FK 約束，順序不影響關聯查詢。"""
+        judge_adapter = self._reg.model_adapters.get(self.judge_model_choice)
+        if judge_adapter is None:
+            return None
+
+        def _judge(system_instruction: str, judge_user_prompt: str) -> JudgeVerdict:
+            from judge_parse import parse_judge_verdict
+            full = system_instruction + "\n\n" + judge_user_prompt
+            jrun = str(uuid.uuid4())
+            started = time.time()
+            try:
+                out = judge_adapter.invoke(full)
+            except Exception as exc:  # noqa: BLE001 - judge 失敗不該鎖死使用者（fail-open）
+                self._record_judge_run(jrun, telemetry_stage, operation, started,
+                                       time.time(), parent_run_id, error=repr(exc))
+                return JudgeVerdict(passed=True, parse_ok=False, raw="",
+                                    issues=[f"judge call failed: {exc}"])
+            self._record_judge_run(jrun, telemetry_stage, operation, started,
+                                   time.time(), parent_run_id)
+            return parse_judge_verdict(out)
+
+        return _judge
+
+    def _record_judge_run(self, run_id: str, stage: str, operation: str,
+                          started: float, ended: float, parent_run_id: str,
+                          error: str = "") -> None:
+        """judge model call 的遙測（薄封裝 _record_run，記 judge model 而非生成 model）。"""
         result = HarnessResult(
-            run_id=run_id,
-            raw_output=last_output,
-            validations=last_validations,
-            error_code=error_code,
-            error_message=error_message,
+            run_id=run_id, raw_output="",
+            error_code=(ERROR_MODEL_UNKNOWN if error else ""), error_message=error,
         )
-        self._last_validations = last_validations
-        self._record_run(run_id, telemetry_stage, operation, started, ended, result)
-        return result
+        self._record_run(run_id, stage, f"judge_{operation}", started, ended, result,
+                         parent_run_id=parent_run_id,
+                         model_choice_override=self.judge_model_choice)
 
     # ============ agent / feedback ============
     def get_agent_for_stage(self, stage_id: str) -> Optional[AgentSpec]:
@@ -141,6 +193,15 @@ class HarnessRunner:
             if agent.role == stage_id and agent.enabled:
                 return agent
         return None
+
+    def _effective_max_iterations(self, requested: Optional[int]) -> int:
+        """max_iterations 決議：顯式傳數字 → 用該值（≥1，向後相容 collab/測試）；
+        None → 讀本 stage 綁的 agent.max_iterations（fix-loop 通電靠 agent 設定；
+        無 agent → 1，行為不變）。"""
+        if requested is not None:
+            return max(1, requested)
+        agent = self.get_agent_for_stage(self.stage_id)
+        return max(1, agent.max_iterations) if agent else 1
 
     def feedback_block(self, *, telemetry_stage: str, operation: str) -> str:
         """把上次 validation 的 fix_hint 組成「上輪未通過，請修正」前綴。
@@ -192,17 +253,26 @@ class HarnessRunner:
     def _record_run(
         self, run_id: str, stage: str, operation: str,
         started: float, ended: float, result: HarnessResult,
+        *, parent_run_id: Optional[str] = None, model_choice_override: str = "",
     ) -> None:
         from persistence.dal import connect
+        has_fail = any(o.severity == SEVERITY_FAIL for o in result.validations)
+        if result.error_code:
+            status = "failed"
+        elif has_fail:
+            status = "needs_revision"   # model 有輸出但 validator 判 fail（內容未通過）
+        else:
+            status = "succeeded"
+        model_choice = model_choice_override or self.model_choice
         with connect() as conn:
-            status = "succeeded" if not result.error_code else "failed"
             conn.execute(
                 "INSERT INTO harness_runs (run_id, thread_id, stage, operation, "
-                "model_choice, status, error_code, error_message, started_at, ended_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (run_id, self.thread_id, stage, operation, self.model_choice,
+                "model_choice, status, error_code, error_message, started_at, ended_at, "
+                "parent_run_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, self.thread_id, stage, operation, model_choice,
                  status, result.error_code or "", result.error_message or "",
-                 started, ended),
+                 started, ended, parent_run_id),
             )
             for outcome in result.validations:
                 conn.execute(

@@ -52,6 +52,7 @@ from api_models import (  # noqa: E402
     ProjectResponse,
     SetProjectWorkflowRequest,
     StageActionResponse,
+    ValidationOutcomeResponse,
     StageCatalogItem,
     StageCatalogResponse,
     StageChatRequest,
@@ -119,6 +120,11 @@ async def lifespan(app: FastAPI):
     registry = plugin_loader.load_all()
     app.state.registry = registry
     app.state.engine = WorkflowEngine(registry)
+    # 啟動恢復：上次進程留下的孤兒 running/pending impl session（task 已隨進程消失）標 failed
+    from async_runtime import impl_dal
+    orphaned = impl_dal.fail_orphaned_running()
+    if orphaned:
+        log.warning("startup recovery: marked %d orphaned impl session(s) as failed", orphaned)
     loaded = [p.manifest.id for p in registry.loaded_plugins if p.loaded]
     log.info("startup complete — plugins loaded: %s", loaded or "(none)")
     log.info("LODESTAR_UPLOADS_DIR=%s", os.environ["LODESTAR_UPLOADS_DIR"])
@@ -352,6 +358,16 @@ async def get_runners():
         items.append(RunnerInfo(choice=choice, available=available, source_plugin=owner.get(choice)))
     items.sort(key=lambda r: (not r.available, r.choice))
     return RunnerListResponse(runners=items)
+
+
+@app.get("/api/telemetry/harness")
+async def get_harness_metrics(since: float = 0.0, stage: str = ""):
+    """harness 遙測指標（fix-loop 迭代鏈、needs_revision／fail 率、validator 命中、judge run、時延）。
+
+    把只寫不讀的 harness_runs / harness_validation_results 變可度量——eval 閉環的線上讀側。
+    """
+    from telemetry_read import harness_metrics
+    return harness_metrics(since=since, stage=stage)
 
 
 # ============================================================
@@ -805,11 +821,14 @@ def _dispatch_to_response(stage_id: str, out: dict) -> StageActionResponse:
             502 if out["error_code"].startswith("model.") else 500,
             detail=error_detail(out["error_code"], out["error_message"]),
         )
+    validations = out.get("validations", [])
     return StageActionResponse(
         stage_id=stage_id,
         artifact=out["artifact"],
         state_extra=out["state_extra"],
         downstream_reset=out["downstream_reset"],
+        validations=[ValidationOutcomeResponse(**v) for v in validations],
+        needs_revision=any(v["severity"] == "fail" for v in validations),
     )
 
 
@@ -964,6 +983,16 @@ def _impl_session_response(s: dict) -> ImplementSessionResponse:
     )
 
 
+def _real_pr_opener():
+    """組真實開 PR 的 PrOpener（claude-cli runner + /approve 共用）。token 來自 keystore。"""
+    from async_runtime.github_pr import make_github_pr_opener
+    base_repo = os.environ.get("LODESTAR_IMPL_BASE_REPO", "")
+    return make_github_pr_opener(
+        get_token=lambda: keystore.get_credentials("github").get("token", ""),
+        workdir_for=lambda sid: orchestrator.session_workdir(sid, base_repo),
+        already_opened=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", ""))
+
+
 @app.post("/api/implement/start", response_model=ImplementStartResponse)
 async def implement_start(req: ImplementStartRequest):
     """啟動一次 async 實作 session（非阻塞，立刻回 session_id）。
@@ -986,9 +1015,14 @@ async def implement_start(req: ImplementStartRequest):
     hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
     title = req.title.strip() or f"Implement {req.thread_id[:8]}"
     mode = req.mode if req.mode in ("single", "roles") else "single"
+    # claude-cli（真實執行）→ 需人工審批 + 真實開 PR；mock → 直接（auto_approve）走 mock PR。
+    is_real = req.runner == "claude-cli"
+    auto_approve = req.auto_approve if req.auto_approve is not None else (not is_real)
+    open_pr = _real_pr_opener() if is_real else None
     session_id = orchestrator.start_session(
         thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
         target_repo=req.target_repo, title=title, hooks=hooks, mode=mode,
+        open_pr=open_pr, auto_approve=auto_approve,
     )
     return ImplementStartResponse(session_id=session_id)
 
@@ -1005,6 +1039,41 @@ async def implement_cancel(session_id: int):
         raise HTTPException(404, detail=error_detail("session_not_found", f"session {session_id} 不存在"))
     requested = await orchestrator.request_cancel(session_id)
     return ImplementCancelResponse(session_id=session_id, cancel_requested=requested)
+
+
+@app.post("/api/implement/{session_id}/approve", response_model=ImplementSessionResponse)
+async def implement_approve(session_id: int):
+    """審批通過 awaiting_approval 的 session → 真實開 PR（冪等：已開過直接回該 session）。"""
+    s = impl_dal.get_session(session_id)
+    if s is None:
+        raise HTTPException(404, detail=error_detail("session_not_found", f"session {session_id} 不存在"))
+    if s["pr_url"]:
+        return _impl_session_response(s)                      # 冪等：已開過
+    if s["status"] != "awaiting_approval":
+        raise HTTPException(409, detail=error_detail(
+            "not_awaiting_approval", f"session {session_id} 非 awaiting_approval（目前 {s['status']}）"))
+    from async_runtime.github_pr import PrError
+    opener = _real_pr_opener()
+    try:
+        pr_url = await asyncio.to_thread(opener, session_id, s["target_repo"], "")
+    except PrError as exc:
+        impl_dal.update_session(session_id, status="failed", error_message=str(exc))
+        raise HTTPException(502, detail=error_detail("pr_failed", str(exc)))
+    impl_dal.update_session(session_id, status="succeeded", pr_url=pr_url)
+    return _impl_session_response(impl_dal.get_session(session_id))
+
+
+@app.post("/api/implement/{session_id}/reject", response_model=ImplementSessionResponse)
+async def implement_reject(session_id: int):
+    """否決 awaiting_approval 的 session → cancelled（不開 PR；worktree 留待清理）。"""
+    s = impl_dal.get_session(session_id)
+    if s is None:
+        raise HTTPException(404, detail=error_detail("session_not_found", f"session {session_id} 不存在"))
+    if s["status"] != "awaiting_approval":
+        raise HTTPException(409, detail=error_detail(
+            "not_awaiting_approval", f"session {session_id} 非 awaiting_approval（目前 {s['status']}）"))
+    impl_dal.update_session(session_id, status="cancelled", error_message="rejected by user")
+    return _impl_session_response(impl_dal.get_session(session_id))
 
 
 @app.get("/api/implement/{session_id}/log", response_model=ImplementLogResponse)

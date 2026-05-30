@@ -20,6 +20,7 @@ from plugin_api import (
     StageContext,
     StageResult,
     StageSpec,
+    make_judge_validator,
 )
 from plugin_api.harness import HarnessContext
 
@@ -118,7 +119,6 @@ def _prd_generate(ctx: StageContext, run) -> StageResult:
     result = run.harnessed_step(
         telemetry_stage="specify", operation="generate_prd",
         prompt=prompt, metadata={"thread_id": ctx.thread_id},
-        max_iterations=1,
     )
     artifact, ready = _strip_sentinel(result.raw_output.strip())
     return StageResult(
@@ -138,7 +138,6 @@ def _prd_refine(ctx: StageContext, run) -> StageResult:
     result = run.harnessed_step(
         telemetry_stage="specify", operation="refine_prd",
         prompt=prompt, metadata={"thread_id": ctx.thread_id},
-        max_iterations=1,
     )
     artifact, ready = _strip_sentinel(result.raw_output.strip())
     return StageResult(
@@ -204,9 +203,25 @@ PRD_STAGE = StageSpec(
 )
 
 
+# LLM-as-judge 語義審查標準（PRD 領域）：給 judge model 的 rubric。
+PRD_JUDGE_RUBRIC = (
+    "判斷這份 PRD 是否達到可交付架構設計的品質：\n"
+    "1. 需求無自相矛盾、無模稜兩可（每條 FR／NFR 都可驗證）。\n"
+    "2. 涵蓋核心使用情境與主要邊界情況，無明顯遺漏。\n"
+    "3. NFR 具體可量測（效能／安全／可用性有數字或明確準則），非空泛。\n"
+    "4. 範圍清楚（in／out of scope），無與目標無關的內容。\n"
+    "未達標時，issues 指出具體問題、fix_hint 給可執行的修正方向。"
+)
+
+
 # (telemetry_stage, operation, fn) — host.register_validator 用
 VALIDATORS = [
     ("specify", "generate_prd", _prd_structural_validator),
     ("specify", "refine_prd",   _prd_structural_validator),
-    # chat 不跑 structural validator（chat 回的可能只是問題，未必是完整 PRD）
+    # LLM-as-judge 語義驗證（opt-in：僅當 dispatch 啟用 judge_model_choice → ctx.judge 非 None 才真的跑）
+    ("specify", "generate_prd", make_judge_validator(
+        rubric=PRD_JUDGE_RUBRIC, name="prd.judge", fail_on_reject=True)),
+    ("specify", "refine_prd", make_judge_validator(
+        rubric=PRD_JUDGE_RUBRIC, name="prd.judge", fail_on_reject=True)),
+    # chat 不跑 structural / judge validator（chat 回的可能只是問題，未必是完整 PRD）
 ]

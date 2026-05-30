@@ -1,0 +1,14 @@
+{
+  "id": "prd_basic",
+  "stage": "prd",
+  "operation": "generate_prd",
+  "workflow": "default",
+  "conversation": [
+    ["user", "我要一個使用者登入系統，支援 email 密碼登入與 Google OAuth，需考量安全與並發。"]
+  ],
+  "expect": {
+    "must_contain": ["FR-", "NFR-"],
+    "judge_rubric": "PRD 是否涵蓋登入核心情境、FR/NFR 可驗證、NFR 含安全與並發的可量測準則。",
+    "min_score": 0.7
+  }
+}

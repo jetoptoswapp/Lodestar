@@ -132,11 +132,21 @@ class StageManualEditRequest(BaseModel):
     change_context: str = ""
 
 
+class ValidationOutcomeResponse(BaseModel):
+    validator: str
+    severity: str                       # warn / fail
+    message: str = ""
+    fix_hint: Optional[str] = None
+    detail: dict = {}
+
+
 class StageActionResponse(BaseModel):
     stage_id: str
     artifact: str
     state_extra: dict = {}              # 如 prd 的 {"is_ready": true}
     downstream_reset: list[str] = []    # 被連帶 reset 的下游 stage_id
+    validations: list[ValidationOutcomeResponse] = []   # 結構/語義驗證結果（含 judge）
+    needs_revision: bool = False        # 有 fail 級未解 → 前端提示「需修正」
 
 
 class StageChatResponse(BaseModel):
@@ -322,6 +332,7 @@ class ImplementStartRequest(BaseModel):
     story: str = ""                 # 留空則讀該 thread 的 stories artifact
     title: str = ""
     mode: str = "single"            # single = fix-loop；roles = lead→RD→tester→reviewer pipeline
+    auto_approve: Optional[bool] = None  # None=依 runner（claude-cli→需審批、mock→直接）；可顯式覆寫
 
 
 class ImplementStartResponse(BaseModel):

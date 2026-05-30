@@ -15,10 +15,20 @@ from plugin_api import AgentRunner
 class ClaudeCliRunner(AgentRunner):
     """以 claude CLI 的 agentic 模式執行：可在 cwd 編輯檔案（acceptEdits 免互動核可）。
 
-    注意：真實寫 code / 開 PR 屬使用者明確排除的範圍；本 runner 提供正確 argv 與
-    is_available 檢查，實際長跑留待使用者授權真實環境時啟用。
+    安全（坎3）：--disallowedTools 在「危險操作真正發生的那層」（agent 的 tool-call）擋下
+    git push / remote / gh pr —— 推送與開 PR 一律由 host 於審批後執行（見 async_runtime.github_pr），
+    不交給 agent。DenyProtectedBranchHook 留作 argv 層的第二道（縱深防禦）。
+    matcher 語法依 claude CLI（已實測支援 `--disallowedTools <tools...>`）。
     """
     name = "claude-cli"
+
+    # agent 一律不得自行推送 / 改 remote / 開 PR（這些由 host 受控執行）
+    DISALLOWED_TOOLS = (
+        "Bash(git push:*)",
+        "Bash(git remote:*)",
+        "Bash(gh pr:*)",
+        "Bash(gh repo:*)",
+    )
 
     def build_argv(self, *, cwd: str, prompt: str) -> list[str]:
         # prompt 走 stdin；agentic 模式允許在 cwd 讀寫，stream-json 便於前端逐事件呈現。
@@ -27,6 +37,7 @@ class ClaudeCliRunner(AgentRunner):
             "--output-format", "stream-json", "--verbose",
             "--permission-mode", "acceptEdits",
             "--add-dir", cwd,
+            "--disallowedTools", *self.DISALLOWED_TOOLS,
         ]
 
     def is_available(self) -> bool:

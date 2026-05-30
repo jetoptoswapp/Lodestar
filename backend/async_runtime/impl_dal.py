@@ -38,6 +38,18 @@ def update_session(session_id: int, *, status: Optional[str] = None,
         conn.execute(f"UPDATE impl_sessions SET {', '.join(sets)} WHERE session_id = ?", params)
 
 
+def fail_orphaned_running() -> int:
+    """啟動恢復：把孤兒 session（running/pending —— 進程重啟後 asyncio task 已隨之消失）
+    標為 failed。awaiting_approval 不動（worktree 仍在磁碟、可由使用者 approve）。回受影響筆數。"""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE impl_sessions SET status='failed', "
+            "error_message='interrupted by server restart', "
+            "updated_at=strftime('%s','now') "
+            "WHERE status IN ('running', 'pending')")
+        return cur.rowcount
+
+
 def get_session(session_id: int) -> Optional[dict]:
     with connect() as conn:
         row = conn.execute(
