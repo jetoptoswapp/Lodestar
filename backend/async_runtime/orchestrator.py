@@ -81,15 +81,14 @@ def clone_dir(session_id: int) -> Path:
     return dal.uploads_dir().parent / "impl_work" / str(session_id) / "repo"
 
 
-def prepare_clone(session_id: int, repo_full_name: str, token: str) -> Path:
-    """git clone GitHub repo 到 clone_dir（開新/既有 repo 的 working copy；agent 在此改 code）。
-    token 只在 remote url，錯誤訊息不回顯。重試先移除重 clone（冪等）。回 clone 路徑。"""
+def prepare_clone(session_id: int, remote_url: str) -> Path:
+    """git clone 到 clone_dir（remote_url 已含 token，呼叫端依 target 組 github/gitlab url）。
+    agent 在此 working copy 改 code。重試先移除重 clone（冪等）。token 在 url，錯誤訊息不回顯。"""
     dest = clone_dir(session_id)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    url = f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
-    proc = subprocess.run(["git", "clone", url, str(dest)],
+    proc = subprocess.run(["git", "clone", remote_url, str(dest)],
                           capture_output=True, text=True, timeout=180)
     if proc.returncode != 0:
         raise RuntimeError(f"git clone failed (exit {proc.returncode})")   # 不回顯 stderr（含 token url）
@@ -416,12 +415,12 @@ def start_session(
     open_pr: Optional[PrOpener] = None,
     mode: str = "single",
     auto_approve: bool = True,
-    clone_token: str = "",
+    clone_url: str = "",
 ) -> int:
     """建立 session + 背景跑 fix-loop。立刻回 session_id（非阻塞）。
 
     工作目錄在背景 task 內準備（避免 git clone 等 I/O block endpoint）：
-    clone_token + target_repo → git clone 該 GitHub repo（開新/既有）；
+    clone_url 非空 → git clone 該 repo（github/gitlab，url 已含 token）；
     否則 prepare_worktree（LODESTAR_IMPL_BASE_REPO 本地 base，或空目錄）。
     runner 登記到 _ACTIVE_RUNNERS 供 cancel；task 強引用由 task_registry 持有（防 GC）。
     """
@@ -435,8 +434,8 @@ def start_session(
 
     async def _supervised() -> dict:
         try:
-            if clone_token and target_repo:
-                cwd = await asyncio.to_thread(prepare_clone, session_id, target_repo, clone_token)
+            if clone_url:
+                cwd = await asyncio.to_thread(prepare_clone, session_id, clone_url)
             else:
                 cwd = await asyncio.to_thread(prepare_worktree, session_id, base_repo=base_repo)
             return await _driver(

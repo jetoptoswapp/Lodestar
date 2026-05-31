@@ -92,7 +92,8 @@ def test_prepare_clone_uses_token_url(tmp_db, monkeypatch):
         return _P()
 
     monkeypatch.setattr(orchestrator.subprocess, "run", fake_run)
-    dest = orchestrator.prepare_clone(5, "o/r", "tok")
+    url = "https://x-access-token:tok@github.com/o/r.git"
+    dest = orchestrator.prepare_clone(5, url)
     assert dest == orchestrator.clone_dir(5)
     joined = " ".join(seen["args"])
-    assert "clone" in joined and "x-access-token:tok@github.com/o/r.git" in joined
+    assert "clone" in joined and url in joined

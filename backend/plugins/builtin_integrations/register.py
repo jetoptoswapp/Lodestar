@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from plugin_api import (
@@ -163,8 +164,86 @@ def _create_github_repo(config: dict[str, str], name: str,
     return full_name
 
 
+_GITLAB_DEFAULT = "https://gitlab.com"
+
+
+def _gitlab_base(config: dict[str, str]) -> str:
+    return (config.get("base_url") or _GITLAB_DEFAULT).rstrip("/")
+
+
+def _gitlab_req(url: str, token: str, *, data=None, method: str = "GET"):
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method, headers={
+        "PRIVATE-TOKEN": token,
+        "Content-Type": "application/json",
+        "User-Agent": "lodestar-delivery-publisher",
+    })
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _create_gitlab_repo(config: dict[str, str], name: str,
+                        visibility: str = "private", owner: str = "") -> str:
+    """建立 GitLab project → 回 path_with_namespace。owner 非空 → 先查 namespace_id 建在 group 下。"""
+    token = (config.get("token") or "").strip()
+    if not token:
+        raise RuntimeError("缺 GitLab token")
+    base = _gitlab_base(config)
+    vis = visibility if visibility in ("public", "internal", "private") else "private"
+    payload: dict = {"name": name, "visibility": vis}
+    org = (owner or "").strip()
+    if org:
+        try:
+            ns = _gitlab_req(f"{base}/api/v4/namespaces/{urllib.parse.quote(org, safe='')}", token)
+            payload["namespace_id"] = ns.get("id")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"GitLab namespace '{org}' 查詢失敗 ({exc.code})") from exc
+    try:
+        body = _gitlab_req(f"{base}/api/v4/projects", token, data=payload, method="POST")
+    except urllib.error.HTTPError as exc:
+        try:
+            msg = exc.read().decode("utf-8", errors="replace")[:200]
+        except Exception:  # noqa: BLE001
+            msg = str(exc)
+        raise RuntimeError(f"GitLab create project failed ({exc.code}): {msg}") from exc
+    full = body.get("path_with_namespace") or ""
+    if not full:
+        raise RuntimeError("GitLab create project 回應無 path_with_namespace")
+    return full
+
+
+def _publish_gitlab(items: list[DeliveryItem], config: dict[str, str]) -> DeliveryPublishResult:
+    """POST /projects/{url-encoded path}/issues 對每個 DeliveryItem 建 issue。"""
+    repo = (config.get("repo") or "").strip()
+    token = (config.get("token") or "").strip()
+    if not repo or not token:
+        return DeliveryPublishResult(success=False, target="gitlab", count=len(items), created=[])
+    base = _gitlab_base(config)
+    pid = urllib.parse.quote(repo, safe="")
+    created: list[str] = []
+    any_failed = False
+    for it in items:
+        try:
+            body = _gitlab_req(
+                f"{base}/api/v4/projects/{pid}/issues", token,
+                data={"title": it.title, "description": it.body, "labels": ",".join(it.labels)},
+                method="POST")
+            url = body.get("web_url") or ""
+            if url:
+                created.append(url)
+                it.gitlab_issue_url = url
+                it.gitlab_issue_iid = int(body.get("iid") or 0)
+            else:
+                any_failed = True
+        except Exception as exc:  # noqa: BLE001
+            any_failed = True
+            log.warning("gitlab publish error: %s — story=%s", exc, it.title)
+    return DeliveryPublishResult(success=(not any_failed) and bool(created),
+                                 target="gitlab", count=len(items), created=created)
+
+
 def _publish_stub(target: str):
-    """Jira / GitLab：保留 stub（success=False）。M3+ 接真實。"""
+    """Jira：保留 stub（success=False）。M3+ 接真實。"""
     def publish(items: list[DeliveryItem], config: dict[str, str]) -> DeliveryPublishResult:
         return DeliveryPublishResult(success=False, target=target, count=len(items), created=[])
     return publish
@@ -200,16 +279,16 @@ _JIRA = IntegrationSpec(
 
 _GITLAB = IntegrationSpec(
     target="gitlab",
-    preview=_preview("gitlab", "project_id"),
-    publish=_publish_stub("gitlab"),
+    preview=_preview("gitlab", "repo"),
+    publish=_publish_gitlab,
+    create_repo=_create_gitlab_repo,
     config_schema={
         "fields": [
-            {"key": "base_url", "label": "GitLab Base URL", "type": "text", "required": False},
-            {"key": "project_id", "label": "Project ID", "type": "text", "required": True},
             {"key": "token", "label": "Access Token", "type": "password", "required": True},
+            {"key": "base_url", "label": "GitLab Base URL（self-hosted 才填）", "type": "text", "required": False},
         ]
     },
-    description="Publish delivery items as GitLab issues.",
+    description="GitLab：發 issue / 開 MR。project 由各專案設定（可開新或指向既有）。",
 )
 
 

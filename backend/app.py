@@ -920,6 +920,8 @@ async def stories_preview_delivery(thread_id: str, req: DeliveryPublishRequest):
             detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
         )
     cfg = _effective_config(req.target, req.config)  # 合併 keystore 機密（如 token）
+    if not cfg.get("repo"):                          # token-only：repo 改由專案 delivery 設定提供（已建者）
+        cfg["repo"] = (dal.get_project(thread_id) or {}).get("repo_full_name", "")
     items = parse_stories_to_delivery_items(artifact, target_project=cfg.get("repo", ""))
     if not items:
         raise HTTPException(
@@ -959,6 +961,8 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
             detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
         )
     cfg = _effective_config(req.target, req.config)  # 合併 keystore 機密（如 token）
+    if not cfg.get("repo"):                          # token-only：repo 改由專案 delivery 設定提供（已建者）
+        cfg["repo"] = (dal.get_project(thread_id) or {}).get("repo_full_name", "")
     items = parse_stories_to_delivery_items(artifact, target_project=cfg.get("repo", ""))
     if not items:
         raise HTTPException(400, detail=error_detail("stories_unparseable", "stories 解析失敗"))
@@ -1011,6 +1015,34 @@ def _real_pr_opener():
         already_opened=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", ""))
 
 
+def _gitlab_mr_opener(base_url: str):
+    """組真實開 GitLab MR 的 PrOpener（implement + /approve 共用）。"""
+    from async_runtime.gitlab_mr import make_gitlab_mr_opener
+    return make_gitlab_mr_opener(
+        get_token=lambda: keystore.get_credentials("gitlab").get("token", ""),
+        workdir_for=lambda sid: orchestrator.clone_dir(sid),
+        base_url=base_url,
+        already_opened=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", ""))
+
+
+def _delivery_opener(target: str, creds: dict):
+    """依 delivery target 回對應的 open_pr/open_mr opener。"""
+    if target == "gitlab":
+        return _gitlab_mr_opener((creds.get("base_url") or "https://gitlab.com").rstrip("/"))
+    return _real_pr_opener()
+
+
+def _delivery_clone_url(target: str, creds: dict, repo: str) -> str:
+    """依 delivery target 組含 token 的 clone url（token 缺 → ""）。"""
+    token = creds.get("token", "")
+    if not token:
+        return ""
+    if target == "gitlab":
+        host = (creds.get("base_url") or "https://gitlab.com").rstrip("/").split("://")[-1]
+        return f"https://oauth2:{token}@{host}/{repo}.git"
+    return f"https://x-access-token:{token}@github.com/{repo}.git"
+
+
 @app.post("/api/implement/start", response_model=ImplementStartResponse)
 async def implement_start(req: ImplementStartRequest):
     """啟動一次 async 實作 session（非阻塞，立刻回 session_id）。
@@ -1037,23 +1069,23 @@ async def implement_start(req: ImplementStartRequest):
     is_real = req.runner == "claude-cli"
     auto_approve = req.auto_approve if req.auto_approve is not None else (not is_real)
     target_repo = req.target_repo
-    clone_token = ""
+    clone_url = ""
     open_pr = None
     if is_real:
         from delivery_repo import DeliveryRepoError, resolve_project_repo
-        if not target_repo:   # 未顯式指定 → 從專案 delivery 設定解析（會 lazy 建 repo）
-            try:
-                _t, target_repo = await asyncio.to_thread(resolve_project_repo, reg, req.thread_id)
-            except DeliveryRepoError as exc:
-                raise HTTPException(400, detail=error_detail("delivery_not_configured", str(exc)))
-        clone_token = keystore.get_credentials("github").get("token", "")
-        if not clone_token:
-            raise HTTPException(400, detail=error_detail("github_token_missing", "GitHub token 未設定（到 INTEGRATIONS 設）"))
-        open_pr = _real_pr_opener()
+        try:
+            target, target_repo = await asyncio.to_thread(resolve_project_repo, reg, req.thread_id)
+        except DeliveryRepoError as exc:
+            raise HTTPException(400, detail=error_detail("delivery_not_configured", str(exc)))
+        creds = keystore.get_credentials(target)
+        clone_url = _delivery_clone_url(target, creds, target_repo)
+        if not clone_url:
+            raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
+        open_pr = _delivery_opener(target, creds)
     session_id = orchestrator.start_session(
         thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
         target_repo=target_repo, title=title, hooks=hooks, mode=mode,
-        open_pr=open_pr, auto_approve=auto_approve, clone_token=clone_token,
+        open_pr=open_pr, auto_approve=auto_approve, clone_url=clone_url,
     )
     return ImplementStartResponse(session_id=session_id)
 
@@ -1083,11 +1115,15 @@ async def implement_approve(session_id: int):
     if s["status"] != "awaiting_approval":
         raise HTTPException(409, detail=error_detail(
             "not_awaiting_approval", f"session {session_id} 非 awaiting_approval（目前 {s['status']}）"))
-    from async_runtime.github_pr import PrError
-    opener = _real_pr_opener()
+    proj = dal.get_project(s["thread_id"]) or {}
+    target = (proj.get("delivery_target") or "github").strip()
+    creds = keystore.get_credentials(target)
+    if not creds.get("token"):
+        raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
+    opener = _delivery_opener(target, creds)
     try:
         pr_url = await asyncio.to_thread(opener, session_id, s["target_repo"], "")
-    except PrError as exc:
+    except RuntimeError as exc:   # PrError / MrError 皆 RuntimeError 子類
         impl_dal.update_session(session_id, status="failed", error_message=str(exc))
         raise HTTPException(502, detail=error_detail("pr_failed", str(exc)))
     impl_dal.update_session(session_id, status="succeeded", pr_url=pr_url)
