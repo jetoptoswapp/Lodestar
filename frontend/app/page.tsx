@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentEditorModal, type AgentDraft } from "@/components/AgentEditorModal";
 import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import { PublishModal } from "@/components/PublishModal";
+import { IntegrationsModal } from "@/components/IntegrationsModal";
 import RcaWorkspace from "@/components/RcaWorkspace";
 import {
   type Agent,
@@ -275,6 +276,7 @@ export default function Page() {
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
   // M2.5：Publish modal 開啟旗標（獨立 state，因為它是 multi-step internal state machine）
   const [publishOpen, setPublishOpen] = useState(false);
+  const [integrationsOpen, setIntegrationsOpen] = useState(false);
   // M3：workflows / agents 真實 list（給 /workflows, /agents 頁面與 thread switcher 共用）
   const [workflowList, setWorkflowList] = useState<Workflow[]>([]);
   const [agentList, setAgentList] = useState<Agent[]>([]);
@@ -868,6 +870,7 @@ export default function Page() {
           modelChoice={modelChoice}
           modelList={modelList}
           onSelectModel={onSelectModel}
+          onOpenIntegrations={() => setIntegrationsOpen(true)}
         />
         {err && (
           <div className="border-b border-[color-mix(in_oklab,#f59e0b_40%,transparent)] bg-[color-mix(in_oklab,#f59e0b_12%,transparent)] px-6 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[#f59e0b]">
@@ -1051,6 +1054,11 @@ export default function Page() {
         apiBase={API_BASE}
         onClose={() => setPublishOpen(false)}
       />
+      <IntegrationsModal
+        open={integrationsOpen}
+        apiBase={API_BASE}
+        onClose={() => setIntegrationsOpen(false)}
+      />
 
       {/* M3：Agent editor modal（new / edit user agent）*/}
       <AgentEditorModal
@@ -1083,7 +1091,7 @@ export default function Page() {
 }
 
 // ============================== TopBar ==============================
-function TopBar({ nav, onNav, thread, pluginCount, modelChoice, modelList, onSelectModel }: {
+function TopBar({ nav, onNav, thread, pluginCount, modelChoice, modelList, onSelectModel, onOpenIntegrations }: {
   nav: string;
   onNav: (n: string) => void;
   thread: string | null;
@@ -1091,6 +1099,7 @@ function TopBar({ nav, onNav, thread, pluginCount, modelChoice, modelList, onSel
   modelChoice: string;
   modelList: ModelAdapterInfo[];
   onSelectModel: (choice: string) => void;
+  onOpenIntegrations: () => void;
 }) {
   return (
     <header className="rise-1 relative z-50 flex h-14 shrink-0 items-center justify-between border-b border-[var(--rule-dark)] px-6">
@@ -1129,6 +1138,14 @@ function TopBar({ nav, onNav, thread, pluginCount, modelChoice, modelList, onSel
           <span className="text-[#b8c0cf]">{pluginCount ?? "—"}</span>
           <span className="text-[var(--ink-muted)]">PLUGINS LOADED</span>
         </div>
+        <div className="h-3 w-px bg-[var(--rule-dark)]" />
+        <button
+          onClick={onOpenIntegrations}
+          title="Integrations 憑證設定（GitHub PAT 等）"
+          className="font-[family-name:var(--font-mono)] text-[11px] tracking-[0.18em] text-[var(--ink-muted)] transition hover:text-[#cdd4df]"
+        >
+          ⚙ INTEGRATIONS
+        </button>
       </div>
     </header>
   );
