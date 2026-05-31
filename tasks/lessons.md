@@ -51,3 +51,14 @@
   send→`stageChat`→append；`updated_content` 經 callback 回寫 artifact。移除整段 mock（含相關 type / 渲染器）。
 - **通則**：驗收任何「看起來已完成」的功能，務必開**新 / 空** thread 看是否還有殘留假資料；
   「後端做了」≠「前端接了」，兩邊都要實際操作確認資料來自 API。
+
+## 判定「dead field／沒實作」前必須徹查整條資料鏈，別信片面報告就外推
+- **症狀**：review 時斷言 `AgentSpec.skills`「連 DB 都沒存、DB/API/UI 都沒有」，寫進回覆＋memory＋程式碼註解。
+  實際上 DB 有 `skills`＋`agent_skills` 兩表（schema.sql:147-163）、spec 完整設計了 API/UI、前端有 mock 展示——
+  只是 host(register_skill)/DAL/API/執行整條中間層沒接。被使用者一句「怎麼沒看到 skill」抓包。
+- **真因**：接受了 Explore subagent「agents 表沒有 skills 欄位」的片面結論就外推成「skills 連 DB 都沒有」。
+  單一主表沒某欄位 ≠ 整個功能沒資料層——多對多關係常拆成獨立關聯表（agent_skills）。
+- **修法**：下「X 是 dead field／沒實作」這種強結論前，逐層查證（契約／**schema.sql 全文**／host 註冊／
+  DAL／API／前端／執行消費），DB 要 grep 整個 schema 而非只看主表，spec 文件也要查設計意圖。
+  寧可精確說「X 層有、Y 層斷」，不要籠統說「都沒有」。
+- **通則**：subagent 回報的片面事實，要自己補全關鍵缺口再外推；強否定結論（「完全沒有」）成本最高、最該先驗。
