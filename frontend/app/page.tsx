@@ -12,6 +12,7 @@ import { AgentEditorModal, type AgentDraft } from "@/components/AgentEditorModal
 import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import { PublishModal } from "@/components/PublishModal";
 import { IntegrationsModal } from "@/components/IntegrationsModal";
+import { ProjectDeliveryModal } from "@/components/ProjectDeliveryModal";
 import RcaWorkspace from "@/components/RcaWorkspace";
 import {
   type Agent,
@@ -277,6 +278,7 @@ export default function Page() {
   // M2.5：Publish modal 開啟旗標（獨立 state，因為它是 multi-step internal state machine）
   const [publishOpen, setPublishOpen] = useState(false);
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
+  const [projectModal, setProjectModal] = useState<{ open: boolean; thread: string | null }>({ open: false, thread: null });
   // M3：workflows / agents 真實 list（給 /workflows, /agents 頁面與 thread switcher 共用）
   const [workflowList, setWorkflowList] = useState<Workflow[]>([]);
   const [agentList, setAgentList] = useState<Agent[]>([]);
@@ -508,7 +510,8 @@ export default function Page() {
   }, [deleteConfirm, refreshWorkflows, refreshAgents]);
 
   // ===== Thread CRUD callbacks（打開 modal；submit 才呼 API）=====
-  const onNewThread = useCallback(() => setModal({ kind: "newThread" }), []);
+  const onNewThread = useCallback(() => setProjectModal({ open: true, thread: null }), []);
+  const onConfigureDelivery = useCallback((tid: string) => setProjectModal({ open: true, thread: tid }), []);
   const onRenameThread = useCallback((tid: string, currentName: string) => {
     setModal({ kind: "renameThread", threadId: tid, currentName });
   }, []);
@@ -889,6 +892,7 @@ export default function Page() {
               onNewThread={onNewThread}
               onRenameThread={onRenameThread}
               onDeleteThread={onDeleteThread}
+              onConfigureDelivery={onConfigureDelivery}
             />
           )}
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1058,6 +1062,14 @@ export default function Page() {
         open={integrationsOpen}
         apiBase={API_BASE}
         onClose={() => setIntegrationsOpen(false)}
+      />
+      <ProjectDeliveryModal
+        open={projectModal.open}
+        thread={projectModal.thread}
+        apiBase={API_BASE}
+        onClose={() => setProjectModal({ open: false, thread: null })}
+        onSaved={(tid) => { void refreshThreadList(); switchThread(tid); }}
+        onOpenIntegrations={() => { setProjectModal({ open: false, thread: null }); setIntegrationsOpen(true); }}
       />
 
       {/* M3：Agent editor modal（new / edit user agent）*/}
@@ -1285,7 +1297,7 @@ function LodestarBrand() {
 // ============================== Sidebar ==============================
 function Sidebar({
   open, onToggle, threadList, activeThread,
-  onSelectThread, onNewThread, onRenameThread, onDeleteThread,
+  onSelectThread, onNewThread, onRenameThread, onDeleteThread, onConfigureDelivery,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -1295,6 +1307,7 @@ function Sidebar({
   onNewThread: () => void;
   onRenameThread: (tid: string, currentName: string) => void;
   onDeleteThread: (tid: string, name: string) => void;
+  onConfigureDelivery: (tid: string) => void;
 }) {
   if (!open) {
     return (
@@ -1356,6 +1369,7 @@ function Sidebar({
             onSelect={() => onSelectThread(p.thread_id)}
             onRename={() => onRenameThread(p.thread_id, p.name)}
             onDelete={() => onDeleteThread(p.thread_id, p.name)}
+            onConfigure={() => onConfigureDelivery(p.thread_id)}
           />
         ))}
       </div>
@@ -1370,12 +1384,13 @@ function Sidebar({
   );
 }
 
-function ThreadRow({ project, active, onSelect, onRename, onDelete }: {
+function ThreadRow({ project, active, onSelect, onRename, onDelete, onConfigure }: {
   project: Project;
   active: boolean;
   onSelect: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onConfigure: () => void;
 }) {
   return (
     <div
@@ -1408,6 +1423,13 @@ function ThreadRow({ project, active, onSelect, onRename, onDelete }: {
         </div>
       </button>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+        <button
+          onClick={(e) => { e.stopPropagation(); onConfigure(); }}
+          title="專案設定（delivery repo）"
+          className="grid h-6 w-6 place-items-center font-[family-name:var(--font-mono)] text-[12px] text-[var(--ink-muted)] transition hover:text-[var(--polaris)]"
+        >
+          ⚙
+        </button>
         <button
           onClick={(e) => { e.stopPropagation(); onRename(); }}
           title="重新命名"
