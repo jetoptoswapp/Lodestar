@@ -3,12 +3,15 @@
 subprocess 一次性呼叫 Claude Code CLI（non-interactive print mode）：
 
     claude -p --output-format text --no-session-persistence \
-           [--add-dir <uploads>] [--allowedTools Read] [--permission-mode acceptEdits]
+           [--add-dir <uploads>] [--allowedTools <tools>] [--permission-mode acceptEdits]
 
-M1.3 path-passing：env `LODESTAR_UPLOADS_DIR` 指向 host 統一的附件根目錄；
-存在時 cmd 加上 Read 工具能力，Claude 可直接讀附件原檔（圖片走 native vision、
-PDF / DOCX 走 Read tool），不必本地 OCR / parse。env 未設時退回最小 cmd，
-adapter 仍可生成（但無法讀附件原檔，仰賴 plugin 端的 inline fallback）。
+`--allowedTools` 由 agent 宣告的 allowed_tools ∪ 附件隱含的 Read 決定（見 _tool_flags）；
+兩者皆空則純文字模式、不帶工具。
+
+M1.3 path-passing：env `LODESTAR_UPLOADS_DIR` 指向 host 統一的附件根目錄；存在時
+_tool_flags 自動把 Read 併入工具集（即使 agent.tools=()），Claude 可直接讀附件原檔
+（圖片走 native vision、PDF / DOCX 走 Read tool），不必本地 OCR / parse。env 未設時
+退回最小 cmd，adapter 仍可生成（但無法讀附件原檔，仰賴 plugin 端的 inline fallback）。
 
 不加 `--bare`：bare 模式跳過 OAuth keychain；本機開發者多以 keychain 登入，
 故走非 bare 路徑。需 stateless 行為時，提供 ANTHROPIC_API_KEY env 走 --bare。
@@ -28,33 +31,47 @@ TIMEOUT_SECONDS = 360
 _UPLOADS_ENV = "LODESTAR_UPLOADS_DIR"
 
 
-def _read_tool_flags() -> list[str]:
-    """組 Read 工具相關 flags；uploads dir 未設或不存在 → 回空 list。"""
+def _tool_flags(allowed_tools: tuple[str, ...]) -> list[str]:
+    """組工具相關 flags。
+
+    - effective = allowed_tools（agent 宣告）∪ 附件隱含的 Read（uploads dir 存在時）。
+    - effective 為空 → 回 []（純文字模式，不帶 --allowedTools）。
+    - 非空 → --allowedTools <逗號串>；需讀附件（uploads 存在且含 Read）才加 --add-dir + acceptEdits。
+
+    附件回歸守門：即使 agent.tools=()，只要 uploads dir 存在就補 Read，否則 prompt 內
+    「用 Read 讀附件」的指令會因 model 沒有 Read 能力而失效。
+    """
     uploads = os.environ.get(_UPLOADS_ENV)
-    if not uploads:
+    uploads_path = Path(uploads) if uploads else None
+    uploads_ok = bool(uploads_path and uploads_path.exists())
+
+    tools: list[str] = list(allowed_tools)
+    if uploads_ok and "Read" not in tools:
+        tools.append("Read")
+
+    if not tools:
         return []
-    uploads_path = Path(uploads)
-    if not uploads_path.exists():
-        return []
-    return [
-        "--add-dir", str(uploads_path),
-        "--allowedTools", "Read",
-        "--permission-mode", "acceptEdits",
-    ]
+
+    flags = ["--allowedTools", ",".join(tools)]
+    if uploads_ok and "Read" in tools:
+        flags += ["--add-dir", str(uploads_path)]
+    flags += ["--permission-mode", "acceptEdits"]
+    return flags
 
 
-def _build_cmd() -> list[str]:
+def _build_cmd(allowed_tools: tuple[str, ...] = ()) -> list[str]:
     return [
         "claude", "-p",
         "--output-format", "text",
         "--no-session-persistence",
-        *_read_tool_flags(),
+        *_tool_flags(allowed_tools),
     ]
 
 
-def _invoke(prompt: str) -> str:
-    """同步呼叫 claude CLI。回 stdout 字串；non-zero exit → RuntimeError。"""
-    cmd = _build_cmd()
+def _invoke(prompt: str, *, allowed_tools: tuple[str, ...] = ()) -> str:
+    """同步呼叫 claude CLI。回 stdout 字串；non-zero exit → RuntimeError。
+    allowed_tools：agent 宣告的工具（如 Read / Bash）；附件隱含的 Read 由 _tool_flags 自動補。"""
+    cmd = _build_cmd(allowed_tools)
     try:
         proc = subprocess.run(
             cmd,

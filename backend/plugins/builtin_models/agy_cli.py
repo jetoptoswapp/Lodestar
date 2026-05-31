@@ -10,6 +10,7 @@ agy CLI 的非互動模式：
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 
@@ -17,8 +18,13 @@ from plugin_api import ModelAdapter
 
 TIMEOUT_SECONDS = 600   # agy --print 預設 5m wait，放寬到 10m
 
+_log = logging.getLogger("plugin.agy_cli")
 
-def _invoke(prompt: str) -> str:
+
+def _invoke(prompt: str, *, allowed_tools: tuple[str, ...] = ()) -> str:
+    if allowed_tools:
+        _log.warning("agy-cli 是純文字生成器，忽略 allowed_tools=%s"
+                     "（需要工具的 agent 請改綁支援工具的 model，如 claude-cli）", allowed_tools)
     cmd = ["agy", "--print", prompt]
     try:
         proc = subprocess.run(
