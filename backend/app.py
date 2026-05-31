@@ -1002,12 +1002,12 @@ def _impl_session_response(s: dict) -> ImplementSessionResponse:
 
 
 def _real_pr_opener():
-    """組真實開 PR 的 PrOpener（claude-cli runner + /approve 共用）。token 來自 keystore。"""
+    """組真實開 PR 的 PrOpener（claude-cli runner + /approve 共用）。token 來自 keystore；
+    工作目錄為 clone_dir（implement 真實執行一律 git clone 該 repo）。"""
     from async_runtime.github_pr import make_github_pr_opener
-    base_repo = os.environ.get("LODESTAR_IMPL_BASE_REPO", "")
     return make_github_pr_opener(
         get_token=lambda: keystore.get_credentials("github").get("token", ""),
-        workdir_for=lambda sid: orchestrator.session_workdir(sid, base_repo),
+        workdir_for=lambda sid: orchestrator.clone_dir(sid),
         already_opened=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", ""))
 
 
@@ -1033,14 +1033,27 @@ async def implement_start(req: ImplementStartRequest):
     hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
     title = req.title.strip() or f"Implement {req.thread_id[:8]}"
     mode = req.mode if req.mode in ("single", "roles") else "single"
-    # claude-cli（真實執行）→ 需人工審批 + 真實開 PR；mock → 直接（auto_approve）走 mock PR。
+    # claude-cli（真實執行）→ 解析專案 delivery repo（new 模式 lazy 建 repo）+ clone + 審批開 PR。
     is_real = req.runner == "claude-cli"
     auto_approve = req.auto_approve if req.auto_approve is not None else (not is_real)
-    open_pr = _real_pr_opener() if is_real else None
+    target_repo = req.target_repo
+    clone_token = ""
+    open_pr = None
+    if is_real:
+        from delivery_repo import DeliveryRepoError, resolve_project_repo
+        if not target_repo:   # 未顯式指定 → 從專案 delivery 設定解析（會 lazy 建 repo）
+            try:
+                _t, target_repo = await asyncio.to_thread(resolve_project_repo, reg, req.thread_id)
+            except DeliveryRepoError as exc:
+                raise HTTPException(400, detail=error_detail("delivery_not_configured", str(exc)))
+        clone_token = keystore.get_credentials("github").get("token", "")
+        if not clone_token:
+            raise HTTPException(400, detail=error_detail("github_token_missing", "GitHub token 未設定（到 INTEGRATIONS 設）"))
+        open_pr = _real_pr_opener()
     session_id = orchestrator.start_session(
         thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
-        target_repo=req.target_repo, title=title, hooks=hooks, mode=mode,
-        open_pr=open_pr, auto_approve=auto_approve,
+        target_repo=target_repo, title=title, hooks=hooks, mode=mode,
+        open_pr=open_pr, auto_approve=auto_approve, clone_token=clone_token,
     )
     return ImplementStartResponse(session_id=session_id)
 

@@ -125,6 +125,44 @@ def _publish_github(items: list[DeliveryItem], config: dict[str, str]) -> Delive
     )
 
 
+def _create_github_repo(config: dict[str, str], name: str,
+                        visibility: str = "private", owner: str = "") -> str:
+    """建立 GitHub repo → 回 full_name（owner/repo）。
+
+    owner 空 → 個人帳號 POST /user/repos；非空 → 組織 POST /orgs/{owner}/repos。
+    auto_init=true 讓 repo 有初始 main commit（implement clone 才有 base 可改）。
+    visibility=="public" → 公開；否則 private（internal 等 GitLab 用）。
+    """
+    token = (config.get("token") or "").strip()
+    if not token:
+        raise RuntimeError("缺 GitHub token（keystore 無 github 憑證）")
+    org = (owner or "").strip()
+    url = f"https://api.github.com/orgs/{org}/repos" if org else "https://api.github.com/user/repos"
+    payload = {"name": name, "private": visibility != "public", "auto_init": True}
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "lodestar-delivery-publisher",
+            "Content-Type": "application/json",
+        }, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            msg = exc.read().decode("utf-8", errors="replace")[:200]
+        except Exception:  # noqa: BLE001
+            msg = str(exc)
+        raise RuntimeError(f"GitHub create repo failed ({exc.code}): {msg}") from exc
+    full_name = body.get("full_name") or ""
+    if not full_name:
+        raise RuntimeError("GitHub create repo 回應無 full_name")
+    return full_name
+
+
 def _publish_stub(target: str):
     """Jira / GitLab：保留 stub（success=False）。M3+ 接真實。"""
     def publish(items: list[DeliveryItem], config: dict[str, str]) -> DeliveryPublishResult:
@@ -136,13 +174,13 @@ _GITHUB = IntegrationSpec(
     target="github",
     preview=_preview("github", "repo"),
     publish=_publish_github,
+    create_repo=_create_github_repo,
     config_schema={
         "fields": [
-            {"key": "repo", "label": "Repository (owner/repo)", "type": "text", "required": True},
             {"key": "token", "label": "Personal Access Token", "type": "password", "required": True},
         ]
     },
-    description="Publish delivery items as GitHub issues.",
+    description="GitHub：發 issue / 開 PR。repo 由各專案設定（可開新或指向既有）。",
 )
 
 _JIRA = IntegrationSpec(
