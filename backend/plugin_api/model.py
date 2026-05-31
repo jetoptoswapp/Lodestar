@@ -18,7 +18,11 @@ _log = logging.getLogger("plugin_api.runner")
 @dataclass(frozen=True)
 class ModelAdapter:
     model_choice: str
-    invoke: Callable[[str], str]
+    # invoke(prompt, *, allowed_tools=()) -> str
+    #   allowed_tools：agent 宣告允許的工具名 tuple（如 ("Read", "Bash")）。
+    #   相容契約：新 adapter 應接受 keyword-only allowed_tools 並給預設值；舊 adapter 只收
+    #   (prompt) 仍合法 —— HarnessRunner 偵測簽章後決定是否帶 allowed_tools（見 _invoke_adapter）。
+    invoke: Callable[..., str]
     is_available: Callable[[], bool]
     description: str
     max_context_tokens: int

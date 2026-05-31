@@ -18,14 +18,19 @@ class SkillSpec:
 
 @dataclass(frozen=True)
 class AgentSpec:
-    """一個可完整客製化的 AI agent。plugin 可帶 seed；user 可在 UI 覆蓋。"""
+    """一個可完整客製化的 AI agent。plugin 可帶 seed；user 可在 UI 覆蓋。
+
+    詞彙注意：本類 `role` = 綁定的 **stage id**（prd / architecture / …），與
+    workflow.AgentBinding.role（協作角色 lead / peer / subagent）同名但語意不同。
+    未來若正名，方向為 AgentSpec.stage_role / AgentBinding.collab_role。
+    """
     agent_id: str
     name: str
-    role: str                       # 綁定的 stage role（data-driven，非 frozenset）
-    system_prompt: str
+    role: str                       # 綁定的 stage id（data-driven）；≠ AgentBinding.role（協作角色）
+    system_prompt: str              # 單流程 persona（空 → 用 stage 內建 default persona）；機器契約在 .md
     model_choice: str = "claude-cli"
-    skills: tuple[SkillSpec, ...] = ()
-    tools: tuple[str, ...] = ()     # 允許工具（給 tool-using / 實作 agent）
+    skills: tuple[SkillSpec, ...] = ()   # 目前未接線（DB / API / UI 皆未暴露）；保留供未來 prompt 組合
+    tools: tuple[str, ...] = ()     # 允許工具（如 "Read"）；經 HarnessRunner._allowed_tools 流到 adapter
     max_iterations: int = 1
     enabled: bool = True
 
@@ -42,6 +47,9 @@ class StageContext:
     conversation: tuple[tuple[str, str], ...] = ()          # (role, content)；chat/refine 用
     focus_section: Optional[str] = None
     metadata: dict = field(default_factory=dict)
+    # host dispatch 解析的「該 stage lead agent」（單流程的 persona / model 來源）。
+    # collab 路徑會刻意設 None（lead 合成用 stage 的 default persona，見 collab_coordinator）。
+    agent: Optional["AgentSpec"] = None
 
 
 @dataclass(frozen=True)

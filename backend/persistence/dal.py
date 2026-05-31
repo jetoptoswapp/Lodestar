@@ -555,6 +555,28 @@ def get_agent(agent_id: str) -> Optional[dict]:
     return d
 
 
+def get_agents_by_role(role: str) -> list[dict]:
+    """列某 role 的 user-saved agents（DB；走 idx_agents_role）。
+    agent_resolver.resolve_lead_agent 的 (b) 分支用它（單流程無 binding 時依 role 找 lead）。"""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT agent_id, name, role, system_prompt, model_choice, max_iterations, "
+            "       enabled, tools, created_at, updated_at "
+            "FROM agents WHERE role = ? ORDER BY created_at ASC",
+            (role,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["enabled"] = bool(d["enabled"])
+        try:
+            d["tools"] = _json.loads(d.pop("tools") or "[]")
+        except Exception:
+            d["tools"] = []
+        out.append(d)
+    return out
+
+
 def upsert_agent(
     *, agent_id: str, name: str, role: str, system_prompt: str,
     model_choice: str = "claude-cli", max_iterations: int = 1,

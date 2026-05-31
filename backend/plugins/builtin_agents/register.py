@@ -1,37 +1,21 @@
-"""builtin_agents：註冊三個 seed AgentSpec。
+"""builtin_agents：註冊 seed AgentSpec（PRD / Architect / PM lead + PRD 討論 peer）。
 
-`role` 對齊 builtin_core_stages 的 stage id（prd / architecture / stories），
-HarnessRunner.get_agent_for_stage(stage_id) 會撈 role==stage_id 的 enabled agent。
+`role` 對齊 builtin_core_stages 的 stage id（prd / architecture / stories）——
+agent_resolver / HarnessRunner.get_agent_for_stage 以 role==stage_id 解析「該 stage 的 lead」。
 
-`system_prompt` 是簡短「角色描述」前綴；真正完整的 prompt 在各 stage handler
-透過 `run.render_prompt(...)` 從 builtin_core_stages/prompts/ 注入。
-M3 後使用者可在 /agents UI 編輯 system_prompt / skills / tools / model 覆蓋 seed。
+lead 的 `system_prompt` **留空（""）**：完整人設（persona）由各 stage handler 以 stage 內建
+default 注入（builtin_core_stages 的 _DEFAULT_*_PERSONA），機器契約（questionnaire / PRD
+Format / heading shape / [PRD_READY] sentinel 等）留在 prompts/*.md。空 system_prompt 的
+語意 = 「用 stage 內建預設人設」；generate 與 chat 各自 fallback 到自己的 default（兩者
+原本 persona 不同，留空才能各自精準保留、不互相污染）。使用者在 /agents 填入非空 system_prompt
+即覆寫該 stage 單流程的 persona（generate / chat 都會反映），機器契約不受影響。
+
+peer（PRD 討論 panel）保留各自 system_prompt：collab discussion 的 peer 發言會用到。
 """
 from __future__ import annotations
 
 from plugin_api import AgentSpec, PluginHost
 
-
-_SA_SYSTEM_PROMPT = (
-    "You are a strict and meticulous System Analyst (SA). Your job is to turn vague "
-    "user requirements into an unambiguous Product Requirements Document (PRD). "
-    "Always ask discovery questions before writing the PRD, and emit `[PRD_READY]` "
-    "at the very end of your final reply only when the PRD is complete."
-)
-
-_ARCHITECT_SYSTEM_PROMPT = (
-    "You are a Staff Software Architect. Produce architectures that are proportional "
-    "to the actual scope the PRD describes — neither under-engineered nor "
-    "over-engineered. Always classify the project tier (T0 / T1 / T2) on the first "
-    "line and trace every decision back to a PRD requirement or the tier's defaults."
-)
-
-_PM_SYSTEM_PROMPT = (
-    "You are a Senior Product Manager and Agile Coach. Produce user stories that the "
-    "implementation agent can finish in a 10–15 minute fixed-budget loop. Keep each "
-    "story ≤ 4 engineering hours, one concrete subsystem per story, with parser-strict "
-    "heading shapes (`## Epic N:` / `### Story N.M — `)."
-)
 
 # PRD 討論 panel 的 peer 視角（requirements_panel workflow 用）——與 lead SA 互補。
 _PRD_PM_PEER_PROMPT = (
@@ -47,11 +31,13 @@ _PRD_SEC_PEER_PROMPT = (
 
 
 def register(host: PluginHost) -> None:
+    # lead agents：system_prompt 留空 → 單流程用 stage 內建 default persona（見 *_stage.py），
+    # 使用者在 /agents 填入後覆寫。
     host.register_agent(AgentSpec(
         agent_id="seed_prd",
         name="SA Agent (PRD)",
         role="prd",
-        system_prompt=_SA_SYSTEM_PROMPT,
+        system_prompt="",
         model_choice="claude-cli",
         skills=(),
         tools=(),
@@ -62,7 +48,7 @@ def register(host: PluginHost) -> None:
         agent_id="seed_architect",
         name="Architect Agent",
         role="architecture",
-        system_prompt=_ARCHITECT_SYSTEM_PROMPT,
+        system_prompt="",
         model_choice="claude-cli",
         skills=(),
         tools=(),
@@ -73,7 +59,7 @@ def register(host: PluginHost) -> None:
         agent_id="seed_pm",
         name="PM Agent (Stories)",
         role="stories",
-        system_prompt=_PM_SYSTEM_PROMPT,
+        system_prompt="",
         model_choice="claude-cli",
         skills=(),
         tools=(),
@@ -81,10 +67,11 @@ def register(host: PluginHost) -> None:
         enabled=True,
     ))
     # PRD 討論 panel 的 peer agents（與 seed_prd lead 互補；requirements_panel workflow 綁定）。
+    # role 用 "prd_peer" 而非 "prd"：避免污染「role==stage_id 唯一 lead」的解析（見 agent_resolver）。
     host.register_agent(AgentSpec(
         agent_id="seed_prd_pm",
         name="PM Perspective (PRD)",
-        role="prd",
+        role="prd_peer",
         system_prompt=_PRD_PM_PEER_PROMPT,
         model_choice="claude-cli",
         skills=(),
@@ -95,7 +82,7 @@ def register(host: PluginHost) -> None:
     host.register_agent(AgentSpec(
         agent_id="seed_prd_security",
         name="Security & Compliance (PRD)",
-        role="prd",
+        role="prd_peer",
         system_prompt=_PRD_SEC_PEER_PROMPT,
         model_choice="claude-cli",
         skills=(),

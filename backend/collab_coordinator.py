@@ -11,7 +11,7 @@ run_collab，回傳合成後的 artifact；其餘 I/O（寫 artifact / reset 下
   lead 再合併成 artifact。
 
 兩個缺口的處理（spec 註記）：
-- GAP A：agent_id 解析 —— resolve_agent 先查 registry.agents，再 fallback dal.get_agent。
+- GAP A：agent_id 解析 —— 已收斂到 agent_resolver.resolve_agent（DB 先 / registry seed 後）。
 - GAP B：per-agent system_prompt + model_choice —— coordinator 自己組 prompt、每個 agent 建一個
   HarnessRunner（用該 agent 的 model_choice）。
 """
@@ -22,13 +22,13 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from typing import Optional
 
 from plugin_api import AgentSpec
 from plugin_api.workflow import AgentBinding
 
 from harness_runner import HarnessRunner
 from persistence import dal
+from agent_resolver import resolve_agent  # re-export：agent 解析已收斂到 agent_resolver
 
 log = logging.getLogger("collab_coordinator")
 
@@ -40,24 +40,9 @@ class CollabError(RuntimeError):
 
 
 # ============================================================
-#  Agent 解析（GAP A）
+#  Agent 解析（GAP A）——已收斂到 agent_resolver.resolve_agent（DB 先 / registry seed 後）。
+#  本模組於 import 區 re-export，cc.resolve_agent 仍可用（向後相容呼叫點與測試）。
 # ============================================================
-def resolve_agent(registry, agent_id: str) -> Optional[AgentSpec]:
-    """registry.agents（plugin seed）→ fallback dal.get_agent（user DB agent）。"""
-    spec = registry.agents.get(agent_id)
-    if spec is not None:
-        return spec
-    row = dal.get_agent(agent_id)
-    if row is None:
-        return None
-    return AgentSpec(
-        agent_id=row["agent_id"], name=row["name"], role=row["role"],
-        system_prompt=row.get("system_prompt", ""), model_choice=row.get("model_choice", "claude-cli"),
-        tools=tuple(row.get("tools") or ()), max_iterations=row.get("max_iterations", 1),
-        enabled=bool(row.get("enabled", True)),
-    )
-
-
 def _split_roles(bindings: tuple[AgentBinding, ...]):
     leads = [b for b in bindings if b.role == "lead"]
     peers = [b for b in bindings if b.role == "peer"]
@@ -87,7 +72,10 @@ def _context_block(stage, ctx) -> str:
 
 
 def _runner(registry, thread_id: str, stage_id: str, agent: AgentSpec) -> HarnessRunner:
-    return HarnessRunner(registry, thread_id, stage_id, agent.model_choice or "claude-cli")
+    # 傳 agent：collab 各步驟（peer 發言 / 拆任務 / subagent / lead 合成）的 max_iterations
+    # 與 allowed_tools 都來自該 agent。
+    return HarnessRunner(registry, thread_id, stage_id, agent.model_choice or "claude-cli",
+                         agent=agent)
 
 
 # ============================================================
@@ -133,7 +121,9 @@ def run_discussion(registry, *, thread_id, stage, ctx, model_choice,
     conv = ctx.conversation + tuple(
         ("assistant", f"{name}（specialist）:\n{text}") for name, text in turns
     )
-    res = stage.generate(replace(ctx, conversation=conv),
+    # collab lead 合成用 stage 的 default persona（agent=None）：多方整合走正式格式、
+    # 不套單一 lead 的 persona；tools / model 仍來自 _runner(lead_spec)。
+    res = stage.generate(replace(ctx, conversation=conv, agent=None),
                          _runner(registry, thread_id, stage.id, lead_spec))
     return (res.artifact or "").strip()
 
@@ -211,7 +201,9 @@ def run_dispatch(registry, *, thread_id, stage, ctx, model_choice,
     conv = ctx.conversation + tuple(
         ("assistant", f"{spec.name}（subagent）:\n{out}") for spec, out in findings if out
     )
-    res = stage.generate(replace(ctx, conversation=conv),
+    # collab lead 合成用 stage 的 default persona（agent=None）：多方整合走正式格式、
+    # 不套單一 lead 的 persona；tools / model 仍來自 _runner(lead_spec)。
+    res = stage.generate(replace(ctx, conversation=conv, agent=None),
                          _runner(registry, thread_id, stage.id, lead_spec))
     return (res.artifact or "").strip()
 

@@ -16,6 +16,7 @@ from plugin_api.stage import StageChatResult, StageResult
 from plugin_api.workflow import WorkflowSpec, normalize_bindings
 
 from harness_runner import HarnessRunner
+from agent_resolver import resolve_lead_agent
 from persistence import dal
 from plugin_host import Registry
 
@@ -231,20 +232,38 @@ class WorkflowEngine:
                 item["abs_path"] = str(uploads_root / cpath)
             attachments.append(item)
 
-        # 5. StageContext + HarnessRunner
+        # 5. agent 解析（單一 lead）：供單流程注入 ctx.agent / runner。
+        #    collab（discussion/dispatch）另由 coordinator 解析各 agent；這裡解析的是 lead。
+        bindings = normalize_bindings(workflow.agent_bindings.get(stage_id, ()))
+        lead_agent = resolve_lead_agent(
+            self._reg, stage_id,
+            default_agent_role=stage.default_agent_role, bindings=bindings,
+        )
+        # model_choice：lead agent 指定且該 adapter 已註冊 → 用 agent 的；否則沿用傳入值（+warn）。
+        eff_model = model_choice
+        if lead_agent and lead_agent.model_choice and lead_agent.model_choice != model_choice:
+            if lead_agent.model_choice in self._reg.model_adapters:
+                eff_model = lead_agent.model_choice
+            else:
+                log.warning("stage '%s' lead '%s' 指定 model '%s' 未註冊，沿用 '%s'",
+                            stage_id, lead_agent.agent_id, lead_agent.model_choice, model_choice)
+
+        # 6. StageContext + HarnessRunner
         ctx = StageContext(
             thread_id=thread_id,
             stage_id=stage_id,
-            model_choice=model_choice,
+            model_choice=eff_model,
             instruction=instruction if op == "refine" else "",
             upstream_artifacts=upstream,
             current_artifact=current,
             conversation=conv,
             focus_section=focus_section,
             metadata={"attachments": attachments},
+            agent=lead_agent,
         )
-        runner = HarnessRunner(self._reg, thread_id, stage_id, model_choice,
-                               judge_model_choice=self._judge_model_choice())
+        runner = HarnessRunner(self._reg, thread_id, stage_id, eff_model,
+                               judge_model_choice=self._judge_model_choice(),
+                               agent=lead_agent)
 
         # 5. 派發 handler
         new_artifact = current
@@ -256,7 +275,7 @@ class WorkflowEngine:
         try:
             if op == "generate":
                 # §6.4 collab：多 binding + discussion/dispatch → 交 coordinator 合成 artifact
-                bindings = normalize_bindings(workflow.agent_bindings.get(stage_id, ()))
+                # （bindings 已在 agent 解析時算過；此處沿用，不重算）
                 mode = workflow.collab_mode.get(stage_id, "single")
                 if mode in ("discussion", "dispatch") and len(bindings) > 1:
                     from collab_coordinator import run_collab

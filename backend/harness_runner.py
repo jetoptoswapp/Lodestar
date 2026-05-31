@@ -13,6 +13,7 @@ Protocol 接觸本實作（duck-typed），不直接 import 本模組。
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time
@@ -30,6 +31,8 @@ from plugin_api.harness import (
     SEVERITY_FAIL,
     HarnessContext,
 )
+
+from agent_resolver import resolve_lead_agent
 
 if TYPE_CHECKING:
     from plugin_host import Registry  # only for typing
@@ -50,11 +53,15 @@ class HarnessRunner:
         stage_id: str = "",
         model_choice: str = "claude-cli",
         judge_model_choice: str = "",
+        agent: Optional[AgentSpec] = None,
     ) -> None:
         self._reg = registry
         self.thread_id = thread_id
         self.stage_id = stage_id
         self.model_choice = model_choice
+        # 當前 stage 的 lead agent（engine / collab 注入）；供 max_iterations 與 allowed_tools
+        # 解析。None → fallback get_agent_for_stage（依 stage_id 反查，向後相容）。
+        self.agent = agent
         # judge 用的 model（空字串 = judge 關閉，預設不跑）。設為某 model_choice 才啟用 judge；
         # 可與生成 model 相同或不同（不同 → 增加判決獨立性）。
         self.judge_model_choice = judge_model_choice
@@ -76,6 +83,7 @@ class HarnessRunner:
         eff_max = self._effective_max_iterations(max_iterations)
         prev_run_id: Optional[str] = None
         prompt_now = prompt
+        allowed_tools = self._allowed_tools()   # agent 宣告的工具；跨 fix-loop iteration 不變
         result_this: Optional[HarnessResult] = None
 
         for iteration in range(eff_max):
@@ -87,7 +95,7 @@ class HarnessRunner:
             outcomes: list[HarnessValidationOutcome] = []
 
             try:
-                last_output = adapter.invoke(prompt_now)
+                last_output = _invoke_adapter(adapter, prompt_now, allowed_tools)
             except RuntimeError as exc:
                 error_code = ERROR_MODEL_UNKNOWN
                 error_message = str(exc)
@@ -163,7 +171,7 @@ class HarnessRunner:
             jrun = str(uuid.uuid4())
             started = time.time()
             try:
-                out = judge_adapter.invoke(full)
+                out = _invoke_adapter(judge_adapter, full, ())
             except Exception as exc:  # noqa: BLE001 - judge 失敗不該鎖死使用者（fail-open）
                 self._record_judge_run(jrun, telemetry_stage, operation, started,
                                        time.time(), parent_run_id, error=repr(exc))
@@ -189,18 +197,27 @@ class HarnessRunner:
 
     # ============ agent / feedback ============
     def get_agent_for_stage(self, stage_id: str) -> Optional[AgentSpec]:
-        for agent in self._reg.agents.values():
-            if agent.role == stage_id and agent.enabled:
-                return agent
-        return None
+        """依 stage_id 找該 stage 的 lead agent（已收斂到 agent_resolver；不再靠遍歷順序）。
+        保留此方法供 plugin_api.runner Protocol 與既有呼叫點相容。"""
+        return resolve_lead_agent(self._reg, stage_id)
+
+    def _current_agent(self) -> Optional[AgentSpec]:
+        """當前生成 agent：engine/collab 注入的 lead 優先；否則依 stage_id 反查（向後相容）。"""
+        return self.agent or self.get_agent_for_stage(self.stage_id)
+
+    def _allowed_tools(self) -> tuple[str, ...]:
+        """當前生成 agent 宣告的 allowed_tools。無 agent / 無 tools → ()（行為不變）。
+        附件隱含需要的 Read 由 adapter 自行補（見 claude_cli），不在此處理。"""
+        agent = self._current_agent()
+        return tuple(agent.tools) if (agent and agent.tools) else ()
 
     def _effective_max_iterations(self, requested: Optional[int]) -> int:
         """max_iterations 決議：顯式傳數字 → 用該值（≥1，向後相容 collab/測試）；
-        None → 讀本 stage 綁的 agent.max_iterations（fix-loop 通電靠 agent 設定；
+        None → 讀本 stage lead agent.max_iterations（fix-loop 通電靠 agent 設定；
         無 agent → 1，行為不變）。"""
         if requested is not None:
             return max(1, requested)
-        agent = self.get_agent_for_stage(self.stage_id)
+        agent = self._current_agent()
         return max(1, agent.max_iterations) if agent else 1
 
     def feedback_block(self, *, telemetry_stage: str, operation: str) -> str:
@@ -285,6 +302,31 @@ class HarnessRunner:
 
 
 # ============ module-level helpers ============
+@lru_cache(maxsize=64)
+def _invoke_accepts_allowed_tools(fn) -> bool:
+    """偵測 adapter.invoke 是否接受 allowed_tools 關鍵字參數（含收 **kwargs）。
+    無法內省的 callable → 保守當舊介面（只收 prompt）。cache key = fn 物件（adapter 註冊後固定）。
+
+    用 inspect.signature 而非 try/except TypeError：後者會把 adapter 內部真正的 TypeError
+    誤判為「不接受 allowed_tools」而靜默降級、吞掉真錯誤。
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (ValueError, TypeError):
+        return False
+    if "allowed_tools" in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _invoke_adapter(adapter, prompt: str, allowed_tools: tuple) -> str:
+    """統一 adapter.invoke 呼叫：新 adapter（接受 allowed_tools）帶工具；舊 adapter 只傳 prompt。
+    allowed_tools 為空 → 一律走只傳 prompt 的舊路徑（與既有行為完全一致、零風險）。"""
+    if allowed_tools and _invoke_accepts_allowed_tools(adapter.invoke):
+        return adapter.invoke(prompt, allowed_tools=allowed_tools)
+    return adapter.invoke(prompt)
+
+
 def _json_dumps_safe(obj) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False)

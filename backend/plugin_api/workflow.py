@@ -19,7 +19,7 @@ class AgentBinding:
     - subagent ：被 lead 分派任務的下手（M5 前端 / 後端 engineer 屬這型）。
     """
     agent_id: str
-    role: CollabRole = "lead"
+    role: CollabRole = "lead"   # 協作角色；≠ AgentSpec.role（那是綁定的 stage id）
 
 
 # Backward-compat 用：caller 可給 raw str 或 AgentBinding；normalize_bindings 處理。
