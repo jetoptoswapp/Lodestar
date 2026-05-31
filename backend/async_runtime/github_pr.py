@@ -82,15 +82,19 @@ def make_github_pr_opener(*, get_token: Callable[[], str],
             raise PrError("worktree 無變更，不開空 PR")
         _git(wt, ["commit", "-m", f"Lodestar impl session {session_id}"])
 
+        # base：clone 模式本地在 default branch（main/master）→ 當 base；worktree 模式本地已在
+        # work branch（== branch）→ 用參數 base_branch。head 一律推當前 commit 上去（HEAD:）。
+        cur = (_git(wt, ["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout or "").strip()
+        base = base_branch if (not cur or cur == branch) else cur
         remote = f"https://x-access-token:{token}@github.com/{repo}.git"
         push = subprocess.run(
-            ["git", "-C", str(wt), "push", remote, f"{branch}:{branch}", "--force"],
+            ["git", "-C", str(wt), "push", remote, f"HEAD:{branch}", "--force"],
             capture_output=True, text=True)
         if push.returncode != 0:
             raise PrError(f"git push failed (exit {push.returncode})")   # 不回顯 stderr（含 token url）
 
         try:
-            return _create_pr(repo, token, branch, base_branch, session_id)
+            return _create_pr(repo, token, branch, base, session_id)
         except Exception as exc:                       # rollback：刪遠端 branch
             subprocess.run(["git", "-C", str(wt), "push", remote, "--delete", branch],
                            capture_output=True)
