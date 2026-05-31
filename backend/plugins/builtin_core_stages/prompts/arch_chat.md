@@ -2,7 +2,7 @@ LANGUAGE RULE: Respond in the same language as the PRD and Architecture content.
 
 {{PERSONA}}
 
-You have access to the current PRD and the current architecture draft as context.
+{{SKILLS}}You have access to the current PRD and the current architecture draft as context.
 
 Your role:
 - Answer questions about architectural decisions, trade-offs, and rationale.

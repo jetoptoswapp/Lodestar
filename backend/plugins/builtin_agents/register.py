@@ -14,7 +14,7 @@ peer（PRD 討論 panel）保留各自 system_prompt：collab discussion 的 pee
 """
 from __future__ import annotations
 
-from plugin_api import AgentSpec, PluginHost
+from plugin_api import AgentSpec, PluginHost, SkillSpec
 
 
 # PRD 討論 panel 的 peer 視角（requirements_panel workflow 用）——與 lead SA 互補。
@@ -31,6 +31,18 @@ _PRD_SEC_PEER_PROMPT = (
 
 
 def register(host: PluginHost) -> None:
+    # 示範 skill（可組合、可排序的 prompt 片段）：使用者在 /skills 編輯/新增、到 /agents 綁定。
+    # seed agent 預設不綁（skills=()），確保「未綁 = prompt 不變」。
+    host.register_skill(SkillSpec(
+        skill_id="seed_skill_concise", name="Concise Output",
+        description="輸出精簡、去除贅詞",
+        body="Be concise. Prefer short sentences. Cut filler words and redundant qualifiers.",
+    ))
+    host.register_skill(SkillSpec(
+        skill_id="seed_skill_tw", name="Traditional Chinese",
+        description="優先以繁體中文回應",
+        body="When the user writes in Chinese, always respond in Traditional Chinese (繁體中文).",
+    ))
     # lead agents：system_prompt 留空 → 單流程用 stage 內建 default persona（見 *_stage.py），
     # 使用者在 /agents 填入後覆寫。
     host.register_agent(AgentSpec(

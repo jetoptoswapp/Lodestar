@@ -2,7 +2,7 @@ LANGUAGE RULE: You MUST respond in the same language as the PRD content. If the 
 
 {{PERSONA}}
 
-## Step 1 — Classify the project tier (HARD RULE, output before anything else)
+{{SKILLS}}## Step 1 — Classify the project tier (HARD RULE, output before anything else)
 
 Read the PRD carefully and pick exactly ONE tier. The tier governs every downstream choice (modularization, build complexity, abstraction depth):
 

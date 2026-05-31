@@ -132,3 +132,26 @@ def effective_persona(ctx, default_persona: str) -> str:
     if agent is not None and (agent.system_prompt or "").strip():
         return agent.system_prompt.strip()
     return default_persona
+
+
+# ============================================================
+#  Skills 注入（獨立 SKILLS 區塊；persona 之後、機器契約之前）
+# ============================================================
+def render_skills_block(skills: tuple) -> str:
+    """把 agent 綁定的 skills（依序）組成獨立 SKILLS 區塊字串。
+
+    R1 迴歸守門：空 skills（或全部 body 空）→ 回 ""；呼叫端把 {{SKILLS}} 替成空字串後，
+    render 結果與接線前逐字相同（.md 寫成 `{{PERSONA}}\\n\\n{{SKILLS}}<契約>`，空時塌回原樣）。
+    非空時自帶尾端 "\\n\\n"，與下方機器契約隔開。body 是機器無關的 prompt 片段（不含契約）。
+    """
+    if not skills:
+        return ""
+    parts = ["## Skills (apply the following capabilities)"]
+    for s in skills:
+        body = (s.body or "").strip()
+        if not body:
+            continue
+        parts.append(f"### {s.name}\n{body}")
+    if len(parts) == 1:          # 全部 skill body 為空 → 視同無 skill
+        return ""
+    return "\n\n".join(parts) + "\n\n"

@@ -600,5 +600,71 @@ def upsert_agent(
 
 def delete_agent(agent_id: str) -> bool:
     with connect() as conn:
+        conn.execute("DELETE FROM agent_skills WHERE agent_id = ?", (agent_id,))   # 清綁定（無 FK）
         cur = conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
         return cur.rowcount > 0
+
+
+# ============================================================
+#  Skills（實體 CRUD）+ agent_skills（綁定，sort_order）
+# ============================================================
+def list_skills() -> list[dict]:
+    """列 user-saved skills（不含純 in-memory 的 builtin seed）。"""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT skill_id, name, description, body, version, created_at, updated_at "
+            "FROM skills ORDER BY created_at ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_skill(skill_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT skill_id, name, description, body, version, created_at, updated_at "
+            "FROM skills WHERE skill_id = ?", (skill_id,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def upsert_skill(*, skill_id: str, name: str, description: str = "",
+                 body: str = "", version: str = "1.0") -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO skills (skill_id, name, description, body, version) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(skill_id) DO UPDATE SET "
+            "name = excluded.name, description = excluded.description, "
+            "body = excluded.body, version = excluded.version, "
+            "updated_at = strftime('%s','now')",
+            (skill_id, name, description, body, version),
+        )
+
+
+def delete_skill(skill_id: str) -> bool:
+    """刪 skill 實體；連帶清掉所有 agent 對它的綁定（agent_skills 無 FK，須主動清）。"""
+    with connect() as conn:
+        conn.execute("DELETE FROM agent_skills WHERE skill_id = ?", (skill_id,))
+        cur = conn.execute("DELETE FROM skills WHERE skill_id = ?", (skill_id,))
+        return cur.rowcount > 0
+
+
+def get_agent_skill_ids(agent_id: str) -> list[tuple[str, int]]:
+    """回該 agent 綁定的 [(skill_id, sort_order), ...]，依 sort_order 升冪（走 idx_agent_skills_agent）。"""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT skill_id, sort_order FROM agent_skills "
+            "WHERE agent_id = ? ORDER BY sort_order ASC", (agent_id,),
+        ).fetchall()
+    return [(r["skill_id"], r["sort_order"]) for r in rows]
+
+
+def set_agent_skills(agent_id: str, skill_ids: list[str]) -> None:
+    """整批覆寫某 agent 的 skill 綁定。list 順序即 sort_order（0-based）。
+    先刪後插（單一 connection / 單一 commit，原子）。空 list = 解除所有綁定。"""
+    with connect() as conn:
+        conn.execute("DELETE FROM agent_skills WHERE agent_id = ?", (agent_id,))
+        conn.executemany(
+            "INSERT INTO agent_skills (agent_id, skill_id, sort_order) VALUES (?, ?, ?)",
+            [(agent_id, sid, i) for i, sid in enumerate(skill_ids)],
+        )

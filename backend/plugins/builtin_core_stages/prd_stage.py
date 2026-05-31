@@ -29,6 +29,7 @@ from ._shared import (
     format_attachments as _format_attachments,
     format_conversation as _shared_format_conversation,
     format_focus_section,
+    render_skills_block,
 )
 
 
@@ -118,6 +119,7 @@ def _prd_generate(ctx: StageContext, run) -> StageResult:
     """PRD generate：空白或基於對話 → 用 sa_chat 模板呼叫 model。"""
     sa_system = run.render_prompt("sa_system.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_SA_PERSONA),
+        "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
     })
     conversation_text = _format_conversation(ctx.conversation)
     focus_block = format_focus_section(ctx.focus_section)
@@ -165,6 +167,7 @@ def _prd_chat(ctx: StageContext, run) -> StageChatResult:
     否則只回對話（reply），artifact 不更新。"""
     sa_system = run.render_prompt("sa_system.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_SA_PERSONA),
+        "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
     })
     if ctx.current_artifact and ctx.current_artifact.strip():
         amendment = run.render_prompt("sa_amendment_prefix.md", {

@@ -32,6 +32,7 @@ from ._shared import (
     format_attachments,
     format_conversation,
     format_focus_section,
+    render_skills_block,
 )
 
 
@@ -148,6 +149,7 @@ def _stories_generate(ctx: StageContext, run) -> StageResult:
     prd, arch = _upstream(ctx)
     prompt = run.render_prompt("user_stories.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_PM_PERSONA),
+        "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
     })
@@ -189,6 +191,7 @@ def _stories_chat(ctx: StageContext, run) -> StageChatResult:
     prd, arch = _upstream(ctx)
     prompt = run.render_prompt("stories_chat.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_PM_CHAT_PERSONA),
+        "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
         "USER_STORIES_DRAFT": ctx.current_artifact or "(empty)",

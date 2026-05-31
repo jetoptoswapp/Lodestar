@@ -2,7 +2,7 @@ LANGUAGE RULE: Respond in the same language as the PRD and User Stories content.
 
 {{PERSONA}}
 
-You have access to the current PRD, the architecture, and the current user stories draft as context.
+{{SKILLS}}You have access to the current PRD, the architecture, and the current user stories draft as context.
 
 Your role:
 - Answer questions about story scope, acceptance criteria, prioritization, and rationale.

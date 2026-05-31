@@ -6,7 +6,7 @@ from plugin_api.harness import ValidatorFn
 from plugin_api.integration import IntegrationSpec
 from plugin_api.model import AgentRunner, ModelAdapter
 from plugin_api.runner import HarnessRunner
-from plugin_api.stage import AgentSpec, StageSpec
+from plugin_api.stage import AgentSpec, SkillSpec, StageSpec
 from plugin_api.workflow import WorkflowSpec
 
 
@@ -30,6 +30,7 @@ class PluginHost(Protocol):
     def register_stage(self, spec: StageSpec) -> None: ...
     def register_workflow(self, spec: WorkflowSpec) -> None: ...
     def register_agent(self, spec: AgentSpec) -> None: ...           # seed 預設 agent
+    def register_skill(self, spec: SkillSpec) -> None: ...           # seed 預設 skill
     def register_integration(self, spec: IntegrationSpec) -> None: ...
     def register_model_adapter(self, adapter: ModelAdapter) -> None: ...
     def register_runner(self, choice: str, cls: type[AgentRunner]) -> None: ...  # 存 class

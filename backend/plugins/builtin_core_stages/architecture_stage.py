@@ -30,6 +30,7 @@ from ._shared import (
     format_attachments,
     format_conversation,
     format_focus_section,
+    render_skills_block,
 )
 
 
@@ -100,6 +101,7 @@ def _arch_generate(ctx: StageContext, run) -> StageResult:
     """architecture generate：PRD → architect.md → invoke。"""
     prompt = run.render_prompt("architect.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_ARCHITECT_PERSONA),
+        "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
         "PRD_DRAFT": _upstream_prd(ctx),
     })
     prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
@@ -141,6 +143,7 @@ def _arch_chat(ctx: StageContext, run) -> StageChatResult:
     """
     prompt = run.render_prompt("arch_chat.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_ARCHITECT_CHAT_PERSONA),
+        "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
         "PRD_DRAFT": _upstream_prd(ctx),
         "ARCHITECTURE_DRAFT": ctx.current_artifact or "(empty)",
         "CONVERSATION_TEXT": format_conversation(ctx.conversation, ai_label="Architect"),

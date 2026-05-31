@@ -20,13 +20,14 @@ from plugin_api.harness import ValidatorFn
 from plugin_api.host import PluginManifest
 from plugin_api.integration import IntegrationSpec
 from plugin_api.model import ModelAdapter
-from plugin_api.stage import AgentSpec, StageSpec
+from plugin_api.stage import AgentSpec, SkillSpec, StageSpec
 from plugin_api.workflow import WorkflowSpec
 
 # capability_type 字串（plugin_contributions.capability_type）
 CAP_STAGE = "stage"
 CAP_WORKFLOW = "workflow"
 CAP_AGENT = "agent"
+CAP_SKILL = "skill"
 CAP_INTEGRATION = "integration"
 CAP_MODEL_ADAPTER = "model_adapter"
 CAP_RUNNER = "runner"
@@ -48,6 +49,7 @@ class Registry:
     stages: dict[str, StageSpec] = field(default_factory=dict)
     workflows: dict[str, WorkflowSpec] = field(default_factory=dict)
     agents: dict[str, AgentSpec] = field(default_factory=dict)
+    skills: dict[str, SkillSpec] = field(default_factory=dict)
     integrations: dict[str, IntegrationSpec] = field(default_factory=dict)
     model_adapters: dict[str, ModelAdapter] = field(default_factory=dict)
     runners: dict[str, type] = field(default_factory=dict)
@@ -63,6 +65,7 @@ class Registry:
 
     _CAP_TABLES = (
         (CAP_STAGE, "stages"), (CAP_WORKFLOW, "workflows"), (CAP_AGENT, "agents"),
+        (CAP_SKILL, "skills"),
         (CAP_INTEGRATION, "integrations"), (CAP_MODEL_ADAPTER, "model_adapters"),
         (CAP_RUNNER, "runners"),
     )
@@ -100,6 +103,10 @@ class PluginHost:
     def register_agent(self, spec: AgentSpec) -> None:
         self._reg.agents[spec.agent_id] = spec
         self._own(CAP_AGENT, spec.agent_id)
+
+    def register_skill(self, spec: SkillSpec) -> None:
+        self._reg.skills[spec.skill_id] = spec
+        self._own(CAP_SKILL, spec.skill_id)
 
     def register_integration(self, spec: IntegrationSpec) -> None:
         self._reg.integrations[spec.target] = spec

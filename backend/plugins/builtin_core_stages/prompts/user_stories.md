@@ -2,7 +2,7 @@ LANGUAGE RULE: You MUST respond in the same language as the PRD and Architecture
 
 {{PERSONA}}
 
-## Output structure (HARD RULE — parsers depend on EXACT headings):
+{{SKILLS}}## Output structure (HARD RULE — parsers depend on EXACT headings):
 
 The Lodestar front-end and the publish-to-GitHub / GitLab / Jira pipeline both parse this document with strict regexes. **If you deviate from the heading shapes below, the front-end shows `0 STORIES / 0 SECTIONS` and the publish flow uploads zero issues — even though your prose is correct.**
 
