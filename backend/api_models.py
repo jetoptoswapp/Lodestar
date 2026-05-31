@@ -83,11 +83,22 @@ class ModelAdapterListResponse(BaseModel):
 class CreateProjectRequest(BaseModel):
     name: str
     workflow_id: Optional[str] = None   # None → lazy default
+    # delivery repo（可選；建專案時設，亦可事後 PATCH）
+    delivery_target: str = ""           # github / gitlab / ''
+    repo_mode: str = ""                 # new / existing / ''
+    repo_full_name: str = ""            # 既有：owner/repo
+    repo_owner: str = ""                # 開新的 org/group（空=個人）
+    repo_visibility: str = "private"    # public / private / internal
 
 
 class UpdateProjectRequest(BaseModel):
-    """PATCH /api/projects/{tid} —— 改 name（之後可加 workflow_id 等）。"""
+    """PATCH /api/projects/{tid} —— 改 name 與/或 delivery repo 設定（皆 optional）。"""
     name: Optional[str] = None
+    delivery_target: Optional[str] = None
+    repo_mode: Optional[str] = None
+    repo_full_name: Optional[str] = None
+    repo_owner: Optional[str] = None
+    repo_visibility: Optional[str] = None
 
 
 class ProjectResponse(BaseModel):
@@ -95,6 +106,12 @@ class ProjectResponse(BaseModel):
     name: str
     workflow_id: Optional[str] = None
     created_at: float
+    delivery_target: str = ""
+    repo_mode: str = ""
+    repo_full_name: str = ""
+    repo_owner: str = ""
+    repo_visibility: str = "private"
+    repo_created: bool = False
 
 
 class ProjectListResponse(BaseModel):

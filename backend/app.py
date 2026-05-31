@@ -752,7 +752,10 @@ def _raise_workflow_error(exc: WorkflowError) -> None:
 @app.post("/api/projects", response_model=ProjectResponse)
 async def create_project(req: CreateProjectRequest):
     thread_id = uuid.uuid4().hex[:12]
-    dal.create_project(thread_id, req.name, req.workflow_id)
+    dal.create_project(thread_id, req.name, req.workflow_id,
+                       delivery_target=req.delivery_target, repo_mode=req.repo_mode,
+                       repo_full_name=req.repo_full_name, repo_owner=req.repo_owner,
+                       repo_visibility=req.repo_visibility)
     project = dal.get_project(thread_id)
     if project is None:  # defensive
         raise HTTPException(500, detail=error_detail("project_create_failed", "建立 thread 失敗"))
@@ -774,15 +777,30 @@ async def get_project(thread_id: str):
 
 @app.patch("/api/projects/{thread_id}", response_model=ProjectResponse)
 async def update_project(thread_id: str, req: UpdateProjectRequest):
-    """目前只支援改 name；workflow_id 等留待 M3 編輯器一起做。"""
-    if req.name is None or not req.name.strip():
-        raise HTTPException(400, detail=error_detail("invalid_name", "name 不可為空"))
-    ok = dal.update_project_name(thread_id, req.name.strip())
-    if not ok:
+    """改 name 與/或 delivery repo 設定（皆 optional；只更新有帶的部分）。"""
+    cur = dal.get_project(thread_id)
+    if cur is None:
         raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    delivery_fields = (req.delivery_target, req.repo_mode, req.repo_full_name,
+                       req.repo_owner, req.repo_visibility)
+    if req.name is None and all(f is None for f in delivery_fields):
+        raise HTTPException(400, detail=error_detail("invalid_name", "name 不可為空"))
+    if req.name is not None:
+        if not req.name.strip():
+            raise HTTPException(400, detail=error_detail("invalid_name", "name 不可為空"))
+        dal.update_project_name(thread_id, req.name.strip())
+    if any(f is not None for f in delivery_fields):
+        dal.update_project_delivery(
+            thread_id,
+            delivery_target=req.delivery_target if req.delivery_target is not None else cur["delivery_target"],
+            repo_mode=req.repo_mode if req.repo_mode is not None else cur["repo_mode"],
+            repo_full_name=req.repo_full_name if req.repo_full_name is not None else cur["repo_full_name"],
+            repo_owner=req.repo_owner if req.repo_owner is not None else cur["repo_owner"],
+            repo_visibility=req.repo_visibility if req.repo_visibility is not None else cur["repo_visibility"],
+        )
     project = dal.get_project(thread_id)
     if project is None:  # defensive
-        raise HTTPException(500, detail=error_detail("project_read_failed", "thread 改名後讀取失敗"))
+        raise HTTPException(500, detail=error_detail("project_read_failed", "thread 更新後讀取失敗"))
     return ProjectResponse(**project)
 
 

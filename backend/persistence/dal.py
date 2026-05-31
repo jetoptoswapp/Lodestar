@@ -130,18 +130,24 @@ def delete_integration_secret(target: str) -> bool:
 # ============================================================
 #  Projects（thread = project entry）
 # ============================================================
-def create_project(thread_id: str, name: str, workflow_id: Optional[str] = None) -> None:
+def create_project(thread_id: str, name: str, workflow_id: Optional[str] = None, *,
+                   delivery_target: str = "", repo_mode: str = "",
+                   repo_full_name: str = "", repo_owner: str = "",
+                   repo_visibility: str = "private") -> None:
     with connect() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO projects (thread_id, name, workflow_id) VALUES (?, ?, ?)",
-            (thread_id, name, workflow_id),
+            "INSERT OR IGNORE INTO projects (thread_id, name, workflow_id, "
+            "delivery_target, repo_mode, repo_full_name, repo_owner, repo_visibility) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (thread_id, name, workflow_id, delivery_target, repo_mode,
+             repo_full_name, repo_owner, repo_visibility),
         )
 
 
 def get_project(thread_id: str) -> Optional[dict]:
     with connect() as conn:
         row = conn.execute(
-            "SELECT thread_id, name, workflow_id, created_at FROM projects WHERE thread_id = ?",
+            "SELECT * FROM projects WHERE thread_id = ?",
             (thread_id,),
         ).fetchone()
     return dict(row) if row else None
@@ -150,7 +156,7 @@ def get_project(thread_id: str) -> Optional[dict]:
 def list_projects() -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT thread_id, name, workflow_id, created_at FROM projects ORDER BY created_at DESC"
+            "SELECT * FROM projects ORDER BY created_at DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -171,6 +177,28 @@ def update_project_name(thread_id: str, name: str) -> bool:
             (name, thread_id),
         )
         return cur.rowcount > 0
+
+
+def update_project_delivery(thread_id: str, *, delivery_target: str, repo_mode: str,
+                            repo_full_name: str, repo_owner: str,
+                            repo_visibility: str) -> bool:
+    """設定/更新 project 的 delivery repo。改設定 → 重置 repo_created=0（new mode 需重新 resolve/建）。"""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE projects SET delivery_target=?, repo_mode=?, repo_full_name=?, "
+            "repo_owner=?, repo_visibility=?, repo_created=0 WHERE thread_id=?",
+            (delivery_target, repo_mode, repo_full_name, repo_owner, repo_visibility, thread_id),
+        )
+        return cur.rowcount > 0
+
+
+def set_project_repo_created(thread_id: str, repo_full_name: str) -> None:
+    """lazy 建好 repo 後回填 full_name + 標記 created（resolve_project_repo 用）。"""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE projects SET repo_full_name=?, repo_created=1 WHERE thread_id=?",
+            (repo_full_name, thread_id),
+        )
 
 
 def delete_project_cascade(thread_id: str) -> Optional[list[str]]:

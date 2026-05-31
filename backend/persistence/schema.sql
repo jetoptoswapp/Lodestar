@@ -7,7 +7,14 @@ CREATE TABLE IF NOT EXISTS projects (
     thread_id   TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     workflow_id TEXT,                                   -- NULL → lazy default
-    created_at  REAL NOT NULL DEFAULT (strftime('%s','now'))
+    created_at  REAL NOT NULL DEFAULT (strftime('%s','now')),
+    -- delivery repo（per-project；lazy 建立。見 tasks/delivery-repo-plan.md）
+    delivery_target TEXT NOT NULL DEFAULT '',           -- github / gitlab / ''
+    repo_mode       TEXT NOT NULL DEFAULT '',           -- new / existing / ''
+    repo_full_name  TEXT NOT NULL DEFAULT '',           -- owner/repo（既有，或開新後回填）
+    repo_owner      TEXT NOT NULL DEFAULT '',           -- 開新的 org/group（空=個人帳號）
+    repo_visibility TEXT NOT NULL DEFAULT 'private',    -- public / private / internal
+    repo_created    INTEGER NOT NULL DEFAULT 0          -- lazy：repo 是否已建/確認
 );
 
 -- artifact 正文直接存表（取代 ver2 LangGraph checkpoint blob）
