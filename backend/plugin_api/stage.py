@@ -29,7 +29,7 @@ class AgentSpec:
     role: str                       # 綁定的 stage id（data-driven）；≠ AgentBinding.role（協作角色）
     system_prompt: str              # 單流程 persona（空 → 用 stage 內建 default persona）；機器契約在 .md
     model_choice: str = "claude-cli"
-    skills: tuple[SkillSpec, ...] = ()   # 目前未接線（DB / API / UI 皆未暴露）；保留供未來 prompt 組合
+    skills: tuple[SkillSpec, ...] = ()   # 未接線：SkillSpec/DB 表(skills+agent_skills)已在，但缺 register_skill/DAL/API/執行
     tools: tuple[str, ...] = ()     # 允許工具（如 "Read"）；經 HarnessRunner._allowed_tools 流到 adapter
     max_iterations: int = 1
     enabled: bool = True
