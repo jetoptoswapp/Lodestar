@@ -266,6 +266,30 @@ class WorkflowListResponse(BaseModel):
     workflows: list[WorkflowResponse]
 
 
+class SkillResponse(BaseModel):
+    skill_id: str
+    name: str
+    description: str = ""
+    body: str = ""
+    version: str = "1.0"
+
+
+class SkillListResponse(BaseModel):
+    skills: list[SkillResponse]
+
+
+class SkillUpsertRequest(BaseModel):
+    skill_id: str
+    name: str
+    description: str = ""
+    body: str = ""
+    version: str = "1.0"
+
+
+class AgentSkillsUpdateRequest(BaseModel):
+    skill_ids: list[str]             # 陣列順序即 sort_order
+
+
 class AgentUpsertRequest(BaseModel):
     agent_id: str
     name: str
@@ -286,6 +310,7 @@ class AgentResponse(BaseModel):
     max_iterations: int = 1
     enabled: bool = True
     tools: list[str] = []
+    skills: list[SkillResponse] = []
     source: str                      # "builtin" / "user"
     created_at: Optional[float] = None
     updated_at: Optional[float] = None

@@ -31,9 +31,11 @@ from fastapi.responses import FileResponse  # noqa: E402
 
 import plugin_loader  # noqa: E402
 from api_errors import error_detail  # noqa: E402
+from agent_resolver import resolve_agent  # noqa: E402
 from api_models import (  # noqa: E402
     AgentListResponse,
     AgentResponse,
+    AgentSkillsUpdateRequest,
     AgentUpsertRequest,
     AttachmentListResponse,
     AttachmentResponse,
@@ -51,6 +53,9 @@ from api_models import (  # noqa: E402
     ProjectListResponse,
     ProjectResponse,
     SetProjectWorkflowRequest,
+    SkillListResponse,
+    SkillResponse,
+    SkillUpsertRequest,
     StageActionResponse,
     ValidationOutcomeResponse,
     StageCatalogItem,
@@ -500,31 +505,38 @@ async def delete_workflow(wf_id: str):
 # ============================================================
 #  M3：Agents CRUD（POST/PUT/DELETE/GET）
 # ============================================================
-def _builtin_agent_to_response(agent_id: str, spec, source_plugin: str) -> AgentResponse:
+def _skill_to_response(s) -> SkillResponse:
+    """SkillSpec（registry seed）或 DB dict → SkillResponse。"""
+    if isinstance(s, dict):
+        return SkillResponse(skill_id=s["skill_id"], name=s["name"],
+                             description=s.get("description", ""), body=s.get("body", ""),
+                             version=s.get("version", "1.0"))
+    return SkillResponse(skill_id=s.skill_id, name=s.name, description=s.description,
+                         body=s.body, version=s.version)
+
+
+def _agent_response_with_skills(reg, agent_id: str) -> AgentResponse:
+    """用 resolve_agent（已 embed skills，依 sort_order）組 AgentResponse；source/時間戳看 DB。"""
+    spec = resolve_agent(reg, agent_id)
+    assert spec is not None
+    db = dal.get_agent(agent_id)
     return AgentResponse(
-        agent_id=agent_id, name=spec.name, role=spec.role,
+        agent_id=spec.agent_id, name=spec.name, role=spec.role,
         system_prompt=spec.system_prompt, model_choice=spec.model_choice,
         max_iterations=spec.max_iterations, enabled=spec.enabled,
-        tools=list(spec.tools), source="builtin",
-        created_at=None, updated_at=None,
+        tools=list(spec.tools), skills=[_skill_to_response(s) for s in spec.skills],
+        source="user" if db else "builtin",
+        created_at=db["created_at"] if db else None,
+        updated_at=db["updated_at"] if db else None,
     )
 
 
 @app.get("/api/agents", response_model=AgentListResponse)
 async def list_agents_endpoint():
-    """合併 builtin seed agents + user-defined（DB）；user 同 id 覆蓋 builtin。"""
+    """合併 builtin seed agents + user-defined（DB）；user 同 id 覆蓋 builtin。各帶 resolved skills。"""
     reg = _registry()
-    out: dict[str, AgentResponse] = {}
-    for agent_id, spec in reg.agents.items():
-        out[agent_id] = _builtin_agent_to_response(agent_id, spec, "")
-    for a in dal.list_agents():
-        out[a["agent_id"]] = AgentResponse(
-            agent_id=a["agent_id"], name=a["name"], role=a["role"],
-            system_prompt=a["system_prompt"], model_choice=a["model_choice"],
-            max_iterations=a["max_iterations"], enabled=a["enabled"],
-            tools=a["tools"], source="user",
-            created_at=a["created_at"], updated_at=a["updated_at"],
-        )
+    ids = list(reg.agents.keys()) + [a["agent_id"] for a in dal.list_agents()]
+    out = {aid: _agent_response_with_skills(reg, aid) for aid in dict.fromkeys(ids)}
     return AgentListResponse(agents=list(out.values()))
 
 
@@ -553,13 +565,7 @@ def _save_agent(req: AgentUpsertRequest, *, allow_existing: bool) -> AgentRespon
     )
     saved = dal.get_agent(req.agent_id)
     assert saved is not None
-    return AgentResponse(
-        agent_id=saved["agent_id"], name=saved["name"], role=saved["role"],
-        system_prompt=saved["system_prompt"], model_choice=saved["model_choice"],
-        max_iterations=saved["max_iterations"], enabled=saved["enabled"],
-        tools=saved["tools"], source="user",
-        created_at=saved["created_at"], updated_at=saved["updated_at"],
-    )
+    return _agent_response_with_skills(_registry(), req.agent_id)
 
 
 @app.delete("/api/agents/{agent_id}")
@@ -568,6 +574,69 @@ async def delete_agent_endpoint(agent_id: str):
     if not ok:
         raise HTTPException(404, detail=error_detail("agent_not_found", f"agent '{agent_id}' 不存在"))
     return {"deleted": agent_id}
+
+
+# ============================================================
+#  Skills CRUD（POST/PUT/DELETE/GET）+ agent 綁定
+# ============================================================
+@app.get("/api/skills", response_model=SkillListResponse)
+async def list_skills_endpoint():
+    """合併 builtin seed skills（registry）+ user-defined（DB）；user 同 id 覆蓋 builtin。"""
+    reg = _registry()
+    out: dict[str, SkillResponse] = {}
+    for sid, spec in reg.skills.items():
+        out[sid] = _skill_to_response(spec)
+    for s in dal.list_skills():
+        out[s["skill_id"]] = _skill_to_response(s)
+    return SkillListResponse(skills=list(out.values()))
+
+
+@app.post("/api/skills", response_model=SkillResponse, status_code=201)
+async def create_skill(req: SkillUpsertRequest):
+    if dal.get_skill(req.skill_id) is not None:
+        raise HTTPException(409, detail=error_detail("skill_exists", f"skill '{req.skill_id}' 已存在；改用 PUT"))
+    return _save_skill(req)
+
+
+@app.put("/api/skills/{skill_id}", response_model=SkillResponse)
+async def update_skill(skill_id: str, req: SkillUpsertRequest):
+    if req.skill_id != skill_id:
+        raise HTTPException(400, detail=error_detail("skill_id_mismatch", "URL id 與 body id 不一致"))
+    return _save_skill(req)
+
+
+def _save_skill(req: SkillUpsertRequest) -> SkillResponse:
+    dal.upsert_skill(skill_id=req.skill_id, name=req.name, description=req.description,
+                     body=req.body, version=req.version)
+    saved = dal.get_skill(req.skill_id)
+    assert saved is not None
+    return _skill_to_response(saved)
+
+
+@app.delete("/api/skills/{skill_id}")
+async def delete_skill_endpoint(skill_id: str):
+    if not dal.delete_skill(skill_id):
+        raise HTTPException(404, detail=error_detail("skill_not_found", f"skill '{skill_id}' 不存在"))
+    return {"deleted": skill_id}
+
+
+@app.put("/api/agents/{agent_id}/skills", response_model=AgentResponse)
+async def set_agent_skills_endpoint(agent_id: str, req: AgentSkillsUpdateRequest):
+    """整批覆寫 agent 的 skill 綁定（陣列順序=sort_order）。對 seed agent 也允許（寫 agent_skills）。"""
+    reg = _registry()
+    if dal.get_agent(agent_id) is None and agent_id not in reg.agents:
+        raise HTTPException(404, detail=error_detail("agent_not_found", f"agent '{agent_id}' 不存在"))
+    seen: set[str] = set()
+    clean: list[str] = []
+    for sid in req.skill_ids:
+        if sid in seen:
+            continue
+        if dal.get_skill(sid) is None and sid not in reg.skills:
+            raise HTTPException(404, detail=error_detail("skill_not_found", f"skill '{sid}' 不存在"))
+        seen.add(sid)
+        clean.append(sid)
+    dal.set_agent_skills(agent_id, clean)
+    return _agent_response_with_skills(reg, agent_id)
 
 
 # ============================================================
