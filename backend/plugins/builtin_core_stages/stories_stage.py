@@ -27,6 +27,7 @@ from plugin_api.harness import HarnessContext
 
 from ._shared import (
     collab_discussion_prefix,
+    effective_persona,
     extract_content_block,
     format_attachments,
     format_conversation,
@@ -127,6 +128,18 @@ def _upstream(ctx: StageContext) -> tuple[str, str]:
     )
 
 
+# stage 內建 persona（agent.system_prompt 未設時的 default）；機器契約（Epic/Story heading shape
+# 等 parser 依賴）留在 user_stories.md / stories_chat.md。R1：逐字搬自重構前的開頭人設段。
+_DEFAULT_PM_PERSONA = (
+    "You are a Senior Product Manager and Agile Coach. Based on the following PRD and "
+    "System Architecture, produce a complete set of User Stories organized by Epic."
+)
+_DEFAULT_PM_CHAT_PERSONA = (
+    "You are a Senior Product Manager in a discussion about the user stories backlog "
+    "for a software project."
+)
+
+
 # ============================================================
 #  Handlers
 # ============================================================
@@ -134,6 +147,7 @@ def _stories_generate(ctx: StageContext, run) -> StageResult:
     """stories generate：PRD + Architecture → user_stories.md → invoke。"""
     prd, arch = _upstream(ctx)
     prompt = run.render_prompt("user_stories.md", {
+        "PERSONA": effective_persona(ctx, _DEFAULT_PM_PERSONA),
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
     })
@@ -174,6 +188,7 @@ def _stories_chat(ctx: StageContext, run) -> StageChatResult:
     """stories chat：含三 artifact + 對話歷史。[CONTENT_START]/[CONTENT_END] 是更新訊號。"""
     prd, arch = _upstream(ctx)
     prompt = run.render_prompt("stories_chat.md", {
+        "PERSONA": effective_persona(ctx, _DEFAULT_PM_CHAT_PERSONA),
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
         "USER_STORIES_DRAFT": ctx.current_artifact or "(empty)",
@@ -205,7 +220,7 @@ STORIES_STAGE = StageSpec(
     depends_on=("architecture",),
     artifact_key="stories",
     prompt_keys=("user_stories.md", "user_stories_refine.md", "stories_chat.md"),
-    default_agent_role="pm",
+    default_agent_role="stories",
     generate=_stories_generate,
     refine=_stories_refine,
     chat=_stories_chat,

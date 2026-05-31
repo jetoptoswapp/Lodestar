@@ -115,3 +115,20 @@ def extract_content_block(text: str) -> Tuple[str, Optional[str]]:
 def format_focus_section(focus_section: Optional[str]) -> str:
     """聚焦段落（FOCUS_SECTION）標準寫法。"""
     return f"\n[Focus on section: {focus_section}]\n" if focus_section else ""
+
+
+# ============================================================
+#  Persona 注入（agent.system_prompt 接回單流程；persona/契約分離）
+# ============================================================
+def effective_persona(ctx, default_persona: str) -> str:
+    """單流程 system prompt 的 persona 段：ctx.agent.system_prompt（使用者在 /agents 編的）
+    優先，空則用 stage 內建 default_persona。
+
+    機器契約（questionnaire / PRD Format / heading shape / [PRD_READY] sentinel 等）留在
+    各 stage 的 .md，不放進 persona —— 使用者改人設不會改壞前端解析與 publish pipeline。
+    collab lead 合成時 ctx.agent 為 None（見 collab_coordinator），故走 default。
+    """
+    agent = getattr(ctx, "agent", None)
+    if agent is not None and (agent.system_prompt or "").strip():
+        return agent.system_prompt.strip()
+    return default_persona

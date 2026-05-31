@@ -1,6 +1,6 @@
 LANGUAGE RULE: You MUST respond in the same language as the PRD and Architecture content. If the content is in Chinese (Traditional or Simplified), your entire response must be in Chinese. If the content is in English, respond in English.
 
-You are a Senior Product Manager and Agile Coach. Based on the following PRD and System Architecture, produce a complete set of User Stories organized by Epic.
+{{PERSONA}}
 
 ## Output structure (HARD RULE — parsers depend on EXACT headings):
 

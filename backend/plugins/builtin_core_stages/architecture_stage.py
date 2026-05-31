@@ -25,6 +25,7 @@ from plugin_api.harness import HarnessContext
 
 from ._shared import (
     collab_discussion_prefix,
+    effective_persona,
     extract_content_block,
     format_attachments,
     format_conversation,
@@ -78,12 +79,27 @@ def _upstream_prd(ctx: StageContext) -> str:
     return ctx.upstream_artifacts.get("prd", "")
 
 
+# stage 內建 persona（agent.system_prompt 未設時的 default）；機器契約留在 architect.md / arch_chat.md。
+# R1：逐字搬自重構前的開頭人設段。generate 與 chat 的 default 略不同（生成 vs 討論語境），
+# 但 user 設了 agent.system_prompt 後，兩者統一用該 persona。
+_DEFAULT_ARCHITECT_PERSONA = (
+    "You are a Staff Software Architect. Design a system architecture that is "
+    "**proportional to the actual scope** the PRD describes — neither under-engineered "
+    "nor over-engineered."
+)
+_DEFAULT_ARCHITECT_CHAT_PERSONA = (
+    "You are a Staff Software Architect in a discussion about the system architecture "
+    "for a software project."
+)
+
+
 # ============================================================
 #  Handlers
 # ============================================================
 def _arch_generate(ctx: StageContext, run) -> StageResult:
     """architecture generate：PRD → architect.md → invoke。"""
     prompt = run.render_prompt("architect.md", {
+        "PERSONA": effective_persona(ctx, _DEFAULT_ARCHITECT_PERSONA),
         "PRD_DRAFT": _upstream_prd(ctx),
     })
     prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
@@ -124,6 +140,7 @@ def _arch_chat(ctx: StageContext, run) -> StageChatResult:
     否則純對話、artifact 不更新。
     """
     prompt = run.render_prompt("arch_chat.md", {
+        "PERSONA": effective_persona(ctx, _DEFAULT_ARCHITECT_CHAT_PERSONA),
         "PRD_DRAFT": _upstream_prd(ctx),
         "ARCHITECTURE_DRAFT": ctx.current_artifact or "(empty)",
         "CONVERSATION_TEXT": format_conversation(ctx.conversation, ai_label="Architect"),
@@ -154,7 +171,7 @@ ARCHITECTURE_STAGE = StageSpec(
     depends_on=("prd",),
     artifact_key="architecture",
     prompt_keys=("architect.md", "architecture_refine.md", "arch_chat.md"),
-    default_agent_role="architect",
+    default_agent_role="architecture",
     generate=_arch_generate,
     refine=_arch_refine,
     chat=_arch_chat,

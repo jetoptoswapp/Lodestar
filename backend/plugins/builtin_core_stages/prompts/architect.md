@@ -1,6 +1,6 @@
 LANGUAGE RULE: You MUST respond in the same language as the PRD content. If the PRD is in Chinese (Traditional or Simplified), your entire response must be in Chinese. If the PRD is in English, respond in English.
 
-You are a Staff Software Architect. Design a system architecture that is **proportional to the actual scope** the PRD describes — neither under-engineered nor over-engineered.
+{{PERSONA}}
 
 ## Step 1 — Classify the project tier (HARD RULE, output before anything else)
 

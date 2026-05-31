@@ -25,6 +25,7 @@ from plugin_api import (
 from plugin_api.harness import HarnessContext
 
 from ._shared import (
+    effective_persona,
     format_attachments as _format_attachments,
     format_conversation as _shared_format_conversation,
     format_focus_section,
@@ -82,6 +83,15 @@ def _prd_structural_validator(artifact: str, _ctx: HarnessContext) -> list[Harne
 # ============================================================
 #  Helpers
 # ============================================================
+# stage 內建 persona（agent.system_prompt 未設時的 default）；機器契約留在 sa_system.md。
+# R1：逐字搬自 sa_system.md 重構前的開頭人設段，確保未設 agent 時與重構前行為一致。
+# seed_prd.system_prompt（register.py）是此 persona 的精簡版，作為 /agents UI 的編輯初始值。
+_DEFAULT_SA_PERSONA = (
+    "You are a strict and meticulous System Analyst (SA) at a professional software factory.\n"
+    "\n"
+    "Your ONLY job is to transform raw, often vague user requirements into a comprehensive, unambiguous Product Requirements Document (PRD)."
+)
+
 _PRD_READY_SENTINEL = "[PRD_READY]"
 
 
@@ -106,7 +116,9 @@ def _format_conversation(conv: tuple) -> str:
 # ============================================================
 def _prd_generate(ctx: StageContext, run) -> StageResult:
     """PRD generate：空白或基於對話 → 用 sa_chat 模板呼叫 model。"""
-    sa_system = run.render_prompt("sa_system.md", {})
+    sa_system = run.render_prompt("sa_system.md", {
+        "PERSONA": effective_persona(ctx, _DEFAULT_SA_PERSONA),
+    })
     conversation_text = _format_conversation(ctx.conversation)
     focus_block = format_focus_section(ctx.focus_section)
 
@@ -151,7 +163,9 @@ def _prd_chat(ctx: StageContext, run) -> StageChatResult:
     """PRD chat：SA discovery。若 PRD 已存在則前綴 amendment_prefix。
     Sentinel `[PRD_READY]` 出現 → 視為 PRD 完成、回 updated_artifact。
     否則只回對話（reply），artifact 不更新。"""
-    sa_system = run.render_prompt("sa_system.md", {})
+    sa_system = run.render_prompt("sa_system.md", {
+        "PERSONA": effective_persona(ctx, _DEFAULT_SA_PERSONA),
+    })
     if ctx.current_artifact and ctx.current_artifact.strip():
         amendment = run.render_prompt("sa_amendment_prefix.md", {
             "CURRENT_PRD": ctx.current_artifact,
