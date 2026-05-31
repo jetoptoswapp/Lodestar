@@ -9,6 +9,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentEditorModal, type AgentDraft } from "@/components/AgentEditorModal";
+import { SkillEditorModal, type SkillDraft } from "@/components/SkillEditorModal";
 import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import { PublishModal } from "@/components/PublishModal";
 import { IntegrationsModal } from "@/components/IntegrationsModal";
@@ -16,6 +17,7 @@ import { ProjectDeliveryModal } from "@/components/ProjectDeliveryModal";
 import RcaWorkspace from "@/components/RcaWorkspace";
 import {
   type Agent,
+  type Skill,
   type AgentBinding as ApiAgentBinding,
   type CollabMode as ApiCollabMode,
   type CollabRole as ApiCollabRole,
@@ -29,8 +31,13 @@ import {
   type StageCatalogItem,
   apiCall,
   createAgent,
+  createSkill,
   createWorkflow,
   deleteAgentApi,
+  deleteSkillApi,
+  fetchSkills,
+  setAgentSkills,
+  updateSkill,
   deleteWorkflowApi,
   fetchAgents,
   fetchPlugins,
@@ -166,6 +173,7 @@ const NAV = [
   { id: "workspace", label: "WORKSPACE" },
   { id: "workflows", label: "WORKFLOWS" },
   { id: "agents",    label: "AGENTS" },
+  { id: "skills",    label: "SKILLS" },
   { id: "plugins",   label: "PLUGINS" },
 ];
 
@@ -282,12 +290,14 @@ export default function Page() {
   // M3：workflows / agents 真實 list（給 /workflows, /agents 頁面與 thread switcher 共用）
   const [workflowList, setWorkflowList] = useState<Workflow[]>([]);
   const [agentList, setAgentList] = useState<Agent[]>([]);
+  const [skillList, setSkillList] = useState<Skill[]>([]);
   const [pluginList, setPluginList] = useState<Plugin[]>([]);   // M4
-  // M3：Agent editor modal state
+  // M3：Agent / Skill editor modal state
   const [agentEditor, setAgentEditor] = useState<{ open: boolean; initial: Agent | null }>({ open: false, initial: null });
-  // M3：delete confirm modal（共用給 workflow / agent 刪除）
+  const [skillEditor, setSkillEditor] = useState<{ open: boolean; initial: Skill | null }>({ open: false, initial: null });
+  // M3：delete confirm modal（共用給 workflow / agent / skill 刪除）
   const [deleteConfirm, setDeleteConfirm] = useState<{
-    kind: "workflow" | "agent"; id: string; name: string;
+    kind: "workflow" | "agent" | "skill"; id: string; name: string;
   } | null>(null);
 
   // 清掉所有 per-thread 衍生狀態（切 thread / 刪除後重置 UI 用）
@@ -416,6 +426,13 @@ export default function Page() {
       setErr(`讀取 agents 失敗：${(e as Error).message}`);
     }
   }, []);
+  const refreshSkills = useCallback(async () => {
+    try {
+      setSkillList(await fetchSkills());
+    } catch (e) {
+      setErr(`讀取 skills 失敗：${(e as Error).message}`);
+    }
+  }, []);
   const refreshPlugins = useCallback(async () => {
     try {
       setPluginList(await fetchPlugins());
@@ -429,10 +446,11 @@ export default function Page() {
     let mounted = true;
     (async () => {
       try {
-        const [wfs, ags, plugs] = await Promise.all([fetchWorkflows(), fetchAgents(), fetchPlugins()]);
+        const [wfs, ags, sks, plugs] = await Promise.all([fetchWorkflows(), fetchAgents(), fetchSkills(), fetchPlugins()]);
         if (!mounted) return;
         setWorkflowList(wfs);
         setAgentList(ags);
+        setSkillList(sks);
         setPluginList(plugs);
       } catch { /* silent */ }
     })();
@@ -482,14 +500,30 @@ export default function Page() {
   // ===== M3：Agent CRUD handlers =====
   const onSaveAgent = useCallback(async (draft: AgentDraft) => {
     const isEdit = !!agentEditor.initial;
+    // 解構排除 skill_ids（agent 主體 CRUD 不收 skills）；綁定走獨立的 setAgentSkills。
+    const { skill_ids, ...agentBody } = draft;
     if (isEdit) {
-      await updateAgent(draft.agent_id, draft);
+      await updateAgent(draft.agent_id, agentBody);
     } else {
-      await createAgent(draft);
+      await createAgent(agentBody);
     }
+    // agent_id 由表單指定（非後端產生），此時 row 已存在 → 安全綁定
+    await setAgentSkills(draft.agent_id, skill_ids);
     setAgentEditor({ open: false, initial: null });
     await refreshAgents();
   }, [agentEditor.initial, refreshAgents]);
+
+  const onSaveSkill = useCallback(async (draft: SkillDraft) => {
+    const isEdit = !!skillEditor.initial;
+    if (isEdit) {
+      await updateSkill(draft.skill_id, draft);
+    } else {
+      await createSkill(draft);
+    }
+    setSkillEditor({ open: false, initial: null });
+    await refreshSkills();
+    await refreshAgents();   // 綁了此 skill 的 agent 卡片 name 可能變
+  }, [skillEditor.initial, refreshSkills, refreshAgents]);
 
   const onDeleteConfirmed = useCallback(async () => {
     if (!deleteConfirm) return;
@@ -498,6 +532,10 @@ export default function Page() {
       if (deleteConfirm.kind === "workflow") {
         await deleteWorkflowApi(deleteConfirm.id);
         await refreshWorkflows();
+      } else if (deleteConfirm.kind === "skill") {
+        await deleteSkillApi(deleteConfirm.id);
+        await refreshSkills();
+        await refreshAgents();   // 綁定被連帶清除 → 重抓 agent
       } else {
         await deleteAgentApi(deleteConfirm.id);
         await refreshAgents();
@@ -507,7 +545,7 @@ export default function Page() {
     } finally {
       setDeleteConfirm(null);
     }
-  }, [deleteConfirm, refreshWorkflows, refreshAgents]);
+  }, [deleteConfirm, refreshWorkflows, refreshAgents, refreshSkills]);
 
   // ===== Thread CRUD callbacks（打開 modal；submit 才呼 API）=====
   const onNewThread = useCallback(() => setProjectModal({ open: true, thread: null }), []);
@@ -995,6 +1033,14 @@ export default function Page() {
                 onDelete={(a) => setDeleteConfirm({ kind: "agent", id: a.agent_id, name: a.name })}
               />
             )}
+            {nav === "skills" && (
+              <SkillsView
+                skills={skillList}
+                onNew={() => setSkillEditor({ open: true, initial: null })}
+                onEdit={(s) => setSkillEditor({ open: true, initial: s })}
+                onDelete={(s) => setDeleteConfirm({ kind: "skill", id: s.skill_id, name: s.name })}
+              />
+            )}
             {nav === "plugins"   && <PluginsView plugins={pluginList} onToggle={onTogglePlugin} />}
             {/* BuildSeal 只在無 ChatPanel 的 view 顯示，避免跟 footer 的「↵ send · ⌘↵ refine」overlap */}
             <BuildSeal visible={nav !== "workspace"} />
@@ -1076,15 +1122,28 @@ export default function Page() {
       <AgentEditorModal
         open={agentEditor.open}
         initial={agentEditor.initial}
+        allSkills={skillList}
         onSubmit={onSaveAgent}
         onCancel={() => setAgentEditor({ open: false, initial: null })}
+      />
+
+      {/* Skill editor modal（new / edit user skill）*/}
+      <SkillEditorModal
+        open={skillEditor.open}
+        initial={skillEditor.initial}
+        onSubmit={onSaveSkill}
+        onCancel={() => setSkillEditor({ open: false, initial: null })}
       />
 
       {/* M3：刪除 workflow / agent 確認 */}
       <ConfirmDialog
         open={deleteConfirm !== null}
         destructive
-        title={deleteConfirm?.kind === "workflow" ? "刪除 workflow？" : "刪除 agent？"}
+        title={
+          deleteConfirm?.kind === "workflow" ? "刪除 workflow？"
+            : deleteConfirm?.kind === "skill" ? "刪除 skill？"
+              : "刪除 agent？"
+        }
         subtitle="此動作無法復原"
         message={
           deleteConfirm ? (
@@ -3674,6 +3733,18 @@ function AgentCard({ agent, onEdit, onDelete }: {
           </div>
         </div>
       )}
+      {agent.skills && agent.skills.length > 0 && (
+        <div className="mb-3">
+          <SectionLabel>SKILLS</SectionLabel>
+          <div className="flex flex-wrap gap-1.5">
+            {agent.skills.map((s) => (
+              <span key={s.skill_id} className="border border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]">
+                {s.name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="mt-auto flex items-center justify-between border-t border-[var(--rule-dark)] pt-3">
         <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
           source · {agent.source}
@@ -3682,6 +3753,85 @@ function AgentCard({ agent, onEdit, onDelete }: {
           <ToolBtn onClick={onEdit}>編輯</ToolBtn>
           {isUser && <ToolBtn onClick={onDelete}>刪除</ToolBtn>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================== Skills view ==============================
+function SkillsView({ skills, onNew, onEdit, onDelete }: {
+  skills: Skill[];
+  onNew: () => void;
+  onEdit: (s: Skill) => void;
+  onDelete: (s: Skill) => void;
+}) {
+  return (
+    <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
+      <ViewHeader title="Skills" sub="可組合、可注入 prompt 的技能片段 · 綁到 agent 生效" right={
+        <button
+          onClick={onNew}
+          className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)]"
+        >
+          ＋ new skill
+        </button>
+      } />
+      <div className="min-h-0 flex-1 overflow-y-auto p-8">
+        {skills.length === 0 ? (
+          <div className="border border-dashed border-[var(--rule-dark)] py-12 text-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            無 skills（按上方 ＋ new skill 新建）
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4">
+            {skills.map((s) => (
+              <SkillCard key={s.skill_id} skill={s} onEdit={() => onEdit(s)} onDelete={() => onDelete(s)} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SkillCard({ skill, onEdit, onDelete }: {
+  skill: Skill;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const initials = skill.name
+    .split(/\s+|[-_]/)
+    .filter(Boolean)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .slice(0, 2)
+    .join("") || skill.skill_id[0]?.toUpperCase();
+  return (
+    <div className="flex flex-col border border-[var(--rule-dark)] bg-[var(--bg-elev)]/40 p-5">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="grid h-9 w-9 place-items-center border border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_10%,transparent)] font-[family-name:var(--font-display)] text-[14px] font-bold text-[var(--polaris)]">
+            {initials}
+          </span>
+          <div className="leading-tight">
+            <div className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">{skill.name}</div>
+            <code className="mt-1 inline-block font-[family-name:var(--font-mono)] text-[10px] tracking-wider text-[var(--ink-muted)]">{skill.skill_id}</code>
+          </div>
+        </div>
+        <Pill color="muted">v{skill.version}</Pill>
+      </div>
+      {skill.description && (
+        <div className="mb-3">
+          <SectionLabel>DESCRIPTION</SectionLabel>
+          <div className="line-clamp-2 font-[family-name:var(--font-sans)] text-[12px] leading-5 text-[#cdd4df]">{skill.description}</div>
+        </div>
+      )}
+      <div className="mb-3">
+        <SectionLabel>BODY（注入 prompt）</SectionLabel>
+        <div className="line-clamp-3 font-[family-name:var(--font-mono)] text-[12px] leading-5 text-[#cdd4df]">
+          {skill.body || <span className="text-[var(--ink-muted)]">（未設定）</span>}
+        </div>
+      </div>
+      <div className="mt-auto flex items-center justify-end gap-2 border-t border-[var(--rule-dark)] pt-3">
+        <ToolBtn onClick={onEdit}>編輯</ToolBtn>
+        <ToolBtn onClick={onDelete}>刪除</ToolBtn>
       </div>
     </div>
   );
