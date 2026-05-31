@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { API_BASE, type Agent } from "@/lib/api";
+import { API_BASE, type Agent, type Skill } from "@/lib/api";
 
 const ROLE_OPTIONS = ["prd", "architecture", "stories", "implement", "custom"] as const;
 
@@ -19,13 +19,15 @@ export type AgentDraft = {
   max_iterations: number;
   enabled: boolean;
   tools: string[];
+  skill_ids: string[];          // 有序；綁定走獨立的 setAgentSkills（見 page.tsx onSaveAgent）
 };
 
 export function AgentEditorModal({
-  open, initial, onSubmit, onCancel,
+  open, initial, allSkills, onSubmit, onCancel,
 }: {
   open: boolean;
   initial: Agent | null;          // null = 新建
+  allSkills: Skill[];             // 供綁定選擇器顯示 name（由 page 傳 skillList）
   onSubmit: (draft: AgentDraft) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -63,6 +65,7 @@ export function AgentEditorModal({
         max_iterations: initial.max_iterations,
         enabled: initial.enabled,
         tools: [...initial.tools],
+        skill_ids: initial.skills?.map((s) => s.skill_id) ?? [],
       });
     } else {
       setDraft(emptyDraft());
@@ -88,6 +91,17 @@ export function AgentEditorModal({
 
   const isEdit = !!initial;
   const idLocked = isEdit;          // 編輯不能改 id
+
+  const moveSkill = (idx: number, dir: -1 | 1) => {
+    const next = [...draft.skill_ids];
+    const j = idx + dir;
+    if (j < 0 || j >= next.length) return;
+    [next[idx], next[j]] = [next[j], next[idx]];
+    setDraft({ ...draft, skill_ids: next });
+  };
+  const removeSkill = (idx: number) => {
+    setDraft({ ...draft, skill_ids: draft.skill_ids.filter((_, i) => i !== idx) });
+  };
 
   const save = async () => {
     setError(null);
@@ -269,6 +283,33 @@ export function AgentEditorModal({
             </div>
           </Field>
 
+          {/* skills 綁定（有序：注入 prompt 的順序）*/}
+          <Field label="skills（注入 prompt 的技能，順序＝注入順序）">
+            <div className="space-y-1.5">
+              {draft.skill_ids.map((sid, i) => {
+                const sk = allSkills.find((s) => s.skill_id === sid);
+                return (
+                  <div key={sid} className="flex items-center gap-2 border border-[var(--rule-dark)] bg-[var(--bg)] px-2 py-1">
+                    <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">{String(i + 1).padStart(2, "0")}</span>
+                    <span className="flex-1 truncate font-[family-name:var(--font-mono)] text-[11px] text-[#e6ecf5]">
+                      {sk ? sk.name : <span className="text-[var(--ink-muted)]">{sid}（已刪除）</span>}
+                    </span>
+                    <button type="button" onClick={() => moveSkill(i, -1)} disabled={i === 0}
+                      className="px-1 text-[var(--ink-muted)] transition hover:text-[var(--polaris)] disabled:opacity-30">↑</button>
+                    <button type="button" onClick={() => moveSkill(i, 1)} disabled={i === draft.skill_ids.length - 1}
+                      className="px-1 text-[var(--ink-muted)] transition hover:text-[var(--polaris)] disabled:opacity-30">↓</button>
+                    <button type="button" onClick={() => removeSkill(i)}
+                      className="px-1 text-[var(--ink-muted)] transition hover:text-[#f47171]">×</button>
+                  </div>
+                );
+              })}
+              <SkillPicker
+                choices={allSkills.filter((s) => !draft.skill_ids.includes(s.skill_id))}
+                onPick={(sid) => setDraft({ ...draft, skill_ids: [...draft.skill_ids, sid] })}
+              />
+            </div>
+          </Field>
+
           <label className="flex items-center gap-2.5 cursor-pointer">
             <input
               type="checkbox"
@@ -312,6 +353,7 @@ function emptyDraft(): AgentDraft {
     max_iterations: 1,
     enabled: true,
     tools: [],
+    skill_ids: [],
   };
 }
 
@@ -330,6 +372,52 @@ function Field({ label, required, children }: {
         {required && <span className="ml-1 text-[#f47171]">*</span>}
       </label>
       {children}
+    </div>
+  );
+}
+
+// skill 綁定選擇器（dropdown；過濾已綁、click-outside 關閉）
+function SkillPicker({ choices, onPick }: {
+  choices: Skill[];
+  onPick: (skillId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full border border-dashed border-[var(--rule-dark)] px-2 py-1 text-left font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
+      >
+        ＋ 綁定 skill
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto border border-[var(--rule-dark)] bg-[var(--paper)] shadow-anvil">
+          {choices.length === 0 ? (
+            <div className="px-3 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
+              無可綁定 skill（先到 SKILLS 分頁新建）
+            </div>
+          ) : choices.map((s) => (
+            <button
+              key={s.skill_id}
+              type="button"
+              onClick={() => { onPick(s.skill_id); setOpen(false); }}
+              className="block w-full px-3 py-2 text-left font-[family-name:var(--font-mono)] text-[11px] text-[#e6ecf5] transition hover:bg-[var(--bg-elev)]"
+            >
+              {s.name} <span className="text-[var(--ink-muted)]">· {s.skill_id}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

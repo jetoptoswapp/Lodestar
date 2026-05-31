@@ -33,6 +33,14 @@ export type Workflow = {
   created_at: number | null;
 };
 
+export type Skill = {
+  skill_id: string;
+  name: string;
+  description: string;
+  body: string;
+  version: string;
+};
+
 export type Agent = {
   agent_id: string;
   name: string;
@@ -42,6 +50,7 @@ export type Agent = {
   max_iterations: number;
   enabled: boolean;
   tools: string[];
+  skills: Skill[];
   source: "builtin" | "user";
   created_at: number | null;
   updated_at: number | null;
@@ -124,14 +133,15 @@ export async function fetchAgents(): Promise<Agent[]> {
   return r.agents;
 }
 
-export async function createAgent(agent: Omit<Agent, "source" | "created_at" | "updated_at">): Promise<Agent> {
+// 注意：agent 主體 CRUD 不收 skills（綁定走獨立的 setAgentSkills）；故參數額外 Omit "skills"。
+export async function createAgent(agent: Omit<Agent, "source" | "created_at" | "updated_at" | "skills">): Promise<Agent> {
   return apiCall<Agent>("/api/agents", {
     method: "POST",
     body: JSON.stringify(agent),
   });
 }
 
-export async function updateAgent(id: string, agent: Omit<Agent, "source" | "created_at" | "updated_at">): Promise<Agent> {
+export async function updateAgent(id: string, agent: Omit<Agent, "source" | "created_at" | "updated_at" | "skills">): Promise<Agent> {
   return apiCall<Agent>(`/api/agents/${id}`, {
     method: "PUT",
     body: JSON.stringify(agent),
@@ -140,6 +150,40 @@ export async function updateAgent(id: string, agent: Omit<Agent, "source" | "cre
 
 export async function deleteAgentApi(id: string): Promise<void> {
   await apiCall(`/api/agents/${id}`, { method: "DELETE" });
+}
+
+// ============================================================
+//  Skills CRUD + agent 綁定
+// ============================================================
+export async function fetchSkills(): Promise<Skill[]> {
+  const r = await apiCall<{ skills: Skill[] }>("/api/skills");
+  return r.skills;
+}
+
+export async function createSkill(skill: Skill): Promise<Skill> {
+  return apiCall<Skill>("/api/skills", {
+    method: "POST",
+    body: JSON.stringify(skill),
+  });
+}
+
+export async function updateSkill(id: string, skill: Skill): Promise<Skill> {
+  return apiCall<Skill>(`/api/skills/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(skill),
+  });
+}
+
+export async function deleteSkillApi(id: string): Promise<void> {
+  await apiCall(`/api/skills/${id}`, { method: "DELETE" });
+}
+
+// 整批覆寫 agent 的 skill 綁定（陣列順序 = sort_order）；回傳 embed 過 skills 的 agent
+export async function setAgentSkills(agentId: string, skillIds: string[]): Promise<Agent> {
+  return apiCall<Agent>(`/api/agents/${agentId}/skills`, {
+    method: "PUT",
+    body: JSON.stringify({ skill_ids: skillIds }),
+  });
 }
 
 // ============================================================
