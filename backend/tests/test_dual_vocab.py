@@ -55,14 +55,16 @@ def test_dual_vocab_constants(tmp_db):
 
 
 def test_builtin_agents_seed_loaded(tmp_db):
-    """builtin_agents plugin 應該載入並 seed 三個 agent，role 對齊 stage id。"""
+    """builtin_agents plugin 應該載入並 seed 三個 lead agent，role 對齊 stage id。"""
     reg = L.load_all()
     by_role = {a.role: a for a in reg.agents.values()}
     assert {"prd", "architecture", "stories"} <= set(by_role)
     for role in ("prd", "architecture", "stories"):
         agent = by_role[role]
         assert agent.enabled is True
-        assert agent.system_prompt.strip()
+        # lead 的 system_prompt 留空 → 單流程用 stage 內建 default persona（見 *_stage.py）；
+        # 使用者在 /agents 填入後才覆寫。
+        assert agent.system_prompt == ""
         assert agent.model_choice == "claude-cli"
 
 
@@ -71,3 +73,22 @@ def test_default_workflow_is_three_stage(tmp_db):
     reg = L.load_all()
     wf = reg.workflows["default"]
     assert wf.stages == ("prd", "architecture", "stories")
+
+
+def test_default_agent_role_resolves_unique_lead(tmp_db):
+    """core stage 的 default_agent_role 必須解析到唯一 lead seed。
+
+    同時鎖死三件事：(1) default_agent_role 命名對齊 seed.role（防孤立值如舊的
+    "architect"/"pm"）；(2) 解析到唯一 lead；(3) PRD 的 peer（prd_peer）不再污染
+    lead 解析——若 peer 仍 role=="prd"，resolve_lead_agent 會因多命中回 None 而 fail。
+    """
+    from agent_resolver import resolve_lead_agent
+    reg = L.load_all()
+    expected_lead = {"prd": "seed_prd", "architecture": "seed_architect", "stories": "seed_pm"}
+    for sid, agent_id in expected_lead.items():
+        spec = reg.stages[sid]
+        lead = resolve_lead_agent(reg, sid, default_agent_role=spec.default_agent_role)
+        assert lead is not None and lead.agent_id == agent_id, (
+            f"stage '{sid}'（default_agent_role='{spec.default_agent_role}'）"
+            f"應解析到唯一 lead '{agent_id}'，實際 {lead and lead.agent_id}"
+        )
