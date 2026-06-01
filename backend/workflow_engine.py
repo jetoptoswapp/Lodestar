@@ -218,6 +218,10 @@ class WorkflowEngine:
         if op in ("chat", "refine", "generate"):
             msgs = dal.list_messages(thread_id, stage_id, limit=50)
             conv = tuple((m["role"], m["content"]) for m in msgs)
+        # chat 的當前 user_input 必須讓 handler 看到：DB append 在下方 chat 分支（handler 之後），
+        # 故先把它併進 in-memory conv —— 否則第一次 chat 時 handler 收到空對話，SA 會誤回「沒收到需求」。
+        if op == "chat" and user_input:
+            conv = conv + (("user", user_input),)
 
         # 4. 附件（M1.1 inline / M1.3 path-passing 並存）
         #    - 注入 abs_path：plugin 不必碰 dal / FS 也能告訴 model 去 Read。

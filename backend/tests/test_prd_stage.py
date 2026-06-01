@@ -80,3 +80,31 @@ def test_validator_chinese_prd_passes():
 - `NFR-1`: PCI-DSS L1
 """
     assert _prd_structural_validator(prd, _ctx()) == []
+
+
+# ============ dispatch chat：當前 user_input 必須進 model prompt（回歸）============
+def test_prd_chat_first_message_reaches_model(tmp_db):
+    """回歸：第一次 chat 的 user_input 必須出現在送給 model 的 prompt 裡。
+
+    bug：dispatch 原本在 handler 之後才 append user_input，導致 handler 收到空對話，
+    SA 誤回「目前還沒收到任何需求」。修法：chat 時先把 user_input 併進 in-memory conv。
+    """
+    import plugin_loader as L
+    from persistence import dal
+    from plugin_api import ModelAdapter
+    from workflow_engine import WorkflowEngine
+
+    reg = L.load_all()
+    captured: list[str] = []
+    reg.model_adapters["claude-cli"] = ModelAdapter(
+        model_choice="claude-cli",
+        invoke=lambda p: (captured.append(p) or "我來釐清幾個問題。"),
+        is_available=lambda: True, description="", max_context_tokens=100000,
+        prompt_budget_tokens=90000, response_budget_tokens=2000)
+    dal.create_project("t1", "proj")
+    out = WorkflowEngine(reg).dispatch(
+        thread_id="t1", stage_id="prd", op="chat",
+        user_input="一個用本地滑鼠鍵盤控制遠端電腦的工具，wifi 連線")
+    assert out["error_code"] == ""
+    assert captured, "model 未被呼叫"
+    assert "本地滑鼠鍵盤控制遠端電腦" in captured[-1]   # 當前需求確實進了 prompt
