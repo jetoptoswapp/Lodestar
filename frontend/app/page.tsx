@@ -957,7 +957,9 @@ export default function Page() {
             />
           )}
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-            {nav === "workspace" && (isRcaThread && thread ? (
+            {/* workspace 切頁籤時不卸載、只用 CSS 隱藏 —— 保住 ChatPanel 的本地 state（草稿、進行中對話、問卷選項） */}
+            <div className={nav === "workspace" ? "contents" : "hidden"}>
+              {isRcaThread && thread ? (
               <RcaWorkspace
                 thread={thread}
                 workflowId={currentProjectWorkflowId}
@@ -1039,7 +1041,8 @@ export default function Page() {
                   )}
                 </div>
               </>
-            ))}
+              )}
+            </div>
             {nav === "workflows" && (
               <WorkflowsView
                 workflows={workflowList}
