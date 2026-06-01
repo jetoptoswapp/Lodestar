@@ -360,7 +360,13 @@ def _role_prompt(role: str, *, story: str, plan: str, feedback: str, attempt: in
     # reviewer
     return (
         f"{head} Review the implementation and tests for correctness, "
-        "security, and completeness. Finish your reply with EXACTLY one verdict line:\n"
+        "security, and completeness.\n"
+        "IMPORTANT — commit/PR is the host's job, not yours: after this review the host runs "
+        "`git add -A`, commits the ENTIRE working tree, and opens the PR. The tree is intentionally "
+        "uncommitted right now, so do NOT gate on git tracking/commit/staging state — e.g. files "
+        "showing as untracked in `git status`, or `git ls-files` being empty, are EXPECTED and will be "
+        "committed. Judge only the code/test content; assume all working-tree files ship in the PR.\n"
+        "Finish your reply with EXACTLY one verdict line:\n"
         "  REVIEW: APPROVED\n"
         "or\n"
         "  REVIEW: CHANGES_REQUESTED: <one-line reason>\n\n"
