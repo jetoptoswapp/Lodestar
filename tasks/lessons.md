@@ -80,3 +80,8 @@
 - **真因**：cycle-on-click 是隱藏 affordance——外觀像純標籤、不像控制項；且循環式要點多次才到目標 role，N 個選項時更糟。
 - **修法**：改成明確下拉選單（`BindingChip` 加 dotted underline + `▾` caret 暗示可點，展開列出該 stage 所有合法 role、當前打勾、點一下直接設定）。
 - **通則**：可改的值要長得像控制項（caret / underline / select 外觀），並讓選項一次可見；循環式切換只適合 2 值且有明顯提示。新增可互動元素時先問：「不靠 tooltip，使用者看得出這裡能點、能改成什麼嗎？」
+
+## 別在使用者 batch 進行中重啟後端 / 起第二個後端（會被 orphan-sweep 全掃成 failed）
+- **症狀**：使用者跑 44-story batch，跑到一半「突然 44 全失敗」，error 全是 `interrupted by server restart`。
+- **真因**：`interrupted by server restart` 只由 `impl_dal.fail_orphaned_running()` 設，而它只在**後端啟動時**（app.py lifespan）跑——把上次卡在 running/pending 的 implement session 全標 failed。我為了驗證在 port 8723 留了**第二個後端**，跟使用者 `start.sh`（開頭 `free_port 8723` 會殺佔 port 行程 + 啟動跑 orphan-sweep）相撞；任一後端(重)啟，進行中的整批就被掃光。
+- **修法/通則**：(1) **絕不**為了驗證在使用者已有後端的 port 上再起一個；要驗證就用使用者那台、或起在別的 port/DB。(2) implement batch 進行中**不要**重啟後端、不要重跑 start.sh、不要跑會 `pkill uvicorn` 的指令。(3) 起背景服務前先 `pgrep -f "uvicorn app:app"` 確認沒有既有實例。(4) batch 失敗先看 error_message：若是 `interrupted by server restart` → 不是 code/agent 問題，是後端被重啟，重跑即可。
