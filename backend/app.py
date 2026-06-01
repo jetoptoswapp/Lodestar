@@ -142,7 +142,7 @@ app = FastAPI(title="ai-tool-v3", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[f"http://localhost:{FRONTEND_PORT}", f"http://127.0.0.1:{FRONTEND_PORT}"],
+    allow_origins=[f"http://localhost:{FRONTEND_PORT}", f"http://0.0.0.0:{FRONTEND_PORT}"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
