@@ -1041,6 +1041,7 @@ export default function Page() {
                       thread={thread}
                       storiesArtifact={storiesArtifact}
                       storiesApproved={storiesStatus === "approved"}
+                      delivery={storiesDelivery}
                       onSetError={(m) => setErr(m)}
                     />
                   )}
@@ -2884,11 +2885,12 @@ function ImplAttemptChip({ run }: { run: ImplementRun }) {
 }
 
 function ImplementWorkspace({
-  thread, storiesArtifact, storiesApproved, onSetError,
+  thread, storiesArtifact, storiesApproved, delivery, onSetError,
 }: {
   thread: string | null;
   storiesArtifact: string;
   storiesApproved: boolean;
+  delivery: DeliveryStatus | null;
   onSetError: (m: string) => void;
 }) {
   const [runners, setRunners] = useState<RunnerInfo[]>([]);
@@ -2915,6 +2917,36 @@ function ImplementWorkspace({
       .catch(() => {/* 靜默；仍可手選 mock */});
     return () => { on = false; };
   }, []);
+
+  // 專案 delivery 設定的 repo（fallback：尚未發佈時也能帶入）
+  const [projectRepo, setProjectRepo] = useState<string>("");
+  useEffect(() => {
+    if (!thread) { setProjectRepo(""); return; }
+    let on = true;
+    apiFetch<{ repo_full_name: string; repo_owner: string }>(`/api/projects/${thread}`)
+      .then((p) => {
+        if (!on) return;
+        const full = (p.repo_full_name || "").trim();
+        const owner = (p.repo_owner || "").trim();
+        // owner/repo 直接用；只有名稱 + 有 owner → 組起來；其餘原樣（new 模式個人 repo 只有名稱）
+        setProjectRepo(full.includes("/") ? full : owner && full ? `${owner}/${full}` : full);
+      })
+      .catch(() => { if (on) setProjectRepo(""); });
+    return () => { on = false; };
+  }, [thread]);
+
+  // 自動帶入目標 repo：已發佈 repo（owner/repo）優先，否則用專案設定；只在使用者尚未手動填時帶
+  useEffect(() => {
+    const candidate = delivery?.repo || projectRepo;
+    if (candidate) setTargetRepo((cur) => cur || candidate);
+  }, [delivery?.repo, projectRepo]);
+
+  // 已發佈 issues 連結（GitHub/GitLab repo issues 頁）
+  const issuesUrl = delivery?.repo && /^[\w.-]+\/[\w.-]+$/.test(delivery.repo)
+    ? (delivery.target === "gitlab"
+        ? `https://gitlab.com/${delivery.repo}/-/issues`
+        : `https://github.com/${delivery.repo}/issues`)
+    : null;
 
   const status = session?.status ?? "idle";
   const polling = status === "running" || status === "pending";
@@ -3022,10 +3054,13 @@ function ImplementWorkspace({
                 </select>
               </label>
               <label className="flex min-w-[200px] flex-1 flex-col gap-1">
-                <ImplSmallLabel>target repo · owner/repo（mock）</ImplSmallLabel>
+                <ImplSmallLabel>target repo · owner/repo</ImplSmallLabel>
                 <input value={targetRepo} onChange={(e) => setTargetRepo(e.target.value)} disabled={polling}
-                  placeholder="SheldonChangL/lodestar"
+                  placeholder="owner/repo"
                   className={selStyle + " w-full"} />
+                <span className="font-[family-name:var(--font-mono)] text-[9px] leading-4 text-[var(--ink-muted)]">
+                  claude-cli 以專案發佈設定的 repo 為準；mock 用此欄位 dry-run。
+                </span>
               </label>
               <div className="ml-auto flex items-center gap-2">
                 {polling ? (
@@ -3038,6 +3073,19 @@ function ImplementWorkspace({
               </div>
             </div>
 
+            {delivery && (
+              <div className="flex flex-wrap items-center gap-2 border-b border-[var(--rule)] bg-[var(--bg-elev)]/30 px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[var(--ink-muted)]">
+                <span className="text-[var(--approved)]">✓ 已發佈 {delivery.created} 筆 issue</span>
+                <span>→</span>
+                {issuesUrl ? (
+                  <a href={issuesUrl} target="_blank" rel="noreferrer noopener" className="text-[var(--polaris)] hover:underline">
+                    {delivery.repo}/issues
+                  </a>
+                ) : (
+                  <span className="text-[#cdd4df]">{delivery.repo || delivery.target}</span>
+                )}
+              </div>
+            )}
             {session?.pr_url ? <ImplPrBanner url={session.pr_url} /> : null}
             {status === "failed" && session?.error_message ? <ImplFailBanner msg={session.error_message} /> : null}
 
