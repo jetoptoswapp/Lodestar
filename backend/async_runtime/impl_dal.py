@@ -13,12 +13,16 @@ from persistence.dal import connect
 # ---- impl_sessions ----------------------------------------------------------
 
 def create_session(*, thread_id: str, title: str, target_repo: str,
-                    runner: str, stage: str = "implement") -> int:
+                   runner: str, stage: str = "implement",
+                   batch_id: Optional[int] = None,
+                   issue_number: Optional[int] = None,
+                   story_key: str = "") -> int:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO impl_sessions (thread_id, stage, title, target_repo, runner, status) "
-            "VALUES (?, ?, ?, ?, ?, 'pending')",
-            (thread_id, stage, title, target_repo, runner),
+            "INSERT INTO impl_sessions "
+            "(thread_id, stage, title, target_repo, runner, status, batch_id, issue_number, story_key) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            (thread_id, stage, title, target_repo, runner, batch_id, issue_number, story_key),
         )
         return int(cur.lastrowid)
 
@@ -39,14 +43,19 @@ def update_session(session_id: int, *, status: Optional[str] = None,
 
 
 def fail_orphaned_running() -> int:
-    """啟動恢復：把孤兒 session（running/pending —— 進程重啟後 asyncio task 已隨之消失）
-    標為 failed。awaiting_approval 不動（worktree 仍在磁碟、可由使用者 approve）。回受影響筆數。"""
+    """啟動恢復：把孤兒 session/batch（running/pending —— 進程重啟後 asyncio task 已隨之消失）
+    標為 failed。awaiting_approval 不動（worktree 仍在磁碟、可由使用者 approve）。回受影響 session 筆數。"""
     with connect() as conn:
         cur = conn.execute(
             "UPDATE impl_sessions SET status='failed', "
             "error_message='interrupted by server restart', "
             "updated_at=strftime('%s','now') "
             "WHERE status IN ('running', 'pending')")
+        conn.execute(
+            "UPDATE impl_batches SET status='failed', "
+            "error_message='interrupted by server restart', "
+            "updated_at=strftime('%s','now') "
+            "WHERE status='running'")
         return cur.rowcount
 
 
@@ -62,6 +71,72 @@ def list_sessions(thread_id: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT * FROM impl_sessions WHERE thread_id = ? ORDER BY created_at DESC",
+            (thread_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def has_active_for_thread(thread_id: str) -> bool:
+    """該專案是否已有實作在跑（running/pending session 或 running batch）。
+
+    一個專案共用一份 working copy，故同時只允許一個實作 → 用此擋並行（avoid checkout 打架）。"""
+    with connect() as conn:
+        s = conn.execute(
+            "SELECT 1 FROM impl_sessions WHERE thread_id = ? AND status IN ('running','pending') LIMIT 1",
+            (thread_id,)).fetchone()
+        if s:
+            return True
+        b = conn.execute(
+            "SELECT 1 FROM impl_batches WHERE thread_id = ? AND status = 'running' LIMIT 1",
+            (thread_id,)).fetchone()
+        return b is not None
+
+
+def list_sessions_by_batch(batch_id: int) -> list[dict]:
+    """取某 batch 下的 session，依 session_id（＝建立＝story 編號）排序。"""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM impl_sessions WHERE batch_id = ? ORDER BY session_id",
+            (batch_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---- impl_batches -----------------------------------------------------------
+
+def create_batch(*, thread_id: str, target_repo: str, runner: str,
+                 mode: str, total: int, stop_on_failure: bool = False) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO impl_batches (thread_id, target_repo, runner, mode, total, status, stop_on_failure) "
+            "VALUES (?, ?, ?, ?, ?, 'running', ?)",
+            (thread_id, target_repo, runner, mode, total, 1 if stop_on_failure else 0),
+        )
+        return int(cur.lastrowid)
+
+
+def update_batch(batch_id: int, *, status: Optional[str] = None,
+                 error_message: Optional[str] = None) -> None:
+    sets, params = ["updated_at = strftime('%s','now')"], []
+    if status is not None:
+        sets.append("status = ?"); params.append(status)
+    if error_message is not None:
+        sets.append("error_message = ?"); params.append(error_message)
+    params.append(batch_id)
+    with connect() as conn:
+        conn.execute(f"UPDATE impl_batches SET {', '.join(sets)} WHERE batch_id = ?", params)
+
+
+def get_batch(batch_id: int) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM impl_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_batches(thread_id: str) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM impl_batches WHERE thread_id = ? ORDER BY created_at DESC",
             (thread_id,),
         ).fetchall()
         return [dict(r) for r in rows]

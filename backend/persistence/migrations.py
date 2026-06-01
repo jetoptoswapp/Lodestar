@@ -22,16 +22,24 @@ _ADD_COLUMNS = [
     ("projects", "repo_owner", "TEXT NOT NULL DEFAULT ''"),
     ("projects", "repo_visibility", "TEXT NOT NULL DEFAULT 'private'"),
     ("projects", "repo_created", "INTEGER NOT NULL DEFAULT 0"),
+    # batch orchestration（逐 issue 依序實作）：既有 DB 升級。新 DB 由 schema.sql 建好。
+    ("impl_sessions", "batch_id", "INTEGER"),
+    ("impl_sessions", "issue_number", "INTEGER"),
+    ("impl_sessions", "story_key", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
 def migrate() -> None:
-    """建立 / 升級 schema。啟動時與測試 setup 都呼叫它。"""
+    """建立 / 升級 schema。啟動時與測試 setup 都呼叫它。
+
+    先 ALTER 既有表補欄，再 executescript：因 schema.sql 的 CREATE INDEX 可能引用新欄，
+    既有 DB 必須先把欄位加上去，索引才建得起來。新 DB 的 ALTER 因表尚未存在而略過，
+    隨後 executescript 以 schema.sql 建好含新欄的表。"""
     sql = _SCHEMA.read_text(encoding="utf-8")
     with connect() as conn:
-        conn.executescript(sql)
         for table, col, decl in _ADD_COLUMNS:
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
-                pass  # 欄位已存在（新 DB 由 schema.sql 建好）
+                pass  # 欄位已存在，或新 DB 表尚未建（由下方 schema.sql 建好）
+        conn.executescript(sql)

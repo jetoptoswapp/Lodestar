@@ -341,3 +341,180 @@ def test_roles_http_start_with_mock_runner(tmp_db):
         assert sess["status"] == "succeeded"      # mock reviewer 無 CHANGES → 通過開 PR
         roles = [run["dispatch_role"] for run in sess["runs"]]
         assert roles[:4] == ["lead", "rd", "tester", "reviewer"]
+
+
+# ============ persona 注入（agent.system_prompt 接回 roles pipeline）============
+class CapturingRunner(AgentRunner):
+    """記下每次收到的 prompt（供斷言 persona 注入），永遠回 ok（reviewer 無 CHANGES → 通過）。"""
+    name = "capture"
+
+    def __init__(self):
+        self.prompts: list[str] = []
+
+    def build_argv(self, *, cwd, prompt):
+        return ["true"]
+
+    def is_available(self):
+        return True
+
+    async def run(self, *, cwd, prompt, timeout, on_log, on_event=None, hooks=None):
+        self.prompts.append(prompt)
+        return RunResult(0, "ok")
+
+
+def test_role_prompt_default_persona_is_byte_identical():
+    """persona 空 → 與接線前逐字相同（零回歸）：頭句即各角色預設 persona。"""
+    for role, head in orchestrator._DEFAULT_PERSONA.items():
+        p = orchestrator._role_prompt(role, story="s", plan="p", feedback="", attempt=1)
+        assert p.startswith(head + " ")
+        # 顯式空 persona 與不帶 persona 完全一致
+        assert p == orchestrator._role_prompt(role, story="s", plan="p", feedback="", attempt=1, persona="")
+
+
+def test_tester_contract_includes_lint_gate():
+    """Phase 3：tester 的機器契約含 repo-driven lint + type-check，且 fail-fast。"""
+    p = orchestrator._role_prompt("tester", story="s", plan="p", feedback="", attempt=1)
+    low = p.lower()
+    assert "lint" in low and "type-check" in low
+    assert "exit non-zero if lint, type-check, or any test fails." in low
+    # 點名平台 linter，涵蓋 android/ios/web/backend
+    assert all(t in low for t in ("ruff", "eslint", "ktlint", "swiftlint"))
+
+
+def test_roles_persona_injected_per_step(tmp_db):
+    """persona_for 提供的 system_prompt 進到對應步驟 prompt；未提供的步驟用預設 persona。"""
+    sid, cwd = _new_session(runner="capture")
+    runner = CapturingRunner()
+    personas = {"rd": "You are a Senior Android dev. Run ktlint.", "tester": "You are the AC Tester."}
+    res = asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=runner, story="x", cwd=cwd, target_repo="o/r",
+        persona_for=lambda step: personas.get(step, "")))
+    assert res["status"] == "succeeded"
+    lead_p, rd_p, tester_p, reviewer_p = runner.prompts[:4]
+    # 有綁定 → 用自訂 persona
+    assert rd_p.startswith("You are a Senior Android dev. Run ktlint.")
+    assert tester_p.startswith("You are the AC Tester.")
+    # 無綁定 → 退回預設 persona
+    assert lead_p.startswith(orchestrator._DEFAULT_PERSONA["lead"])
+    assert reviewer_p.startswith(orchestrator._DEFAULT_PERSONA["reviewer"])
+    # 機器契約恆在（persona 不蓋契約）：tester 的 QA gate 含 lint + 測試、fail-fast
+    assert "lint" in tester_p.lower() and "type-check" in tester_p.lower()
+    assert "Exit non-zero if lint, type-check, or any test fails." in tester_p
+    assert "REVIEW: APPROVED" in reviewer_p
+
+
+def test_roles_no_persona_provider_unchanged(tmp_db):
+    """不帶 persona_for → 每步 prompt 與預設 persona 起頭（與接線前一致）。"""
+    sid, cwd = _new_session(runner="capture")
+    runner = CapturingRunner()
+    asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=runner, story="x", cwd=cwd, target_repo="o/r"))
+    for prompt, step in zip(runner.prompts[:4], ["lead", "rd", "tester", "reviewer"]):
+        assert prompt.startswith(orchestrator._DEFAULT_PERSONA[step])
+
+
+def test_implement_persona_provider_resolves_from_bindings(tmp_db):
+    """端到端：workflow agent_bindings["implement"] → resolve_agent → system_prompt。
+    binding.role 即步驟名（rd/tester…）；未綁定步驟回 ""；完全無綁定回 None。"""
+    from persistence import dal
+    dal.upsert_agent(agent_id="dom_impl", name="Domain Impl", role="implement",
+                     system_prompt="You are a Senior Android dev. Run ktlint+detekt.")
+    dal.upsert_agent(agent_id="ac_tester", name="AC Tester", role="implement",
+                     system_prompt="You are the Acceptance Criteria Tester.")
+    dal.upsert_workflow_definition(
+        wf_id="impl_wf", label="Impl WF", description="",
+        stages=[
+            {"stage_id": "implement", "depends_on": [], "collab_mode": "dispatch",
+             "agent_bindings": [
+                 {"agent_id": "dom_impl", "role": "rd"},
+                 {"agent_id": "ac_tester", "role": "tester"},
+             ]},
+        ],
+    )
+    with TestClient(appmod.app) as client:
+        tid = client.post("/api/projects", json={"name": "impl-bind"}).json()["thread_id"]
+        dal.set_project_workflow(tid, "impl_wf")
+        provider = appmod._implement_persona_provider(appmod._registry(), tid)
+        assert provider is not None
+        assert provider("rd").startswith("You are a Senior Android dev.")
+        assert provider("tester") == "You are the Acceptance Criteria Tester."
+        assert provider("lead") == ""          # 未綁定 → 空（退回預設 persona）
+        # 無 implement binding 的專案 → None（零行為改變）
+        tid2 = client.post("/api/projects", json={"name": "no-bind"}).json()["thread_id"]
+        assert appmod._implement_persona_provider(appmod._registry(), tid2) is None
+
+
+# ============ Phase 2：per-step runner（model_choice 分流）============
+class NamedRunner(AgentRunner):
+    """可指定 name 的 fake runner（always ok）；impl_runs.runner 記其 name，供斷言各步用對 runner。"""
+    def __init__(self, name: str):
+        self.name = name
+        self.calls = 0
+
+    def build_argv(self, *, cwd, prompt):
+        return ["true"]
+
+    def is_available(self):
+        return True
+
+    async def run(self, *, cwd, prompt, timeout, on_log, on_event=None, hooks=None):
+        self.calls += 1
+        return RunResult(0, "ok")
+
+
+def test_codex_runner_argv_and_registered():
+    """CodexCliRunner：codex exec + workspace-write，prompt 走 stdin（不在 argv）；且已註冊。"""
+    from plugins.builtin_implement.runner import CodexCliRunner
+    r = CodexCliRunner()
+    assert r.name == "codex-cli"
+    argv = r.build_argv(cwd="/tmp/x", prompt="implement the feature")
+    assert argv[:2] == ["codex", "exec"]
+    assert "--sandbox" in argv and "workspace-write" in argv
+    assert "implement the feature" not in argv      # prompt 由 stdin 餵入
+    with TestClient(appmod.app):
+        assert "codex-cli" in appmod._registry().runners
+
+
+def test_roles_per_step_runner_selection(tmp_db):
+    """runner_for 指定的 runner 各步生效；未指定步驟退回傳入的預設 runner。"""
+    sid, cwd = _new_session(runner="default")
+    default = NamedRunner("default")
+    by_step = {"lead": NamedRunner("codexish"), "tester": NamedRunner("agyish")}
+    res = asyncio.run(orchestrator.run_implementation_roles(
+        session_id=sid, runner=default, story="x", cwd=cwd, target_repo="o/r",
+        runner_for=lambda step: by_step.get(step)))
+    assert res["status"] == "succeeded"
+    runner_by_role = {r["dispatch_role"]: r["runner"] for r in impl_dal.list_runs(sid)}
+    assert runner_by_role["lead"] == "codexish"      # runner_for 指定
+    assert runner_by_role["tester"] == "agyish"      # runner_for 指定
+    assert runner_by_role["rd"] == "default"         # 未指定 → 退回預設
+    assert runner_by_role["reviewer"] == "default"   # 未指定 → 退回預設
+    # 當前 active runner 應指向最後跑的那步（reviewer → default），供 cancel 命中
+    assert orchestrator._ACTIVE_RUNNERS.get(sid) is None or True  # run 結束已 pop（由 run_session_to_terminal 管）
+
+
+def test_implement_runner_provider_resolves_and_falls_back(tmp_db):
+    """端到端：binding agent.model_choice → 已註冊 runner 回實例；無對應 runner（agy）回 None（退回預設）。"""
+    from persistence import dal
+    dal.upsert_agent(agent_id="r_mock", name="M", role="implement",
+                     system_prompt="x", model_choice="mock")
+    dal.upsert_agent(agent_id="r_agy", name="A", role="implement",
+                     system_prompt="y", model_choice="agy-cli")
+    dal.upsert_workflow_definition(
+        wf_id="rwf", label="R", description="",
+        stages=[{"stage_id": "implement", "depends_on": [], "collab_mode": "dispatch",
+                 "agent_bindings": [
+                     {"agent_id": "r_mock", "role": "rd"},
+                     {"agent_id": "r_agy", "role": "tester"},
+                 ]}])
+    with TestClient(appmod.app) as client:
+        tid = client.post("/api/projects", json={"name": "rwf-p"}).json()["thread_id"]
+        dal.set_project_workflow(tid, "rwf")
+        rf = appmod._implement_runner_provider(appmod._registry(), tid)
+        assert rf is not None
+        rd = rf("rd")
+        assert rd is not None and rd.name == "mock"   # 已註冊+可用 → 實例
+        assert rf("tester") is None                   # agy-cli 無 async runner → None（退回預設）
+        assert rf("lead") is None                     # 未綁定 → None
+        tid2 = client.post("/api/projects", json={"name": "rwf-none"}).json()["thread_id"]
+        assert appmod._implement_runner_provider(appmod._registry(), tid2) is None

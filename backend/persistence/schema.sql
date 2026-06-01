@@ -205,6 +205,22 @@ CREATE INDEX IF NOT EXISTS idx_harness_validation_run ON harness_validation_resu
 -- 與 sync 遙測（harness_*）完全分離：run_id 用 INTEGER AUTOINCREMENT，不共用形狀。
 -- host 的 async_runtime 層是唯一寫入者；plugin 永遠拿不到 connection。
 
+-- 一批「逐 issue 依序實作」。一個 batch 內含 N 個 session（一 story 一 session 一 PR）。
+CREATE TABLE IF NOT EXISTS impl_batches (
+    batch_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id       TEXT NOT NULL,
+    target_repo     TEXT NOT NULL DEFAULT '',              -- owner/repo
+    runner          TEXT NOT NULL DEFAULT '',
+    mode            TEXT NOT NULL DEFAULT 'roles',         -- single / roles
+    total           INTEGER NOT NULL DEFAULT 0,            -- 共幾個 story
+    status          TEXT NOT NULL DEFAULT 'running',       -- running/succeeded/failed/cancelled/partial
+    stop_on_failure INTEGER NOT NULL DEFAULT 0,            -- 1=遇錯即停；0=continue-on-failure（預設）
+    error_message   TEXT NOT NULL DEFAULT '',
+    created_at      REAL NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at      REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_impl_batches_thread ON impl_batches (thread_id, created_at DESC);
+
 -- 一次「對某 story 的實作請求」。一個 session 內含 ≤3 次 fix-loop 嘗試（impl_runs）。
 CREATE TABLE IF NOT EXISTS impl_sessions (
     session_id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,10 +232,14 @@ CREATE TABLE IF NOT EXISTS impl_sessions (
     status       TEXT NOT NULL DEFAULT 'pending',         -- pending/running/succeeded/failed/cancelled
     pr_url       TEXT NOT NULL DEFAULT '',                -- 開 PR 後填（mock 階段為示意 url）
     error_message TEXT NOT NULL DEFAULT '',
+    batch_id     INTEGER,                                 -- 屬於哪個 batch（NULL = 舊的單 story session）
+    issue_number INTEGER,                                 -- 對應的 GitHub/GitLab issue 編號
+    story_key    TEXT NOT NULL DEFAULT '',                -- story 編號 N.M（排序 / 顯示）
     created_at   REAL NOT NULL DEFAULT (strftime('%s','now')),
     updated_at   REAL NOT NULL DEFAULT (strftime('%s','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_impl_sessions_thread ON impl_sessions (thread_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_impl_sessions_batch ON impl_sessions (batch_id, session_id);
 
 -- session 內單次嘗試（attempt 1..3）。parent_run_id 串 fix-loop；dispatch_role 預留 §6.4 dispatch。
 CREATE TABLE IF NOT EXISTS impl_runs (

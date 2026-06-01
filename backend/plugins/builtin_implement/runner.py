@@ -44,6 +44,31 @@ class ClaudeCliRunner(AgentRunner):
         return shutil.which("claude") is not None
 
 
+class CodexCliRunner(AgentRunner):
+    """codex CLI 的 agentic 模式：`codex exec` 在 cwd 寫 code（workspace-write sandbox）。
+
+    與 sync 的 codex ModelAdapter（read-only、純生成）不同：implement 需要寫檔，故用
+    `--sandbox workspace-write`、在真實工作目錄（base run() 以 cwd= 跑子程序）執行。
+    prompt 由 base run() 經 stdin 餵入（無 prompt 引數 → codex 讀 stdin）。
+    安全：workspace-write sandbox 無網路 → git push / 開 PR 天然受阻；推送與開 PR 一律由
+    host 受控執行（見 async_runtime.github_pr）。DenyProtectedBranchHook 留作 argv 層第二道。
+
+    註：codex agentic 旗標的實際行為需於首次真實執行時 live 驗證（mock/單元測試只驗 argv 組裝）。
+    """
+    name = "codex-cli"
+
+    def build_argv(self, *, cwd: str, prompt: str) -> list[str]:
+        return [
+            "codex", "exec",
+            "--skip-git-repo-check",
+            "--sandbox", "workspace-write",
+            "--color", "never",
+        ]
+
+    def is_available(self) -> bool:
+        return shutil.which("codex") is not None
+
+
 class MockRunner(AgentRunner):
     """安全 mock：讀 stdin（prompt）→ 印幾行進度 → exit 0。不依賴外部、不寫任何檔案。"""
     name = "mock"

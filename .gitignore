@@ -40,3 +40,6 @@ backend/data/
 *~
 .idea/
 .vscode/
+
+# property-test cache
+.hypothesis/

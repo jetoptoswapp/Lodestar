@@ -9,7 +9,9 @@ export const API_BASE =
   "http://localhost:8723";
 
 export type CollabMode = "single" | "discussion" | "dispatch";
-export type CollabRole = "lead" | "peer" | "subagent";
+// binding role 依 stage 區分詞彙：collab stage 用 lead/peer/subagent；
+// implement stage 用 pipeline 步驟 lead/rd/tester/reviewer（後端存原字串、不 clamp）。
+export type CollabRole = "lead" | "peer" | "subagent" | "rd" | "tester" | "reviewer";
 
 export type AgentBinding = {
   agent_id: string;
@@ -327,9 +329,36 @@ export type ImplementSession = {
   status: string;                 // pending/running/succeeded/failed/cancelled
   pr_url: string;
   error_message: string;
+  batch_id: number | null;
+  issue_number: number | null;
+  story_key: string;
   created_at: number | null;
   updated_at: number | null;
   runs: ImplementRun[];
+};
+
+export type ImplementBatchItem = {
+  session_id: number;
+  story_key: string;
+  title: string;
+  issue_number: number | null;
+  status: string;                 // pending/running/succeeded/failed/cancelled
+  pr_url: string;
+};
+
+export type ImplementBatch = {
+  batch_id: number;
+  thread_id: string;
+  target_repo: string;
+  runner: string;
+  mode: string;
+  total: number;
+  status: string;                 // running/succeeded/failed/cancelled/partial
+  stop_on_failure: boolean;
+  error_message: string;
+  created_at: number | null;
+  updated_at: number | null;
+  items: ImplementBatchItem[];
 };
 
 export type ImplementLogLine = {
@@ -383,4 +412,33 @@ export async function cancelImplement(
   sessionId: number,
 ): Promise<{ session_id: number; cancel_requested: boolean }> {
   return apiCall(`/api/implement/${sessionId}/cancel`, { method: "POST" });
+}
+
+// ---- Implement batch（逐 issue 依序實作）----
+export async function startBatch(body: {
+  thread_id: string;
+  runner: string;
+  target_repo?: string;
+  mode?: "single" | "roles";
+  stop_on_failure?: boolean;
+  auto_merge?: boolean;
+}): Promise<{ batch_id: number; total: number; items: ImplementBatchItem[] }> {
+  return apiCall("/api/implement/start-batch", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function fetchBatch(batchId: number): Promise<ImplementBatch> {
+  return apiCall(`/api/implement/batches/${batchId}`);
+}
+
+export async function fetchBatches(threadId: string): Promise<ImplementBatch[]> {
+  const r = await apiCall<{ batches: ImplementBatch[] }>(
+    `/api/implement/threads/${threadId}/batches`,
+  );
+  return r.batches;
+}
+
+export async function cancelBatch(
+  batchId: number,
+): Promise<{ batch_id: number; cancel_requested: boolean }> {
+  return apiCall(`/api/implement/batches/${batchId}/cancel`, { method: "POST" });
 }

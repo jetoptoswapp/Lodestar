@@ -415,6 +415,9 @@ class ImplementSessionResponse(BaseModel):
     status: str                     # pending/running/succeeded/failed/cancelled
     pr_url: str = ""
     error_message: str = ""
+    batch_id: Optional[int] = None
+    issue_number: Optional[int] = None
+    story_key: str = ""
     created_at: Optional[float] = None
     updated_at: Optional[float] = None
     runs: list[ImplementRunInfo] = []
@@ -422,6 +425,55 @@ class ImplementSessionResponse(BaseModel):
 
 class ImplementSessionListResponse(BaseModel):
     sessions: list[ImplementSessionResponse]
+
+
+# ---- Implement batch（逐 issue 依序實作）----
+class ImplementBatchStartRequest(BaseModel):
+    thread_id: str
+    runner: str = "mock"
+    target_repo: str = ""           # 留空 → 由專案 delivery 設定 resolve
+    mode: str = "roles"             # batch 預設 roles（tester+reviewer 即 QA gate）
+    stop_on_failure: bool = False   # False=continue-on-failure（預設）
+    auto_merge: bool = False        # True=過 gate 即依序 merge PR（策略 A，後者吃得到前者）；僅 github 真跑生效
+
+
+class ImplementBatchItem(BaseModel):
+    session_id: int
+    story_key: str = ""
+    title: str = ""
+    issue_number: Optional[int] = None
+    status: str = "pending"
+    pr_url: str = ""
+
+
+class ImplementBatchStartResponse(BaseModel):
+    batch_id: int
+    total: int
+    items: list[ImplementBatchItem]
+
+
+class ImplementBatchResponse(BaseModel):
+    batch_id: int
+    thread_id: str
+    target_repo: str = ""
+    runner: str = ""
+    mode: str = ""
+    total: int
+    status: str                     # running/succeeded/failed/cancelled/partial
+    stop_on_failure: bool = False
+    error_message: str = ""
+    created_at: Optional[float] = None
+    updated_at: Optional[float] = None
+    items: list[ImplementBatchItem] = []
+
+
+class ImplementBatchListResponse(BaseModel):
+    batches: list[ImplementBatchResponse]
+
+
+class ImplementBatchCancelResponse(BaseModel):
+    batch_id: int
+    cancel_requested: bool
 
 
 class ImplementCancelResponse(BaseModel):

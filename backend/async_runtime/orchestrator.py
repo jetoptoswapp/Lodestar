@@ -35,6 +35,15 @@ _ACTIVE_RUNNERS: "dict[int, AgentRunner]" = {}
 # 可注入的 PR opener：(session_id, target_repo, last_output) -> pr_url。預設回 mock url。
 PrOpener = Callable[[int, str, str], str]
 
+# 可注入的 persona 提供者：(role_step) -> persona 文字（無綁定回 ""）。
+# 由 endpoint 層依該 thread 生效 workflow 的 agent_bindings["implement"] 組好；
+# None 或回空字串 → 該步驟用內建預設 persona（零行為改變）。
+PersonaProvider = Callable[[str], str]
+
+# 可注入的 per-step runner 提供者：(role_step) -> AgentRunner（依該步綁定 agent 的 model_choice）。
+# 回 None → 該步驟用傳入的預設 runner（model_choice 無對應已註冊/可用 runner 時亦退回，見 endpoint）。
+RunnerProvider = Callable[[str], Optional[AgentRunner]]
+
 
 def _default_open_pr(session_id: int, target_repo: str, last_output: str) -> str:
     """mock 階段：不開真實 PR，回示意 url（明確標 MOCK，避免誤認）。"""
@@ -93,6 +102,74 @@ def prepare_clone(session_id: int, remote_url: str) -> Path:
     if proc.returncode != 0:
         raise RuntimeError(f"git clone failed (exit {proc.returncode})")   # 不回顯 stderr（含 token url）
     return dest
+
+
+def project_dir(thread_id: str) -> Path:
+    """一個專案（thread）共用一個工作根目錄：impl_work/{thread_id}。"""
+    return dal.uploads_dir().parent / "impl_work" / thread_id
+
+
+def project_clone_dir(thread_id: str) -> Path:
+    """專案共用 clone 目錄（整個專案 clone 一次，所有 batch / story 在此切 branch 沿用）。"""
+    return project_dir(thread_id) / "repo"
+
+
+def project_work_dir(thread_id: str) -> Path:
+    """專案共用的空工作目錄（mock / dry-run 用；子程序 cwd 需存在但不寫真實 repo）。"""
+    d = project_dir(thread_id) / "work"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def prepare_project_clone(thread_id: str, remote_url: str) -> Path:
+    """專案 clone：不存在 → git clone；已存在 → git fetch 沿用（一個專案一個目錄，重跑不重 clone）。
+
+    remote_url 已含 token（呼叫端依 target 組 github/gitlab url）；token 在 url，錯誤訊息不回顯。
+    既有 clone 損毀（非 git repo）→ 移除重 clone（自癒）。"""
+    dest = project_clone_dir(thread_id)
+    is_repo = dest.exists() and (dest / ".git").exists()
+    if is_repo:
+        fetch = subprocess.run(["git", "-C", str(dest), "fetch", "origin"],
+                               capture_output=True, text=True, timeout=180)
+        if fetch.returncode == 0:
+            return dest
+        shutil.rmtree(dest, ignore_errors=True)        # fetch 失敗（remote 變動等）→ 重 clone
+    elif dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)        # 殘留非 git 目錄 → 清掉重 clone
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(["git", "clone", remote_url, str(dest)],
+                          capture_output=True, text=True, timeout=180)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git clone failed (exit {proc.returncode})")   # 不回顯 stderr（含 token url）
+    return dest
+
+
+def prepare_branch_in_clone(clone_path: Path, session_id: int) -> Path:
+    """在共用 clone 內為某 story 切一條乾淨的 work branch（每 story off origin/main，獨立 PR）。
+
+    fetch origin → 偵測 default branch（origin/HEAD，退回 main/master）→
+    `git checkout -B lodestar/impl-{session_id} <default>`（-B 覆寫既有 branch，重跑冪等）。
+    前一個 story 的變更已在它自己的 branch，這裡乾淨重切，彼此不堆疊。"""
+    branch = f"lodestar/impl-{session_id}"
+    # 清掉前一個 story 可能殘留的未提交變更，確保 checkout -B 不被擋
+    subprocess.run(["git", "-C", str(clone_path), "reset", "--hard"], capture_output=True)
+    subprocess.run(["git", "-C", str(clone_path), "clean", "-fd"], capture_output=True)
+    subprocess.run(["git", "-C", str(clone_path), "fetch", "origin"],
+                   capture_output=True, text=True, timeout=120)
+    head = subprocess.run(
+        ["git", "-C", str(clone_path), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        capture_output=True, text=True)
+    default = (head.stdout or "").strip() or "origin/main"
+    # symbolic-ref 失敗（淺 clone / 無 origin/HEAD）→ 試 origin/main 再 origin/master
+    if not head.returncode == 0:
+        for cand in ("origin/main", "origin/master"):
+            if subprocess.run(["git", "-C", str(clone_path), "rev-parse", "--verify", cand],
+                              capture_output=True).returncode == 0:
+                default = cand
+                break
+    subprocess.run(["git", "-C", str(clone_path), "checkout", "-B", branch, default],
+                   check=True, capture_output=True, text=True)
+    return clone_path
 
 
 def _record_diff_preview(session_id: int, run_id: int, cwd: str) -> None:
@@ -233,18 +310,35 @@ ROLE_PIPELINE = ("lead", "rd", "tester", "reviewer")
 _CHANGES_REQUESTED_RE = re.compile(r"CHANGES[_\s]?REQUESTED", re.IGNORECASE)
 
 
-def _role_prompt(role: str, *, story: str, plan: str, feedback: str, attempt: int) -> str:
+# 各角色「身分句」預設（persona）。可被該步驟綁定 agent 的 system_prompt 覆寫；
+# 其後的機器契約（plan 格式 / exit≠0 / reviewer verdict 行）永遠來自 code，不放進 persona，
+# 使用者改人設不會改壞 fix-loop 的判定與 PR 流程。比照 builtin_core_stages 的 persona/契約分離。
+_DEFAULT_PERSONA = {
+    "lead": "You are the LEAD engineer.",
+    "rd": "You are the RD (developer).",
+    "tester": "You are the TESTER.",
+    "reviewer": "You are the REVIEWER.",
+}
+
+
+def _role_prompt(role: str, *, story: str, plan: str, feedback: str, attempt: int,
+                 persona: str = "") -> str:
+    """組某角色的 prompt：身分句（persona，可覆寫）+ 機器契約（恆來自 code）。
+
+    persona 空 → 用 _DEFAULT_PERSONA[role]，render 結果與接線前逐字相同（零回歸）。
+    """
     story = story.strip() or "(no story provided)"
+    head = persona.strip() or _DEFAULT_PERSONA[role]
     if role == "lead":
         return (
-            "You are the LEAD engineer. Break the user story into a concrete, ordered "
+            f"{head} Break the user story into a concrete, ordered "
             "implementation plan: the modules/files to create or change and the tests to add. "
             "Be specific and concise — the RD will implement exactly this plan.\n\n"
             f"--- STORY ---\n{story}\n--- END STORY ---\n"
         )
     if role == "rd":
         p = (
-            "You are the RD (developer). Implement the plan in the working directory. "
+            f"{head} Implement the plan in the working directory. "
             "Never push to protected branches (main/master/release/production).\n\n"
             f"--- STORY ---\n{story}\n\n--- PLAN ---\n{plan or '(no plan)'}\n"
         )
@@ -253,13 +347,19 @@ def _role_prompt(role: str, *, story: str, plan: str, feedback: str, attempt: in
         return p
     if role == "tester":
         return (
-            "You are the TESTER. Write and run tests covering the implemented story. "
-            "Exit non-zero if any test fails.\n\n"
+            f"{head} Run the project's quality gate in the working directory, in this order and "
+            "stopping at the first failure:\n"
+            "  1) lint / format check + type-check, using the repo's OWN config — detect and run what "
+            "the project already defines (e.g. package.json scripts, Makefile, .pre-commit-config, "
+            "ruff/eslint/prettier/tsc, ktlint/detekt, swiftlint, golangci-lint); skip a tool only if "
+            "the repo clearly has none.\n"
+            "  2) write and run the tests covering the implemented story.\n"
+            "Exit non-zero if lint, type-check, or any test fails.\n\n"
             f"--- STORY ---\n{story}\n\n--- PLAN ---\n{plan or '(no plan)'}\n"
         )
     # reviewer
     return (
-        "You are the REVIEWER. Review the implementation and tests for correctness, "
+        f"{head} Review the implementation and tests for correctness, "
         "security, and completeness. Finish your reply with EXACTLY one verdict line:\n"
         "  REVIEW: APPROVED\n"
         "or\n"
@@ -309,17 +409,35 @@ async def run_implementation_roles(
     open_pr: Optional[PrOpener] = None,
     max_attempts: int = MAX_ATTEMPTS,
     auto_approve: bool = True,
+    persona_for: Optional[PersonaProvider] = None,
+    runner_for: Optional[RunnerProvider] = None,
 ) -> dict:
     """多角色 pipeline：lead 拆計畫 → (RD 實作 → tester 測 → reviewer 審) 回圈。
 
     回圈條件（硬上限 max_attempts）：RD/tester 失敗（exit≠0）或 reviewer CHANGES_REQUESTED →
     帶回饋重做 RD。reviewer APPROVED 且 tester 通過 → 開 PR 收工。
     cancelled / timed_out / HookAbort 任一角色觸發 → 終局（與單一 fix-loop 一致）。
-    全程重用同一個 runner（角色差異在 prompt），每個角色一筆 impl_runs（dispatch_role 標記）。
+    各步驟可用各自的 runner（runner_for 依綁定 agent 的 model_choice；未指定則共用傳入的預設
+    runner），每個角色一筆 impl_runs（dispatch_role 標記）。
     """
     hooks = hooks or []
     open_pr = open_pr or _default_open_pr
     impl_dal.update_session(session_id, status="running")
+
+    def _persona(step: str) -> str:
+        """該步驟綁定 agent 的 system_prompt（無 provider / 無綁定 → ""，走預設 persona）。"""
+        return (persona_for(step) or "") if persona_for else ""
+
+    _step_runner: dict[str, AgentRunner] = {}
+
+    def _runner(step: str) -> AgentRunner:
+        """該步驟的 runner：runner_for(step) 指定者優先，否則用傳入的預設 runner（per step memoize，
+        fix-loop 多輪沿用同實例）。並把它登記為當前 active runner，讓 cancel 命中正在跑的這步。"""
+        if step not in _step_runner:
+            _step_runner[step] = (runner_for(step) if runner_for else None) or runner
+        r = _step_runner[step]
+        _ACTIVE_RUNNERS[session_id] = r
+        return r
 
     def _terminal(result, attempt: int) -> Optional[dict]:
         """cancelled / timed_out → 回終局 summary；否則 None（非終局）。"""
@@ -334,8 +452,9 @@ async def run_implementation_roles(
     try:
         # 0) lead 拆計畫（一次）
         _, lead_res = await _run_role(
-            session_id=session_id, runner=runner, role="lead", attempt=1,
-            prompt=_role_prompt("lead", story=story, plan="", feedback="", attempt=1),
+            session_id=session_id, runner=_runner("lead"), role="lead", attempt=1,
+            prompt=_role_prompt("lead", story=story, plan="", feedback="", attempt=1,
+                                persona=_persona("lead")),
             cwd=cwd, timeout=timeout, hooks=hooks, parent=None,
         )
         term = _terminal(lead_res, 1)
@@ -348,8 +467,9 @@ async def run_implementation_roles(
         parent: Optional[int] = None
         for attempt in range(1, max_attempts + 1):
             rd_id, rd_res = await _run_role(
-                session_id=session_id, runner=runner, role="rd", attempt=attempt,
-                prompt=_role_prompt("rd", story=story, plan=plan, feedback=feedback, attempt=attempt),
+                session_id=session_id, runner=_runner("rd"), role="rd", attempt=attempt,
+                prompt=_role_prompt("rd", story=story, plan=plan, feedback=feedback, attempt=attempt,
+                                    persona=_persona("rd")),
                 cwd=cwd, timeout=timeout, hooks=hooks, parent=parent,
             )
             parent = rd_id
@@ -361,8 +481,9 @@ async def run_implementation_roles(
                 continue
 
             _, test_res = await _run_role(
-                session_id=session_id, runner=runner, role="tester", attempt=attempt,
-                prompt=_role_prompt("tester", story=story, plan=plan, feedback="", attempt=attempt),
+                session_id=session_id, runner=_runner("tester"), role="tester", attempt=attempt,
+                prompt=_role_prompt("tester", story=story, plan=plan, feedback="", attempt=attempt,
+                                    persona=_persona("tester")),
                 cwd=cwd, timeout=timeout, hooks=hooks, parent=parent,
             )
             term = _terminal(test_res, attempt)
@@ -373,8 +494,9 @@ async def run_implementation_roles(
                 continue
 
             _, rev_res = await _run_role(
-                session_id=session_id, runner=runner, role="reviewer", attempt=attempt,
-                prompt=_role_prompt("reviewer", story=story, plan=plan, feedback="", attempt=attempt),
+                session_id=session_id, runner=_runner("reviewer"), role="reviewer", attempt=attempt,
+                prompt=_role_prompt("reviewer", story=story, plan=plan, feedback="", attempt=attempt,
+                                    persona=_persona("reviewer")),
                 cwd=cwd, timeout=timeout, hooks=hooks, parent=parent,
             )
             term = _terminal(rev_res, attempt)
@@ -416,6 +538,8 @@ def start_session(
     mode: str = "single",
     auto_approve: bool = True,
     clone_url: str = "",
+    persona_for: Optional[PersonaProvider] = None,
+    runner_for: Optional[RunnerProvider] = None,
 ) -> int:
     """建立 session + 背景跑 fix-loop。立刻回 session_id（非阻塞）。
 
@@ -428,31 +552,70 @@ def start_session(
         thread_id=thread_id, title=title or "(implementation)",
         target_repo=target_repo, runner=runner_choice,
     )
-    _ACTIVE_RUNNERS[session_id] = runner
-    _driver = run_implementation_roles if mode == "roles" else run_implementation
     base_repo = os.environ.get("LODESTAR_IMPL_BASE_REPO", "")
 
     async def _supervised() -> dict:
-        try:
-            if clone_url:
-                cwd = await asyncio.to_thread(prepare_clone, session_id, clone_url)
-            else:
-                cwd = await asyncio.to_thread(prepare_worktree, session_id, base_repo=base_repo)
-            return await _driver(
-                session_id=session_id, runner=runner, story=story, cwd=str(cwd),
-                target_repo=target_repo, hooks=hooks, timeout=timeout, open_pr=open_pr,
-                auto_approve=auto_approve,
-            )
-        except Exception as exc:  # noqa: BLE001 - 準備工作目錄失敗 → session failed，不讓 task 無聲死
-            impl_dal.update_session(session_id, status="failed",
-                                    error_message=f"prepare workdir failed: {exc}")
-            _log.exception("session %s prepare workdir failed", session_id)
-            return {"status": "failed", "reason": "prepare_failed"}
-        finally:
-            _ACTIVE_RUNNERS.pop(session_id, None)
+        if clone_url:
+            # 專案共用 clone（一個專案一個目錄）→ 為本 session 切乾淨 branch
+            def cwd_provider() -> Path:
+                cwd = prepare_project_clone(thread_id, clone_url)
+                return prepare_branch_in_clone(cwd, session_id)
+        elif base_repo:
+            cwd_provider = lambda: prepare_worktree(session_id, base_repo=base_repo)
+        else:
+            cwd_provider = lambda: project_work_dir(thread_id)
+        return await run_session_to_terminal(
+            session_id=session_id, runner=runner, story=story, cwd_provider=cwd_provider,
+            target_repo=target_repo, hooks=hooks, timeout=timeout, open_pr=open_pr,
+            mode=mode, auto_approve=auto_approve, persona_for=persona_for, runner_for=runner_for,
+        )
 
     task_registry.spawn(_supervised(), name=f"impl-{session_id}")
     return session_id
+
+
+async def run_session_to_terminal(
+    *,
+    session_id: int,
+    runner: AgentRunner,
+    story: str,
+    cwd_provider: Callable[[], Path],
+    target_repo: str = "",
+    hooks: Optional[list[ToolHook]] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    open_pr: Optional[PrOpener] = None,
+    mode: str = "single",
+    auto_approve: bool = True,
+    persona_for: Optional[PersonaProvider] = None,
+    runner_for: Optional[RunnerProvider] = None,
+) -> dict:
+    """跑單一 session 到終局並回 summary dict。可被 start_session（背景 task）或 batch 直接 await。
+
+    cwd_provider 在 thread pool 準備工作目錄（clone / worktree / batch 內切 branch），
+    失敗 → session failed（不讓 task 無聲死）。runner 登記 _ACTIVE_RUNNERS 供 cancel，
+    結束務必 pop。driver 依 mode 選單一 fix-loop 或多角色 pipeline。
+    persona_for / runner_for 僅 roles 模式使用（依步驟注入綁定 agent 的 system_prompt 與 runner）。"""
+    hooks = hooks or []
+    _ACTIVE_RUNNERS[session_id] = runner
+    driver = run_implementation_roles if mode == "roles" else run_implementation
+    try:
+        cwd = await asyncio.to_thread(cwd_provider)
+        kwargs = dict(
+            session_id=session_id, runner=runner, story=story, cwd=str(cwd),
+            target_repo=target_repo, hooks=hooks, timeout=timeout, open_pr=open_pr,
+            auto_approve=auto_approve,
+        )
+        if mode == "roles":
+            kwargs["persona_for"] = persona_for
+            kwargs["runner_for"] = runner_for
+        return await driver(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - 準備工作目錄失敗 → session failed，不讓 task 無聲死
+        impl_dal.update_session(session_id, status="failed",
+                                error_message=f"prepare workdir failed: {exc}")
+        _log.exception("session %s prepare workdir failed", session_id)
+        return {"status": "failed", "reason": "prepare_failed"}
+    finally:
+        _ACTIVE_RUNNERS.pop(session_id, None)
 
 
 async def request_cancel(session_id: int) -> bool:

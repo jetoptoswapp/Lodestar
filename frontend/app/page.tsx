@@ -27,6 +27,7 @@ import {
   type ImplementSession,
   type ImplementRun,
   type ImplementLogLine,
+  type ImplementBatch,
   type RunnerInfo,
   type StageCatalogItem,
   apiCall,
@@ -50,8 +51,13 @@ import {
   fetchRunners,
   startImplement,
   fetchImplementSession,
+  fetchImplementSessions,
   fetchImplementLog,
   cancelImplement,
+  startBatch,
+  fetchBatch,
+  fetchBatches,
+  cancelBatch,
   type StageChatMessage,
   type DeliveryStatus,
   fetchStageHistory,
@@ -2884,6 +2890,119 @@ function ImplAttemptChip({ run }: { run: ImplementRun }) {
   );
 }
 
+// ---------- batch 進度表：逐 issue 依序實作，每列一個 story（可點開看該 session log）----------
+const BATCH_ROW_DOT: Record<string, string> = {
+  pending: "var(--ink-muted)",
+  running: "var(--polaris)",
+  succeeded: "var(--approved)",
+  failed: "#e0608a",
+  cancelled: "var(--ink-muted)",
+};
+
+function issueUrlFor(repo: string, target: string, n: number): string | null {
+  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
+  return target === "gitlab"
+    ? `https://gitlab.com/${repo}/-/issues/${n}`
+    : `https://github.com/${repo}/issues/${n}`;
+}
+
+function ImplBatchProgress({
+  batch, repo, target, selectedSessionId, onSelect,
+}: {
+  batch: ImplementBatch;
+  repo: string;
+  target: string;
+  selectedSessionId: number | null;
+  onSelect: (sessionId: number) => void;
+}) {
+  const ok = batch.items.filter((i) => i.status === "succeeded").length;
+  const failed = batch.items.filter((i) => i.status === "failed" || i.status === "cancelled").length;
+  const done = ok + failed;
+  const current = batch.items.find((i) => i.status === "running") ?? null;
+  const pct = batch.total > 0 ? Math.round((done / batch.total) * 100) : 0;
+  return (
+    <div className="border-b border-[var(--rule)]">
+      {/* 進度彙整 + 進度條 */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 bg-[var(--bg-elev)]/30 px-6 pt-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[var(--ink-muted)]">
+        <span>逐 issue 依序 · {batch.status}</span>
+        <span className="text-[var(--approved)]">已完成 {ok}</span>
+        <span className="text-[#e0608a]">失敗 {failed}</span>
+        <span>進度 {done}/{batch.total}</span>
+      </div>
+      <div className="bg-[var(--bg-elev)]/30 px-6 pb-2.5 pt-1.5">
+        <div className="h-1 w-full overflow-hidden rounded bg-[var(--rule)]">
+          <div className="h-full bg-[var(--polaris)] transition-all" style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+
+      {/* 目前正在處理哪個 issue（醒目橫幅）*/}
+      {current ? (
+        <button onClick={() => onSelect(current.session_id)}
+          className="flex w-full items-center gap-3 border-y border-[color-mix(in_oklab,var(--polaris)_45%,transparent)] bg-[var(--polaris)]/12 px-6 py-2.5 text-left">
+          <span className="pulse-star inline-block h-2 w-2 shrink-0 rounded-full bg-[var(--polaris)]" />
+          <span className="shrink-0 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.2em] text-[var(--polaris)]">
+            正在處理
+          </span>
+          <span className="shrink-0 font-[family-name:var(--font-mono)] text-[10px] text-[var(--polaris)]">
+            {current.story_key || "—"}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[12px] text-[#e7ecf3]">{current.title}</span>
+          {current.issue_number != null && (
+            <span className="shrink-0 font-[family-name:var(--font-mono)] text-[10px] text-[var(--polaris)]">#{current.issue_number}</span>
+          )}
+        </button>
+      ) : batch.status === "running" ? (
+        <div className="flex items-center gap-2 border-y border-[var(--rule)] bg-[var(--bg-elev)]/30 px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[var(--ink-muted)]">
+          <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />
+          準備下一個 issue…
+        </div>
+      ) : null}
+
+      <ul className="max-h-[46vh] overflow-auto">
+        {batch.items.map((it) => {
+          const sel = it.session_id === selectedSessionId;
+          const running = it.status === "running";
+          const iurl = it.issue_number != null ? issueUrlFor(repo, target, it.issue_number) : null;
+          return (
+            <li key={it.session_id}
+              className={`flex items-center gap-3 border-b border-[var(--rule)]/60 px-6 py-2 ${
+                running ? "bg-[var(--polaris)]/10" : sel ? "bg-[var(--bg-elev)]/40" : ""}`}>
+              <button onClick={() => onSelect(it.session_id)}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                {running ? (
+                  <span className="pulse-star inline-block h-2 w-2 shrink-0 rounded-full bg-[var(--polaris)]" />
+                ) : (
+                  <span className="inline-block h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: BATCH_ROW_DOT[it.status] ?? "var(--ink-muted)" }} />
+                )}
+                <span className="shrink-0 font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
+                  {it.story_key || "—"}
+                </span>
+                <span className={`min-w-0 flex-1 truncate text-[12px] ${running ? "text-[#e7ecf3]" : "text-[#cdd4df]"}`}>{it.title}</span>
+                <span className={`shrink-0 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.16em] ${running ? "text-[var(--polaris)]" : "text-[var(--ink-muted)]"}`}>
+                  {running ? "處理中" : it.status}
+                </span>
+              </button>
+              <div className="flex shrink-0 items-center gap-2 font-[family-name:var(--font-mono)] text-[10px]">
+                {it.issue_number != null && (iurl ? (
+                  <a href={iurl} target="_blank" rel="noreferrer noopener"
+                    className="text-[var(--ink-muted)] hover:text-[var(--polaris)] hover:underline">
+                    #{it.issue_number}
+                  </a>
+                ) : <span className="text-[var(--ink-muted)]">#{it.issue_number}</span>)}
+                {it.pr_url && (
+                  <a href={it.pr_url} target="_blank" rel="noreferrer noopener"
+                    className="text-[var(--polaris)] hover:underline">PR ↗</a>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 // ---------- implement log：把 claude-cli stream-json 整理成可讀事件 + 統計 ----------
 type ImplTone = "agent" | "tool" | "ok" | "warn" | "muted";
 type ImplEvent = { key: string; attempt: number; tone: ImplTone; text: string };
@@ -2980,15 +3099,21 @@ function ImplementWorkspace({
 }) {
   const [runners, setRunners] = useState<RunnerInfo[]>([]);
   const [runner, setRunner] = useState<string>("mock");
-  const [mode, setMode] = useState<"single" | "roles">("single");
+  const [mode, setMode] = useState<"single" | "roles">("roles");
+  const [runMode, setRunMode] = useState<"batch" | "session">("batch");
+  const [autoMerge, setAutoMerge] = useState<boolean>(false);
+  const [logExpanded, setLogExpanded] = useState<boolean>(false);   // ⤢ 展開 log（隱藏左側儀表軌）
   const [targetRepo, setTargetRepo] = useState<string>("");
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [session, setSession] = useState<ImplementSession | null>(null);
   const [lines, setLines] = useState<ImplementLogLine[]>([]);
   const [starting, setStarting] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  const [batchId, setBatchId] = useState<number | null>(null);
+  const [batch, setBatch] = useState<ImplementBatch | null>(null);
   const cursorRef = useRef(0);
   const logBottomRef = useRef<HTMLDivElement>(null);
+  const followCurrentRef = useRef(true);   // batch log 是否自動跟到目前處理中的 issue（手動點列後關閉）
 
   // log 整理：過濾噪音 + 彙整統計（claude-cli stream-json）
   const { events: logEvents, stats: logStats } = useMemo(() => parseImplLog(lines), [lines]);
@@ -3030,6 +3155,63 @@ function ImplementWorkspace({
     if (candidate) setTargetRepo((cur) => cur || candidate);
   }, [delivery?.repo, projectRepo]);
 
+  // F5 / 切換專案後還原最近一次實作 session（含 log 與執行中進度）。
+  // 後端 impl_sessions 已持久化；前端 mount 時主動撈最新一筆，設定 sessionId 後
+  // 既有的 poll effect 會自動拉回 session 狀態並從游標 0 補齊整段 log。
+  useEffect(() => {
+    setSessionId(null); setSession(null); setLines([]); cursorRef.current = 0;
+    setBatchId(null); setBatch(null);
+    if (!thread) return;
+    let on = true;
+    // 最近一次 batch（DESC，[0] = 最近）優先還原；無 batch 則退回單 session
+    fetchBatches(thread)
+      .then((batches) => {
+        if (!on || !batches.length) return;
+        setRunMode("batch");
+        setBatchId(batches[0].batch_id);
+      })
+      .catch(() => {/* 靜默 */});
+    fetchImplementSessions(thread)
+      .then((sessions) => {
+        if (!on || !sessions.length) return;
+        setSessionId(sessions[0].session_id); // DESC 排序，[0] = 最近一次
+      })
+      .catch(() => {/* 靜默；無歷史 session 即維持 idle */});
+    return () => { on = false; };
+  }, [thread]);
+
+  // poll batch 進度（batch 在跑時遞迴 setTimeout，終局再補一次）
+  useEffect(() => {
+    if (batchId == null) return;
+    let on = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const b = await fetchBatch(batchId);
+        if (!on) return;
+        setBatch(b);
+        if (b.status === "running") timer = setTimeout(tick, 800);
+      } catch (e) {
+        if (on) onSetError(`讀取批次狀態失敗：${(e as Error).message}`);
+      }
+    };
+    tick();
+    return () => { on = false; if (timer) clearTimeout(timer); };
+  }, [batchId, onSetError]);
+
+  // batch log 自動跟到「目前處理中」的 issue（除非使用者手動點了某列）
+  const runningSessionId = runMode === "batch"
+    ? batch?.items.find((i) => i.status === "running")?.session_id ?? null
+    : null;
+  useEffect(() => {
+    if (runningSessionId == null || !followCurrentRef.current) return;
+    setSessionId((cur) => {
+      if (cur === runningSessionId) return cur;
+      setLines([]); cursorRef.current = 0; setSession(null);
+      return runningSessionId;
+    });
+  }, [runningSessionId]);
+
   // 已發佈 issues 連結（GitHub/GitLab repo issues 頁）
   const issuesUrl = delivery?.repo && /^[\w.-]+\/[\w.-]+$/.test(delivery.repo)
     ? (delivery.target === "gitlab"
@@ -3038,7 +3220,9 @@ function ImplementWorkspace({
     : null;
 
   const status = session?.status ?? "idle";
-  const polling = status === "running" || status === "pending";
+  const sessionPolling = status === "running" || status === "pending";
+  const batchPolling = runMode === "batch" && batch?.status === "running";
+  const polling = runMode === "batch" ? !!batchPolling : sessionPolling;
 
   // poll status + log（session 在跑時，遞迴 setTimeout；完成後再 drain 一次補尾）
   useEffect(() => {
@@ -3086,12 +3270,22 @@ function ImplementWorkspace({
     setStarting(true);
     onSetError("");
     setLines([]); cursorRef.current = 0; setSession(null); setSessionId(null);
+    setBatch(null); setBatchId(null);
+    followCurrentRef.current = true;
     try {
-      const { session_id } = await startImplement({
-        thread_id: thread, runner, target_repo: targetRepo.trim(),
-        story: storiesArtifact, title: "Implement", mode,
-      });
-      setSessionId(session_id);
+      if (runMode === "batch") {
+        const { batch_id } = await startBatch({
+          thread_id: thread, runner, target_repo: targetRepo.trim(), mode,
+          auto_merge: autoMerge,
+        });
+        setBatchId(batch_id);
+      } else {
+        const { session_id } = await startImplement({
+          thread_id: thread, runner, target_repo: targetRepo.trim(),
+          story: storiesArtifact, title: "Implement", mode,
+        });
+        setSessionId(session_id);
+      }
     } catch (e) {
       onSetError(`啟動實作失敗：${(e as Error).message}`);
     } finally {
@@ -3100,9 +3294,10 @@ function ImplementWorkspace({
   };
 
   const cancel = async () => {
-    if (sessionId == null) return;
-    try { await cancelImplement(sessionId); }
-    catch (e) { onSetError(`取消失敗：${(e as Error).message}`); }
+    try {
+      if (runMode === "batch" && batchId != null) await cancelBatch(batchId);
+      else if (sessionId != null) await cancelImplement(sessionId);
+    } catch (e) { onSetError(`取消失敗：${(e as Error).message}`); }
   };
 
   const selStyle =
@@ -3136,12 +3331,39 @@ function ImplementWorkspace({
                 </select>
               </label>
               <label className="flex flex-col gap-1">
+                <ImplSmallLabel>執行方式</ImplSmallLabel>
+                <select value={runMode} onChange={(e) => setRunMode(e.target.value as "batch" | "session")} disabled={polling} className={selStyle}>
+                  <option value="batch">逐 issue 依序</option>
+                  <option value="session">整份一次</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
                 <ImplSmallLabel>模式</ImplSmallLabel>
                 <select value={mode} onChange={(e) => setMode(e.target.value as "single" | "roles")} disabled={polling} className={selStyle}>
                   <option value="single">單一 fix-loop</option>
                   <option value="roles">多角色 pipeline</option>
                 </select>
               </label>
+              {runMode === "batch" && (
+                <label className="flex flex-col gap-1" title="每個 story 過 QA gate 後依序 merge 進 main，下一個 story 從更新後的 main 切（後者吃得到前者、避免衝突）。僅 github 真跑生效。">
+                  <ImplSmallLabel>整合方式</ImplSmallLabel>
+                  <button
+                    type="button"
+                    onClick={() => setAutoMerge((v) => !v)}
+                    disabled={polling}
+                    className={`flex items-center gap-2 border px-3 py-1.5 font-[family-name:var(--font-mono)] text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      autoMerge
+                        ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_14%,transparent)] text-[var(--polaris)]"
+                        : "border-[var(--rule-dark)] text-[#cdd4df] hover:border-[#4a5468]"
+                    }`}
+                  >
+                    <span className={`grid h-3 w-3 place-items-center border ${autoMerge ? "border-[var(--polaris)] bg-[var(--polaris)]" : "border-[#2e3441]"}`}>
+                      {autoMerge && <span className="text-[8px] leading-none text-white">✓</span>}
+                    </span>
+                    過 gate 自動 merge
+                  </button>
+                </label>
+              )}
               <label className="flex min-w-[200px] flex-1 flex-col gap-1">
                 <ImplSmallLabel>target repo · owner/repo</ImplSmallLabel>
                 <input value={targetRepo} onChange={(e) => setTargetRepo(e.target.value)} disabled={polling}
@@ -3156,7 +3378,7 @@ function ImplementWorkspace({
                   <ToolBtn onClick={cancel}>取消</ToolBtn>
                 ) : (
                   <ToolBtn primary onClick={start} disabled={!canStart}>
-                    {starting ? "啟動中…" : status === "idle" ? "開始自動實作" : "重新實作"}
+                    {starting ? "啟動中…" : (runMode === "batch" ? !batch : status === "idle") ? "開始自動實作" : "重新實作"}
                   </ToolBtn>
                 )}
               </div>
@@ -3175,74 +3397,109 @@ function ImplementWorkspace({
                 )}
               </div>
             )}
-            {session?.pr_url ? <ImplPrBanner url={session.pr_url} /> : null}
-            {status === "failed" && session?.error_message ? <ImplFailBanner msg={session.error_message} /> : null}
+            {/* body：水平分割 —— 左「儀表軌」+ 主導 log 視窗（log 佔滿整個 body 高度，不再吃殘高）*/}
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              {!logExpanded && (
+                <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-r border-[var(--rule)]">
+                  {runMode === "batch" && batch ? (
+                    <ImplBatchProgress
+                      batch={batch}
+                      repo={batch.target_repo || delivery?.repo || ""}
+                      target={delivery?.target || "github"}
+                      selectedSessionId={sessionId}
+                      onSelect={(sid) => {
+                        // 手動點列 → 停止自動跟隨（點目前處理中那列則恢復跟隨）
+                        followCurrentRef.current = sid === runningSessionId;
+                        setLines([]); cursorRef.current = 0; setSession(null);
+                        setSessionId(sid);
+                      }}
+                    />
+                  ) : null}
 
-            {runs.length > 0 && (
-              <div className="flex flex-wrap gap-2 border-b border-[var(--rule)] px-6 py-3">
-                {runs.map((r) => <ImplAttemptChip key={r.run_id} run={r} />)}
-              </div>
-            )}
+                  {session?.pr_url ? <ImplPrBanner url={session.pr_url} /> : null}
+                  {status === "failed" && session?.error_message ? <ImplFailBanner msg={session.error_message} /> : null}
 
-            {/* 統計列：把 token/turns/時長/成本 等彙整資訊集中顯示，不再逐行洗版 */}
-            {lines.length > 0 && (
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em]">
-                <ImplStat label="files" value={String(logStats.filesWritten)} />
-                <ImplStat label="tools" value={String(logStats.toolCalls)} />
-                <ImplStat label="turns" value={String(logStats.turns)} />
-                <ImplStat label="elapsed" value={`${(logStats.durationMs / 1000).toFixed(0)}s`} />
-                {logStats.hasCost && <ImplStat label="cost" value={`$${logStats.costUsd.toFixed(3)}`} />}
-              </div>
-            )}
+                  {runs.length > 0 && (
+                    <div className="flex flex-wrap gap-2 border-b border-[var(--rule)] px-4 py-3">
+                      {runs.map((r) => <ImplAttemptChip key={r.run_id} run={r} />)}
+                    </div>
+                  )}
 
-            {/* log stream */}
-            <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
-              <div className="mb-2 flex items-center justify-between gap-2 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
-                <span className="flex items-center gap-2">
-                  {polling && <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />}
-                  log · {polling ? "streaming" : status === "idle" ? "idle" : "complete"}
-                </span>
-                {lines.length > 0 && (
-                  <button onClick={() => setShowRaw((v) => !v)} className="border border-[var(--rule-dark)] px-2 py-0.5 tracking-[0.16em] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
-                    {showRaw ? "整理後" : "raw"}
-                  </button>
-                )}
-              </div>
-              {lines.length === 0 ? (
-                <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
-                  尚無輸出。選 runner（mock = 安全 dry-run）後按「開始自動實作」。
-                </div>
-              ) : showRaw ? (
-                <ul className="space-y-0.5 font-[family-name:var(--font-mono)] text-[11px] leading-5">
-                  {lines.map((l) => (
-                    <li key={l.id} className={l.kind === "system" ? "text-[#e0a05b]" : "text-[#cdd4df]"}>
-                      <span className="opacity-40">[a{l.attempt}]</span> {l.content.replace(/\n$/, "")}
-                    </li>
-                  ))}
-                  <div ref={logBottomRef} />
-                </ul>
-              ) : logEvents.length === 0 ? (
-                <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
-                  {polling ? "agent 思考中…（無可顯示事件）" : "無可顯示事件，可切「raw」看原始輸出。"}
-                </div>
-              ) : (
-                <ul className="space-y-1 font-[family-name:var(--font-mono)] text-[11px] leading-5">
-                  {logEvents.map((e) => (
-                    <li key={e.key} className={IMPL_TONE_CLASS[e.tone]}>
-                      <span className="opacity-30">[a{e.attempt}]</span>{" "}
-                      <span className={e.tone === "agent" ? "whitespace-pre-wrap" : ""}>{e.text}</span>
-                    </li>
-                  ))}
-                  <div ref={logBottomRef} />
-                </ul>
+                  {/* 統計：files/tools/turns/elapsed/cost */}
+                  {lines.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em]">
+                      <ImplStat label="files" value={String(logStats.filesWritten)} />
+                      <ImplStat label="tools" value={String(logStats.toolCalls)} />
+                      <ImplStat label="turns" value={String(logStats.turns)} />
+                      <ImplStat label="elapsed" value={`${(logStats.durationMs / 1000).toFixed(0)}s`} />
+                      {logStats.hasCost && <ImplStat label="cost" value={`$${logStats.costUsd.toFixed(3)}`} />}
+                    </div>
+                  )}
+                </aside>
               )}
+
+              {/* log 欄：header（raw / 展開切換）+ stream，佔滿 body 高度 */}
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <div className="flex items-center justify-between gap-2 border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                  <span className="flex items-center gap-2">
+                    {polling && <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />}
+                    log · {polling ? "streaming" : status === "idle" ? "idle" : "complete"}
+                  </span>
+                  <span className="flex items-center gap-2">
+                    {lines.length > 0 && (
+                      <button onClick={() => setShowRaw((v) => !v)} className="border border-[var(--rule-dark)] px-2 py-0.5 tracking-[0.16em] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
+                        {showRaw ? "整理後" : "raw"}
+                      </button>
+                    )}
+                    <button onClick={() => setLogExpanded((v) => !v)}
+                      title={logExpanded ? "顯示左側儀表軌" : "展開 log（隱藏左側儀表軌）"}
+                      className="border border-[var(--rule-dark)] px-2 py-0.5 tracking-[0.16em] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
+                      {logExpanded ? "⤡ 收合" : "⤢ 展開"}
+                    </button>
+                  </span>
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+                  {lines.length === 0 ? (
+                    <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                      {runMode === "batch" && batch
+                        ? "點左側任一 story 看該 issue 的實作 log。"
+                        : "尚無輸出。選 runner（mock = 安全 dry-run）後按「開始自動實作」。"}
+                    </div>
+                  ) : showRaw ? (
+                    <ul className="space-y-0.5 font-[family-name:var(--font-mono)] text-[11px] leading-5">
+                      {lines.map((l) => (
+                        <li key={l.id} className={l.kind === "system" ? "text-[#e0a05b]" : "text-[#cdd4df]"}>
+                          <span className="opacity-40">[a{l.attempt}]</span> {l.content.replace(/\n$/, "")}
+                        </li>
+                      ))}
+                      <div ref={logBottomRef} />
+                    </ul>
+                  ) : logEvents.length === 0 ? (
+                    <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                      {polling ? "agent 思考中…（無可顯示事件）" : "無可顯示事件，可切「raw」看原始輸出。"}
+                    </div>
+                  ) : (
+                    <ul className="space-y-1 font-[family-name:var(--font-mono)] text-[11px] leading-5">
+                      {logEvents.map((e) => (
+                        <li key={e.key} className={IMPL_TONE_CLASS[e.tone]}>
+                          <span className="opacity-30">[a{e.attempt}]</span>{" "}
+                          <span className={e.tone === "agent" ? "whitespace-pre-wrap" : ""}>{e.text}</span>
+                        </li>
+                      ))}
+                      <div ref={logBottomRef} />
+                    </ul>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
 
         <BottomMeta
-          left={<>runner <code className="text-[#cdd4df]">{runner}</code> · fix-loop 硬上限 3 · 成功開 PR</>}
-          right={session ? <>session #{session.session_id} · {status}</> : <>尚未啟動</>}
+          left={<>runner <code className="text-[#cdd4df]">{runner}</code> · {runMode === "batch" ? "逐 issue 一 PR · QA gate" : "fix-loop 硬上限 3 · 成功開 PR"}</>}
+          right={runMode === "batch"
+            ? (batch ? <>batch #{batch.batch_id} · {batch.status} · {batch.total} stories</> : <>尚未啟動</>)
+            : (session ? <>session #{session.session_id} · {status}</> : <>尚未啟動</>)}
         />
       </section>
     </div>
@@ -3468,13 +3725,11 @@ function WorkflowsView({
     setDraft({ ...draft, stages: ns });
   };
 
-  const cycleBindingRole = (stageIdx: number, bindIdx: number) => {
+  const setBindingRole = (stageIdx: number, bindIdx: number, role: ApiCollabRole) => {
     if (!draft) return;
-    const order: ApiCollabRole[] = ["lead", "peer", "subagent"];
     const ns = [...draft.stages];
-    const cur = ns[stageIdx].agent_bindings[bindIdx].role;
     const newBindings = [...ns[stageIdx].agent_bindings];
-    newBindings[bindIdx] = { ...newBindings[bindIdx], role: order[(order.indexOf(cur) + 1) % order.length] };
+    newBindings[bindIdx] = { ...newBindings[bindIdx], role };
     ns[stageIdx] = { ...ns[stageIdx], agent_bindings: newBindings };
     setDraft({ ...draft, stages: ns });
   };
@@ -3611,7 +3866,7 @@ function WorkflowsView({
                   onCycleCollab={cycleCollab}
                   onAddBinding={addBinding}
                   onRemoveBinding={removeBinding}
-                  onCycleBindingRole={cycleBindingRole}
+                  onSetBindingRole={setBindingRole}
                   onToggleDependency={toggleDependency}
                 />
                 {inEditMode && (
@@ -3649,7 +3904,7 @@ function WorkflowsView({
 
 function WorkflowStageList({
   stages, agents, stageInfo, editable,
-  onMoveStage, onRemoveStage, onCycleCollab, onAddBinding, onRemoveBinding, onCycleBindingRole,
+  onMoveStage, onRemoveStage, onCycleCollab, onAddBinding, onRemoveBinding, onSetBindingRole,
   onToggleDependency,
 }: {
   stages: WorkflowStage[];
@@ -3661,7 +3916,7 @@ function WorkflowStageList({
   onCycleCollab: (idx: number) => void;
   onAddBinding: (stageIdx: number, agentId: string) => void;
   onRemoveBinding: (stageIdx: number, bindIdx: number) => void;
-  onCycleBindingRole: (stageIdx: number, bindIdx: number) => void;
+  onSetBindingRole: (stageIdx: number, bindIdx: number, role: ApiCollabRole) => void;
   onToggleDependency?: (stageIdx: number, depId: string) => void;
 }) {
   if (stages.length === 0) {
@@ -3746,7 +4001,8 @@ function WorkflowStageList({
                 key={b.agent_id + bi}
                 binding={b}
                 editable={editable}
-                onCycleRole={() => onCycleBindingRole(i, bi)}
+                roleOptions={bindingRoleOrder(s.stage_id)}
+                onSetRole={(role) => onSetBindingRole(i, bi, role)}
                 onRemove={() => onRemoveBinding(i, bi)}
               />
             ))}
@@ -3764,24 +4020,67 @@ function WorkflowStageList({
   );
 }
 
-function BindingChip({ binding, editable, onCycleRole, onRemove }: {
+// binding role 依 stage 區分詞彙：implement 是 pipeline 步驟（lead→rd→tester→reviewer），
+// 其餘 stage 是 collab 角色（lead/peer/subagent）。決定 chip 點擊循環的順序。
+function bindingRoleOrder(stageId: string): ApiCollabRole[] {
+  return stageId === "implement"
+    ? ["lead", "rd", "tester", "reviewer"]
+    : ["lead", "peer", "subagent"];
+}
+
+const ROLE_COLOR: Record<string, string> = {
+  lead: "#5b8cff", peer: "#f59e0b", subagent: "#a78bfa",
+  rd: "#34d399", tester: "#22d3ee", reviewer: "#f472b6",
+};
+
+function BindingChip({ binding, editable, roleOptions, onSetRole, onRemove }: {
   binding: ApiAgentBinding;
   editable: boolean;
-  onCycleRole: () => void;
+  roleOptions: ApiCollabRole[];
+  onSetRole: (role: ApiCollabRole) => void;
   onRemove: () => void;
 }) {
-  const color = binding.role === "lead" ? "#5b8cff"
-              : binding.role === "peer" ? "#f59e0b"
-              : "#a78bfa";
+  const color = ROLE_COLOR[binding.role] ?? "#a78bfa";
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
   return (
-    <span className="inline-flex items-center gap-1 border px-2 py-0.5" style={{ borderColor: color }}>
+    <span ref={ref} className="relative inline-flex items-center gap-1 border px-2 py-0.5" style={{ borderColor: color }}>
       <code className="font-[family-name:var(--font-mono)] text-[10px] text-[#e6ecf5]">{binding.agent_id}</code>
       {editable ? (
-        <button onClick={onCycleRole} title="切換 role" className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider" style={{ color }}>
-          {binding.role}
+        <button
+          onClick={() => setOpen((o) => !o)}
+          title="選擇 role"
+          className="inline-flex items-center gap-0.5 border-b border-dotted font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider"
+          style={{ color, borderColor: color }}
+        >
+          {binding.role}<span className="text-[7px] leading-none">▾</span>
         </button>
       ) : (
         <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider" style={{ color }}>{binding.role}</span>
+      )}
+      {editable && open && (
+        <div className="absolute left-0 top-[calc(100%+4px)] z-30 min-w-[120px] border border-[var(--paper-edge)] bg-[var(--paper)] shadow-anvil">
+          {roleOptions.map((r) => (
+            <button
+              key={r}
+              onClick={() => { onSetRole(r); setOpen(false); }}
+              className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider transition hover:bg-[var(--bg-elev)] ${r === binding.role ? "bg-[var(--bg-elev)]/60" : ""}`}
+              style={{ color: ROLE_COLOR[r] ?? "#a78bfa" }}
+            >
+              <span className="inline-block h-1.5 w-1.5" style={{ background: ROLE_COLOR[r] ?? "#a78bfa" }} />
+              {r}
+              {r === binding.role && <span className="ml-auto text-[var(--ink-muted)]">✓</span>}
+            </button>
+          ))}
+        </div>
       )}
       {editable && (
         <button onClick={onRemove} title="移除" className="text-[var(--ink-muted)] hover:text-[#f47171]">×</button>

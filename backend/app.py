@@ -85,10 +85,16 @@ from api_models import (  # noqa: E402
     ImplementCancelResponse,
     ImplementLogLine,
     ImplementLogResponse,
+    ImplementBatchStartRequest,
+    ImplementBatchStartResponse,
+    ImplementBatchItem,
+    ImplementBatchResponse,
+    ImplementBatchListResponse,
+    ImplementBatchCancelResponse,
     RunnerInfo,
     RunnerListResponse,
 )
-from async_runtime import impl_dal, orchestrator, task_registry  # noqa: E402
+from async_runtime import batch as impl_batch, impl_dal, orchestrator, task_registry  # noqa: E402
 from plugin_api import ToolHook  # noqa: E402
 from delivery_parser import parse_stories_to_delivery_items  # noqa: E402
 from parsers import parse as parse_attachment  # noqa: E402
@@ -1085,42 +1091,52 @@ def _impl_run_info(r: dict) -> ImplementRunInfo:
     )
 
 
+def _row_get(row: dict, key: str, default=None):
+    """sqlite Row → 容錯取欄（舊資料 / 部分 SELECT 可能缺欄）。"""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
 def _impl_session_response(s: dict) -> ImplementSessionResponse:
     runs = impl_dal.list_runs(s["session_id"])
     return ImplementSessionResponse(
         session_id=s["session_id"], thread_id=s["thread_id"], stage=s["stage"],
         title=s["title"], target_repo=s["target_repo"], runner=s["runner"],
         status=s["status"], pr_url=s["pr_url"], error_message=s["error_message"],
+        batch_id=_row_get(s, "batch_id"), issue_number=_row_get(s, "issue_number"),
+        story_key=_row_get(s, "story_key", "") or "",
         created_at=s["created_at"], updated_at=s["updated_at"],
         runs=[_impl_run_info(r) for r in runs],
     )
 
 
-def _real_pr_opener():
-    """組真實開 PR 的 PrOpener（claude-cli runner + /approve 共用）。token 來自 keystore；
-    工作目錄為 clone_dir（implement 真實執行一律 git clone 該 repo）。"""
+def _real_pr_opener(thread_id: str):
+    """組真實開 PR 的 PrOpener（claude-cli 單 session 用）。token 來自 keystore；
+    工作目錄為專案共用 clone（一個專案一個目錄，所有 session 沿用）。"""
     from async_runtime.github_pr import make_github_pr_opener
     return make_github_pr_opener(
         get_token=lambda: keystore.get_credentials("github").get("token", ""),
-        workdir_for=lambda sid: orchestrator.clone_dir(sid),
+        workdir_for=lambda _sid: orchestrator.project_clone_dir(thread_id),
         already_opened=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", ""))
 
 
-def _gitlab_mr_opener(base_url: str):
-    """組真實開 GitLab MR 的 PrOpener（implement + /approve 共用）。"""
+def _gitlab_mr_opener(base_url: str, thread_id: str):
+    """組真實開 GitLab MR 的 PrOpener（claude-cli 單 session 用）。"""
     from async_runtime.gitlab_mr import make_gitlab_mr_opener
     return make_gitlab_mr_opener(
         get_token=lambda: keystore.get_credentials("gitlab").get("token", ""),
-        workdir_for=lambda sid: orchestrator.clone_dir(sid),
+        workdir_for=lambda _sid: orchestrator.project_clone_dir(thread_id),
         base_url=base_url,
         already_opened=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", ""))
 
 
-def _delivery_opener(target: str, creds: dict):
-    """依 delivery target 回對應的 open_pr/open_mr opener。"""
+def _delivery_opener(target: str, creds: dict, thread_id: str):
+    """依 delivery target 回對應的 open_pr/open_mr opener（工作目錄以專案為 key）。"""
     if target == "gitlab":
-        return _gitlab_mr_opener((creds.get("base_url") or "https://gitlab.com").rstrip("/"))
-    return _real_pr_opener()
+        return _gitlab_mr_opener((creds.get("base_url") or "https://gitlab.com").rstrip("/"), thread_id)
+    return _real_pr_opener(thread_id)
 
 
 def _delivery_clone_url(target: str, creds: dict, repo: str) -> str:
@@ -1134,6 +1150,100 @@ def _delivery_clone_url(target: str, creds: dict, repo: str) -> str:
     return f"https://x-access-token:{token}@github.com/{repo}.git"
 
 
+def _batch_opener_builder(target: str, creds: dict, thread_id: str):
+    """回 batch 用的 build_opener(issue_number_for, pr_title_for) → PrOpener。
+    workdir 指向專案共用 clone dir；每 session 只 Closes 自己對應的 issue + 在該 issue 留言。"""
+    workdir_for = lambda _sid: orchestrator.project_clone_dir(thread_id)
+    already = lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", "")
+    if target == "gitlab":
+        from async_runtime.gitlab_mr import make_gitlab_mr_opener
+        base_url = (creds.get("base_url") or "https://gitlab.com").rstrip("/")
+        return lambda *, issue_number_for, pr_title_for: make_gitlab_mr_opener(
+            get_token=lambda: keystore.get_credentials("gitlab").get("token", ""),
+            workdir_for=workdir_for, base_url=base_url, already_opened=already,
+            issue_number_for=issue_number_for, pr_title_for=pr_title_for)
+    from async_runtime.github_pr import make_github_pr_opener
+    return lambda *, issue_number_for, pr_title_for: make_github_pr_opener(
+        get_token=lambda: keystore.get_credentials("github").get("token", ""),
+        workdir_for=workdir_for, already_opened=already,
+        issue_number_for=issue_number_for, pr_title_for=pr_title_for)
+
+
+def _batch_issue_lister(target: str, creds: dict, repo: str):
+    """回 list_issues() → repo 的 open issue (number, title)，供 story↔issue 比對。"""
+    token = creds.get("token", "")
+    if target == "gitlab":
+        from async_runtime.gitlab_mr import list_open_issues as gl_list
+        base = (creds.get("base_url") or "https://gitlab.com").rstrip("/")
+        return lambda: gl_list(base, token, repo)
+    from async_runtime.github_pr import list_open_issues as gh_list
+    return lambda: gh_list(repo, token)
+
+
+def _implement_persona_provider(reg: Registry, thread_id: str):
+    """組 roles pipeline 的 persona 注入器：step(lead/rd/tester/reviewer) → 綁定 agent 的 system_prompt。
+
+    來源是該 thread 生效 workflow 的 agent_bindings["implement"]（binding.role 即步驟名；
+    rd 可多綁，取第一個）。無綁定的步驟回 ""（orchestrator 退回內建預設 persona）。
+    完全無綁定 → 回 None（零行為改變）。"""
+    wf = app.state.engine.active_workflow_for(thread_id)
+    raw = wf.agent_bindings.get("implement", ()) if wf else ()
+    by_step: dict[str, str] = {}
+    for b in raw:
+        role = getattr(b, "role", "") or ""
+        aid = getattr(b, "agent_id", "") or ""
+        if role and aid and role not in by_step:   # 同 step 取第一個綁定
+            by_step[role] = aid
+    if not by_step:
+        return None
+
+    def persona_for(step: str) -> str:
+        aid = by_step.get(step)
+        if not aid:
+            return ""
+        spec = resolve_agent(reg, aid)
+        return (spec.system_prompt or "").strip() if spec else ""
+
+    return persona_for
+
+
+def _implement_runner_provider(reg: Registry, thread_id: str):
+    """組 roles pipeline 的 per-step runner 注入器：step → 依綁定 agent 的 model_choice 解析 runner。
+
+    model_choice 對應已註冊且可用的 async runner（claude-cli / codex-cli…）→ 回該 runner 實例；
+    無綁定 / 無 model_choice / runner 未註冊 / 不可用 → 回 None（該步退回傳入的預設 runner，並 log）。
+    純文字 model（如 agy-cli）沒有對應的 implement runner，故自然退回預設 runner。
+    完全無綁定 → 回 None（零行為改變）。"""
+    wf = app.state.engine.active_workflow_for(thread_id)
+    raw = wf.agent_bindings.get("implement", ()) if wf else ()
+    model_by_step: dict[str, str] = {}
+    for b in raw:
+        role = getattr(b, "role", "") or ""
+        aid = getattr(b, "agent_id", "") or ""
+        if role and aid and role not in model_by_step:
+            spec = resolve_agent(reg, aid)
+            if spec and spec.model_choice:
+                model_by_step[role] = spec.model_choice
+    if not model_by_step:
+        return None
+
+    def runner_for(step: str):
+        mc = model_by_step.get(step)
+        if not mc:
+            return None
+        cls = reg.runners.get(mc)
+        if cls is None:
+            log.warning("implement step '%s' model '%s' 無對應 async runner，退回預設 runner", step, mc)
+            return None
+        inst = cls()
+        if not inst.is_available():
+            log.warning("implement step '%s' runner '%s' 在此環境不可用，退回預設 runner", step, mc)
+            return None
+        return inst
+
+    return runner_for
+
+
 @app.post("/api/implement/start", response_model=ImplementStartResponse)
 async def implement_start(req: ImplementStartRequest):
     """啟動一次 async 實作 session（非阻塞，立刻回 session_id）。
@@ -1143,6 +1253,8 @@ async def implement_start(req: ImplementStartRequest):
     """
     if dal.get_project(req.thread_id) is None:
         raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{req.thread_id}' 不存在"))
+    if impl_dal.has_active_for_thread(req.thread_id):
+        raise HTTPException(409, detail=error_detail("impl_in_progress", "此專案已有實作在進行中（共用一份工作目錄），請等它結束或先取消"))
     reg = _registry()
     runner_cls = reg.runners.get(req.runner)
     if runner_cls is None:
@@ -1156,9 +1268,10 @@ async def implement_start(req: ImplementStartRequest):
     hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
     title = req.title.strip() or f"Implement {req.thread_id[:8]}"
     mode = req.mode if req.mode in ("single", "roles") else "single"
-    # claude-cli（真實執行）→ 解析專案 delivery repo（new 模式 lazy 建 repo）+ clone + 審批開 PR。
+    # claude-cli（真實執行）→ 解析專案 delivery repo（new 模式 lazy 建 repo）+ clone + 開 PR。
     is_real = req.runner == "claude-cli"
-    auto_approve = req.auto_approve if req.auto_approve is not None else (not is_real)
+    # 不做人工審批：預設一律 auto-approve（成功即開 PR）；仍可由請求顯式覆寫
+    auto_approve = req.auto_approve if req.auto_approve is not None else True
     target_repo = req.target_repo
     clone_url = ""
     open_pr = None
@@ -1172,13 +1285,133 @@ async def implement_start(req: ImplementStartRequest):
         clone_url = _delivery_clone_url(target, creds, target_repo)
         if not clone_url:
             raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
-        open_pr = _delivery_opener(target, creds)
+        open_pr = _delivery_opener(target, creds, req.thread_id)
+    persona_for = _implement_persona_provider(reg, req.thread_id) if mode == "roles" else None
+    # per-step runner 只在「真實 runner」時套用；mock = 整條 dry-run，不被 per-step 覆蓋
+    runner_for = (_implement_runner_provider(reg, req.thread_id)
+                  if (mode == "roles" and req.runner != "mock") else None)
     session_id = orchestrator.start_session(
         thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
         target_repo=target_repo, title=title, hooks=hooks, mode=mode,
         open_pr=open_pr, auto_approve=auto_approve, clone_url=clone_url,
+        persona_for=persona_for, runner_for=runner_for,
     )
     return ImplementStartResponse(session_id=session_id)
+
+
+@app.post("/api/implement/start-batch", response_model=ImplementBatchStartResponse)
+async def implement_start_batch(req: ImplementBatchStartRequest):
+    """逐 issue 依序實作：把該 thread 的 stories 拆成逐 story，依編號依序、一次一個 issue 實作。
+
+    每個 story 各開 branch/PR、PR 只 `Closes` 對應 issue 並在該 issue 留言；做完才換下一個（QA gate）。
+    非阻塞，立刻回 batch_id + 各 story 對應的 session/issue。"""
+    if dal.get_project(req.thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{req.thread_id}' 不存在"))
+    if impl_dal.has_active_for_thread(req.thread_id):
+        raise HTTPException(409, detail=error_detail("impl_in_progress", "此專案已有實作在進行中（共用一份工作目錄），請等它結束或先取消"))
+    reg = _registry()
+    runner_cls = reg.runners.get(req.runner)
+    if runner_cls is None:
+        raise HTTPException(400, detail=error_detail("runner_not_found", f"runner '{req.runner}' 未註冊"))
+    if not runner_cls().is_available():
+        raise HTTPException(400, detail=error_detail("runner_unavailable", f"runner '{req.runner}' 在此環境不可用"))
+    story_artifact = dal.get_artifact(req.thread_id, "stories") or ""
+    if not story_artifact.strip():
+        raise HTTPException(400, detail=error_detail("story_empty", "沒有 stories 可實作：先生成 stories"))
+    hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
+    mode = req.mode if req.mode in ("single", "roles") else "roles"
+
+    is_real = req.runner == "claude-cli"
+    target_repo = req.target_repo
+    clone_url = ""
+    list_issues = None
+    build_opener = None
+    merge_pr = None
+    if is_real:
+        from delivery_repo import DeliveryRepoError, resolve_project_repo
+        try:
+            target, target_repo = await asyncio.to_thread(resolve_project_repo, reg, req.thread_id)
+        except DeliveryRepoError as exc:
+            raise HTTPException(400, detail=error_detail("delivery_not_configured", str(exc)))
+        creds = keystore.get_credentials(target)
+        clone_url = _delivery_clone_url(target, creds, target_repo)
+        if not clone_url:
+            raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
+        list_issues = _batch_issue_lister(target, creds, target_repo)
+
+        def build_opener(*, batch_id, issue_number_for, pr_title_for):
+            # workdir 指向專案共用 clone dir（batch_id 此處不需要）
+            return _batch_opener_builder(target, creds, req.thread_id)(
+                issue_number_for=issue_number_for, pr_title_for=pr_title_for)
+
+        # 策略 A：過 gate 即依序 merge（目前僅 github）。gitlab + auto_merge 暫不支援（merge_pr 留 None）
+        if req.auto_merge and target == "github":
+            from async_runtime.github_pr import make_github_pr_merger
+            merge_pr = make_github_pr_merger(
+                get_token=lambda: keystore.get_credentials("github").get("token", ""),
+                repo=target_repo,
+                pr_url_for=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url") or "",
+            )
+        elif req.auto_merge and target != "github":
+            log.warning("auto_merge 目前僅支援 github（target=%s）→ 不自動 merge", target)
+
+    persona_for = _implement_persona_provider(reg, req.thread_id) if mode == "roles" else None
+    runner_for = (_implement_runner_provider(reg, req.thread_id)
+                  if (mode == "roles" and req.runner != "mock") else None)
+    try:
+        result = impl_batch.start_batch(
+            thread_id=req.thread_id, story_artifact=story_artifact,
+            runner_factory=runner_cls, runner_choice=req.runner, mode=mode,
+            target_repo=target_repo, clone_url=clone_url, list_issues=list_issues,
+            build_opener=build_opener, hooks=hooks, stop_on_failure=req.stop_on_failure,
+            persona_for=persona_for, runner_for=runner_for, merge_pr=merge_pr,
+        )
+    except impl_batch.BatchError as exc:
+        raise HTTPException(400, detail=error_detail("batch_empty", str(exc)))
+    return ImplementBatchStartResponse(
+        batch_id=result["batch_id"], total=result["total"],
+        items=[ImplementBatchItem(**it) for it in result["items"]],
+    )
+
+
+def _batch_response(b: dict) -> ImplementBatchResponse:
+    sessions = impl_dal.list_sessions_by_batch(b["batch_id"])
+    items = [
+        ImplementBatchItem(
+            session_id=s["session_id"], story_key=_row_get(s, "story_key", "") or "",
+            title=s["title"], issue_number=_row_get(s, "issue_number"),
+            status=s["status"], pr_url=s["pr_url"],
+        )
+        for s in sessions
+    ]
+    return ImplementBatchResponse(
+        batch_id=b["batch_id"], thread_id=b["thread_id"], target_repo=b["target_repo"],
+        runner=b["runner"], mode=b["mode"], total=b["total"], status=b["status"],
+        stop_on_failure=bool(b["stop_on_failure"]), error_message=b["error_message"],
+        created_at=b["created_at"], updated_at=b["updated_at"], items=items,
+    )
+
+
+@app.get("/api/implement/batches/{batch_id}", response_model=ImplementBatchResponse)
+async def implement_batch(batch_id: int):
+    b = impl_dal.get_batch(batch_id)
+    if b is None:
+        raise HTTPException(404, detail=error_detail("batch_not_found", f"batch {batch_id} 不存在"))
+    return _batch_response(b)
+
+
+@app.get("/api/implement/threads/{thread_id}/batches", response_model=ImplementBatchListResponse)
+async def implement_batches(thread_id: str):
+    batches = impl_dal.list_batches(thread_id)
+    return ImplementBatchListResponse(batches=[_batch_response(b) for b in batches])
+
+
+@app.post("/api/implement/batches/{batch_id}/cancel", response_model=ImplementBatchCancelResponse)
+async def implement_batch_cancel(batch_id: int):
+    if impl_dal.get_batch(batch_id) is None:
+        raise HTTPException(404, detail=error_detail("batch_not_found", f"batch {batch_id} 不存在"))
+    requested = await impl_batch.request_cancel(batch_id)
+    return ImplementBatchCancelResponse(batch_id=batch_id, cancel_requested=requested)
 
 
 @app.get("/api/implement/threads/{thread_id}/sessions", response_model=ImplementSessionListResponse)
@@ -1211,7 +1444,7 @@ async def implement_approve(session_id: int):
     creds = keystore.get_credentials(target)
     if not creds.get("token"):
         raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
-    opener = _delivery_opener(target, creds)
+    opener = _delivery_opener(target, creds, s["thread_id"])
     try:
         pr_url = await asyncio.to_thread(opener, session_id, s["target_repo"], "")
     except RuntimeError as exc:   # PrError / MrError 皆 RuntimeError 子類

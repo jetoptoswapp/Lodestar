@@ -109,13 +109,37 @@ def test_open_pr_passes_issue_numbers(monkeypatch, tmp_path):
     _patch_git(monkeypatch)
     monkeypatch.setattr(github_pr, "list_open_issue_numbers", lambda repo, token, **k: [1, 2, 3])
     seen = {}
-    def fake_create(repo, token, head, base, sid, issue_numbers=None):
+    def fake_create(repo, token, head, base, sid, issue_numbers=None, title=""):
         seen["nums"] = issue_numbers
         return "https://github.com/o/r/pull/1"
     monkeypatch.setattr(github_pr, "_create_pr", fake_create)
     opener = make_github_pr_opener(get_token=lambda: "tok", workdir_for=lambda sid: tmp_path)
     assert opener(7, "o/r", "") == "https://github.com/o/r/pull/1"
     assert seen["nums"] == [1, 2, 3]
+
+
+def test_open_pr_batch_closes_single_issue_and_comments(monkeypatch, tmp_path):
+    """batch 路徑：issue_number_for 指定單一 issue → PR 只 Closes 該 issue + 在該 issue comment。"""
+    _patch_git(monkeypatch)
+    # batch 路徑不該呼叫 list_open_issue_numbers（全抓）
+    monkeypatch.setattr(github_pr, "list_open_issue_numbers",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不該全抓")))
+    seen = {}
+    def fake_create(repo, token, head, base, sid, issue_numbers=None, title=""):
+        seen["nums"] = issue_numbers
+        seen["title"] = title
+        return "https://github.com/o/r/pull/9"
+    monkeypatch.setattr(github_pr, "_create_pr", fake_create)
+    commented = {}
+    monkeypatch.setattr(github_pr, "add_issue_comment",
+                        lambda repo, token, n, body: commented.update(n=n, body=body))
+    opener = make_github_pr_opener(
+        get_token=lambda: "tok", workdir_for=lambda sid: tmp_path,
+        issue_number_for=lambda sid: 42, pr_title_for=lambda sid: "Story 1.1 — skeleton")
+    assert opener(7, "o/r", "") == "https://github.com/o/r/pull/9"
+    assert seen["nums"] == [42]
+    assert seen["title"] == "Story 1.1 — skeleton"
+    assert commented["n"] == 42 and "pull/9" in commented["body"]
 
 
 def test_rollback_on_pr_failure(monkeypatch, tmp_path):

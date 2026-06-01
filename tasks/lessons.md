@@ -68,3 +68,15 @@
 - **真因**：使用者的 uvicorn（`start.sh` 起、**無 `--reload`**）在改 code 前就啟動，running process 跑的是舊 code；改檔 / commit 不會自動載入。
 - **診斷法**：`ps -eo pid,lstart,command | grep uvicorn` 取 process 啟動時間，比對 fix 的 commit 時間（`git log -1`）/ 改檔時間（`stat`）。process **早於** fix → 舊 code → 要重啟。一次比對就定位，免得瞎猜或重查。
 - **通則**：使用者回報「fix 沒生效」時，**先確認 running server 已重啟**（process 啟動時間晚於改檔）再懷疑 code。dev server 建議開 `--reload` 根治此坑。
+
+## 「從 issues 實作」的單位必須是「逐 issue、過 QA 才換下一個」，不能整坨丟一次
+- **症狀**：對 SMKB-v2（44 story issues）跑 implement → issue 跳著做、完全沒開 PR、issue 沒更新。使用者一句「行為不對」抓包。
+- **真因**：`implement_start` 把整份 stories artifact 當**一個** story 字串塞進**一個** session，`run_implementation_roles` 對這整坨只跑一輪 → RD 想一次做完 44 story → 撞 1800s timeout（exit 143）→ 走不到開 PR；關 issue 只靠 PR body `Closes` 且一次塞所有 open issue（顆粒度錯）。
+- **修法**：加一層 batch 編排（`async_runtime/batch.py`）逐 story 依序、一次一個 issue、做完才換下一個（roles 的 tester+reviewer 即 QA gate）；一 issue 一 branch/PR、PR 只 Closes 該 issue、開完在該 issue 留言。複用現成 parser（排序）+ roles pipeline + PrOpener，不動單 session 核心。
+- **通則**：實作「從 GitHub/GitLab issues 出貨」類功能，工作單位是 **one issue at a time → QA gate → 一 issue 一 PR → 更新該 issue**（即內建 *-delivery skill 的語義）。別把整個 backlog 丟給一個 agent run；那必然跳著做、超時、開不了 PR。設計前先問清「PR/issue 顆粒度、處理順序、失敗策略」。
+
+## 互動 affordance 要明顯：別用「點了才知道」的隱藏操作
+- **症狀**：implement binding 的 role 用「點 chip 文字循環切換」(lead→rd→tester→reviewer)，只有 `title` tooltip。使用者回報「UI 不明顯，不小心點到才知道能改」。
+- **真因**：cycle-on-click 是隱藏 affordance——外觀像純標籤、不像控制項；且循環式要點多次才到目標 role，N 個選項時更糟。
+- **修法**：改成明確下拉選單（`BindingChip` 加 dotted underline + `▾` caret 暗示可點，展開列出該 stage 所有合法 role、當前打勾、點一下直接設定）。
+- **通則**：可改的值要長得像控制項（caret / underline / select 外觀），並讓選項一次可見；循環式切換只適合 2 值且有明顯提示。新增可互動元素時先問：「不靠 tooltip，使用者看得出這裡能點、能改成什麼嗎？」

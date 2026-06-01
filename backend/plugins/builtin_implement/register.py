@@ -9,13 +9,14 @@ from plugin_api import PluginHost
 from plugin_api.workflow import WorkflowSpec
 
 from plugins.builtin_implement.hooks import DenyProtectedBranchHook, RedactSecretsHook
-from plugins.builtin_implement.runner import ClaudeCliRunner, MockRunner
+from plugins.builtin_implement.runner import ClaudeCliRunner, CodexCliRunner, MockRunner
 from plugins.builtin_implement.stage import IMPLEMENT_STAGE
 
 
 def register(host: PluginHost) -> None:
     # runners + tool hooks（M5.1）
     host.register_runner("claude-cli", ClaudeCliRunner)
+    host.register_runner("codex-cli", CodexCliRunner)
     host.register_runner("mock", MockRunner)
     host.register_hook("tool", DenyProtectedBranchHook())
     host.register_hook("tool", RedactSecretsHook())
