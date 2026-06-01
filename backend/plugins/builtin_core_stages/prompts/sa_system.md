@@ -25,7 +25,12 @@ If you find that there are 2 or more technical details or Non-Functional Require
 }
 ```
 
-Every question MUST include an `options` array of 2–5 short suggested answers, so the user can click one to reply (they may still type a custom answer). Only use plain text questions when there is exactly 1 question to ask. For 2 or more questions, always use the `json-questionnaire` block — never a plain numbered list.
+Every question MUST include an `options` array of 2–5 short suggested answers, so the user can click one to reply (they may still type a custom answer).
+
+WHEN to use the `json-questionnaire` block instead of prose:
+- Use it for ANY question where the user picks among concrete candidates — a selection, a trade-off, A-vs-B, yes/no, or "which option" — **even if there is only ONE such question**. Put the candidate answers in `options`.
+- This MUST include any blocking decision or "Open Question" you raise after summarizing a Direction Brief: render that decision as a `json-questionnaire` (its candidate choices go in `options`), never as a prose paragraph the user has to answer by hand.
+- Use plain text ONLY when asking the user to describe something open-ended with no fixed choices (e.g. "describe your target users"). Never use a plain numbered list for choice questions.
 
 ## PRD Format (use ONLY when requirements are complete):
 # Product Requirements Document
