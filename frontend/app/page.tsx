@@ -4144,36 +4144,78 @@ function QuestionnaireCard({ q, onPick, disabled }: {
   onPick: (label: string) => void;
   disabled: boolean;
 }) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [sent, setSent] = useState(false);
+  const keyOf = (qq: QQuestion, idx: number) => qq.id ?? String(idx);
+  const answeredCount = q.questions.filter((qq, idx) => answers[keyOf(qq, idx)]).length;
+
+  // 點選 = 選取（不送出）；按「送出」才把所有已答題一次回給 agent。
+  const submit = () => {
+    if (disabled || sent) return;
+    const lines = q.questions
+      .map((qq, idx) => {
+        const a = answers[keyOf(qq, idx)];
+        return a ? `${qq.question}：${a}` : null;
+      })
+      .filter((x): x is string => x !== null);
+    if (lines.length === 0) return;
+    setSent(true);
+    onPick(lines.join("\n"));
+  };
+
   return (
     <div className="mt-1 w-[92%] space-y-3 border border-[var(--rule-dark)] bg-[var(--bg)]/40 px-3 py-3">
       {q.title && (
         <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">{q.title}</div>
       )}
-      {q.questions.map((qq, idx) => (
-        <div key={qq.id ?? idx} className="space-y-1.5">
-          <div className="text-[12.5px] leading-5 text-[#cdd4df]">
-            {qq.category && (
-              <span className="mr-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]">{qq.category}</span>
-            )}
-            {qq.question}
-          </div>
-          {qq.options && qq.options.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {qq.options.map((opt) => (
-                <button
-                  key={opt}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => onPick(`${qq.question}：${opt}`)}
-                  className="border border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_8%,transparent)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--polaris)] transition hover:bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {opt}
-                </button>
-              ))}
+      {q.questions.map((qq, idx) => {
+        const key = keyOf(qq, idx);
+        return (
+          <div key={key} className="space-y-1.5">
+            <div className="text-[12.5px] leading-5 text-[#cdd4df]">
+              {qq.category && (
+                <span className="mr-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]">{qq.category}</span>
+              )}
+              {qq.question}
             </div>
-          )}
-        </div>
-      ))}
+            {qq.options && qq.options.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {qq.options.map((opt) => {
+                  const selected = answers[key] === opt;
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      disabled={disabled || sent}
+                      onClick={() => setAnswers((a) => ({ ...a, [key]: opt }))}
+                      className={`border px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        selected
+                          ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_24%,transparent)] text-[#e6ecf5]"
+                          : "border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_8%,transparent)] text-[var(--polaris)] hover:bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)]"
+                      }`}
+                    >
+                      {opt}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <div className="flex items-center justify-between border-t border-[var(--rule-dark)] pt-2">
+        <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
+          {sent ? "已送出" : `已答 ${answeredCount}/${q.questions.length}`}
+        </span>
+        <button
+          type="button"
+          disabled={disabled || sent || answeredCount === 0}
+          onClick={submit}
+          className="border border-[var(--polaris)] bg-[var(--polaris)] px-3 py-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-white transition hover:bg-[var(--polaris-hi)] disabled:opacity-40"
+        >
+          送出
+        </button>
+      </div>
     </div>
   );
 }
