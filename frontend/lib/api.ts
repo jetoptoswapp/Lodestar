@@ -367,6 +367,7 @@ export type ImplementLogLine = {
   attempt: number;
   kind: string;                   // log/event/system
   content: string;
+  created_at: number | null;      // epoch 秒，顯示 timestamp 用
 };
 
 export type ImplementLog = {

@@ -3005,7 +3005,13 @@ function ImplBatchProgress({
 
 // ---------- implement log：把 claude-cli stream-json 整理成可讀事件 + 統計 ----------
 type ImplTone = "agent" | "tool" | "ok" | "warn" | "muted";
-type ImplEvent = { key: string; attempt: number; tone: ImplTone; text: string };
+type ImplEvent = { key: string; attempt: number; tone: ImplTone; text: string; ts: number | null };
+
+// epoch 秒 → HH:MM:SS（24h）；無值回 ""
+function fmtLogTs(sec: number | null): string {
+  if (!sec) return "";
+  return new Date(sec * 1000).toLocaleTimeString("en-GB", { hour12: false });
+}
 type ImplStats = {
   turns: number; durationMs: number; costUsd: number;
   toolCalls: number; filesWritten: number; hasCost: boolean;
@@ -3031,6 +3037,7 @@ function parseImplLog(lines: ImplementLogLine[]): { events: ImplEvent[]; stats: 
   const events: ImplEvent[] = [];
   const stats: ImplStats = { turns: 0, durationMs: 0, costUsd: 0, toolCalls: 0, filesWritten: 0, hasCost: false };
   for (const l of lines) {
+    const pushE = (e: Omit<ImplEvent, "ts">) => events.push({ ...e, ts: l.created_at });
     const raw = l.content.replace(/\n$/, "");
     if (!raw.trim()) continue;
     let m: { type?: string; subtype?: string; model?: string; is_error?: boolean;
@@ -3038,21 +3045,21 @@ function parseImplLog(lines: ImplementLogLine[]): { events: ImplEvent[]; stats: 
              message?: { content?: Array<Record<string, unknown>> } } | null = null;
     try { m = JSON.parse(raw); } catch {
       // 非 JSON（mock 純文字 / 後端 system 註記）→ 原樣顯示
-      events.push({ key: `${l.id}`, attempt: l.attempt, tone: l.kind === "system" ? "warn" : "muted", text: raw });
+      pushE({ key: `${l.id}`, attempt: l.attempt, tone: l.kind === "system" ? "warn" : "muted", text: raw });
       continue;
     }
     const t = m?.type;
     if (t === "assistant") {
       (m?.message?.content ?? []).forEach((b, bi) => {
         if (b.type === "text" && typeof b.text === "string" && b.text.trim()) {
-          events.push({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "agent", text: b.text.trim() });
+          pushE({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "agent", text: b.text.trim() });
         } else if (b.type === "tool_use") {
           stats.toolCalls++;
           const name = (b.name as string) ?? "tool";
           if (IMPL_FILE_TOOLS.has(name)) stats.filesWritten++;
           const inp = (b.input ?? {}) as Record<string, string>;
           const arg = implShortPath(inp.file_path || inp.path || "") || inp.command || inp.pattern || "";
-          events.push({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "tool", text: `→ ${name}${arg ? " " + arg.slice(0, 120) : ""}` });
+          pushE({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "tool", text: `→ ${name}${arg ? " " + arg.slice(0, 120) : ""}` });
         }
         // thinking → 跳過
       });
@@ -3060,7 +3067,7 @@ function parseImplLog(lines: ImplementLogLine[]): { events: ImplEvent[]; stats: 
       (m?.message?.content ?? []).forEach((b, bi) => {
         if (b.type === "tool_result" && b.is_error) {
           const c = typeof b.content === "string" ? b.content : JSON.stringify(b.content);
-          events.push({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "warn", text: `✗ ${c.slice(0, 160)}` });
+          pushE({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "warn", text: `✗ ${c.slice(0, 160)}` });
         }
         // 成功 tool_result（如 File created）→ 跳過，tool_use 已表達
       });
@@ -3069,10 +3076,10 @@ function parseImplLog(lines: ImplementLogLine[]): { events: ImplEvent[]; stats: 
       if (typeof m?.duration_ms === "number") stats.durationMs += m.duration_ms;
       if (typeof m?.total_cost_usd === "number") { stats.costUsd += m.total_cost_usd; stats.hasCost = true; }
       const ok = m?.subtype === "success" && !m?.is_error;
-      events.push({ key: `${l.id}`, attempt: l.attempt, tone: ok ? "ok" : "warn",
+      pushE({ key: `${l.id}`, attempt: l.attempt, tone: ok ? "ok" : "warn",
         text: ok ? "✓ attempt 完成" : `⚠ attempt 結束（${m?.subtype ?? "error"}）` });
     } else if (t === "system" && m?.subtype === "init") {
-      events.push({ key: `${l.id}`, attempt: l.attempt, tone: "muted", text: `session 啟動${m?.model ? " · " + m.model : ""}` });
+      pushE({ key: `${l.id}`, attempt: l.attempt, tone: "muted", text: `session 啟動${m?.model ? " · " + m.model : ""}` });
     }
     // system/thinking_tokens、rate_limit_event → 隱藏
   }
@@ -3469,6 +3476,7 @@ function ImplementWorkspace({
                     <ul className="space-y-0.5 font-[family-name:var(--font-mono)] text-[11px] leading-5">
                       {lines.map((l) => (
                         <li key={l.id} className={l.kind === "system" ? "text-[#e0a05b]" : "text-[#cdd4df]"}>
+                          {l.created_at && <span className="mr-1 tabular-nums opacity-30">{fmtLogTs(l.created_at)}</span>}
                           <span className="opacity-40">[a{l.attempt}]</span> {l.content.replace(/\n$/, "")}
                         </li>
                       ))}
@@ -3482,6 +3490,7 @@ function ImplementWorkspace({
                     <ul className="space-y-1 font-[family-name:var(--font-mono)] text-[11px] leading-5">
                       {logEvents.map((e) => (
                         <li key={e.key} className={IMPL_TONE_CLASS[e.tone]}>
+                          {e.ts && <span className="mr-1 tabular-nums opacity-30">{fmtLogTs(e.ts)}</span>}
                           <span className="opacity-30">[a{e.attempt}]</span>{" "}
                           <span className={e.tone === "agent" ? "whitespace-pre-wrap" : ""}>{e.text}</span>
                         </li>

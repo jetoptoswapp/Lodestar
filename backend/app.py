@@ -1509,7 +1509,7 @@ async def implement_log(session_id: int, after_id: int = 0):
     next_cursor = rows[-1]["id"] if rows else after_id
     lines = [
         ImplementLogLine(id=r["id"], run_id=r["run_id"], attempt=r["attempt"],
-                         kind=r["kind"], content=r["content"])
+                         kind=r["kind"], content=r["content"], created_at=r.get("created_at"))
         for r in rows
     ]
     runs = [_impl_run_info(r) for r in impl_dal.list_runs(session_id)]

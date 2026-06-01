@@ -488,6 +488,7 @@ class ImplementLogLine(BaseModel):
     attempt: int
     kind: str                       # log / event / system
     content: str
+    created_at: Optional[float] = None   # epoch 秒，前端顯示 timestamp 用
 
 
 class ImplementLogResponse(BaseModel):
