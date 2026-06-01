@@ -492,8 +492,30 @@ export default function Page() {
     () => Object.fromEntries(catalogStages.map((s) => [s.id, { label: s.label, description: s.description }])),
     [catalogStages],
   );
+  // StageHeader 用：stage_id → 顯示 meta（含 icon）。
+  const stageMeta = useMemo(
+    () => Object.fromEntries(catalogStages.map((s) => [s.id, { label: s.label, description: s.description, icon: s.icon }])),
+    [catalogStages],
+  );
   // RCA thread：綁定的 workflow 以 rca 開頭 → workspace 走 RcaWorkspace（與 PRD 流程互不干擾）
   const isRcaThread = !!currentProjectWorkflowId && currentProjectWorkflowId.startsWith("rca");
+
+  // M3：StageHeader 階段圖表改 catalog-driven —— 依「當前綁定 workflow 的 stages」動態渲染，
+  // 不再用寫死的 STAGES 常數（否則切 workflow 中央圖表不變，使用者覺得「沒反應」）。
+  const activeWorkflow = useMemo(
+    () => workflowList.find((w) => w.id === (currentProjectWorkflowId ?? "default")) ?? null,
+    [workflowList, currentProjectWorkflowId],
+  );
+  const activeStages = useMemo<WorkflowStage[]>(
+    () => activeWorkflow?.stages ?? STAGES.map((s) => ({ stage_id: s.id, depends_on: [], agent_bindings: [], collab_mode: "single" })),
+    [activeWorkflow],
+  );
+  const workflowSource = activeWorkflow?.source_plugin ?? activeWorkflow?.source ?? "—";
+  // thread 初次載入 / workflow 變動後，若 selected 不在當前 stages 內 → 對齊到第一個 stage
+  useEffect(() => {
+    const ids = activeStages.map((s) => s.stage_id);
+    if (ids.length && !ids.includes(selected)) setSelected(ids[0]);
+  }, [activeStages, selected]);
 
   // onChangeProjectWorkflow 移到 refreshPrd/Arch/Stories 後（避免 TS 引用順序錯誤）
 
@@ -664,6 +686,7 @@ export default function Page() {
     try {
       await setProjectWorkflow(thread, workflowId);
       setCurrentProjectWorkflowId(workflowId);
+      // 切後分頁對齊交給 activeStages 的 effect 處理（currentProjectWorkflowId 變 → 自動跳第一個 stage）
       // 切後重 fetch 三 stage state
       resetThreadDerivedState();
       refreshPrd(thread);
@@ -956,6 +979,9 @@ export default function Page() {
                   workflows={workflowList}
                   currentWorkflowId={currentProjectWorkflowId}
                   onChangeWorkflow={onChangeProjectWorkflow}
+                  stages={activeStages}
+                  stageMeta={stageMeta}
+                  workflowSource={workflowSource}
                 />
                 <div className="flex min-h-0 flex-1">
                   {selected === "prd" && (
@@ -1624,6 +1650,7 @@ function WorkflowSwitcher({ workflows, currentId, onChange }: {
 function StageHeader({
   selected, onSelect, prdStatus, archStatus, storiesStatus, threadName,
   workflows, currentWorkflowId, onChangeWorkflow,
+  stages, stageMeta, workflowSource,
 }: {
   selected: string;
   onSelect: (s: string) => void;
@@ -1634,7 +1661,20 @@ function StageHeader({
   workflows: Workflow[];        // M3：thread workflow switcher
   currentWorkflowId: string | null;
   onChangeWorkflow: (workflowId: string | null) => void;
+  stages: WorkflowStage[];      // M3：當前綁定 workflow 的 stages（有序）→ 圖表 catalog-driven
+  stageMeta: Record<string, { label: string; description: string; icon: string }>;
+  workflowSource: string;       // 來源標籤（source_plugin / source）
 }) {
+  // 已知 stage（prd/architecture/stories/implement）的精緻顯示 meta；未知 stage fallback catalog / id。
+  const displayOf = (sid: string) => {
+    const builtin = STAGES.find((s) => s.id === sid);
+    const meta = stageMeta[sid];
+    return {
+      label: builtin?.label ?? meta?.label ?? sid,
+      caption: builtin?.caption ?? meta?.description ?? "",
+      agent: builtin?.agent ?? "",
+    };
+  };
   // 把後端 status 字串映成 StageStatus（draft/approved/needs_revision；其餘 fallback draft）
   const normalize = (s: string): StageStatus =>
     s === "approved" || s === "needs_revision" || s === "draft" ? s : "draft";
@@ -1656,7 +1696,10 @@ function StageHeader({
   };
 
   return (
-    <div className="rise-3 border-b border-[var(--rule-dark)] px-10 pt-6 pb-4">
+    // relative z-30：rise 動畫的 transform 讓本 header 與下方 workspace section 各自成 stacking context，
+    // 且 workspace 是後續 sibling 會 paint 在上 → WorkflowSwitcher 下拉的下半部會被蓋住、點不到。
+    // 抬升 header 的 stacking context 蓋過 workspace，下拉項目才全可點。
+    <div className="rise-3 relative z-30 border-b border-[var(--rule-dark)] px-10 pt-6 pb-4">
       <div className="mb-3 flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
         <span>thread</span><span className="text-[#2a3041]">/</span>
         <span className="text-[#b8c0cf]">{threadName ?? "—"}</span><span className="text-[#2a3041]">·</span>
@@ -1666,16 +1709,20 @@ function StageHeader({
           currentId={currentWorkflowId}
           onChange={onChangeWorkflow}
         />
-        <span className="ml-auto">stages by <span className="text-[#b8c0cf]">builtin_core_stages</span></span>
+        <span className="ml-auto">stages by <span className="text-[#b8c0cf]">{workflowSource}</span></span>
       </div>
       <h1 className="mb-5 font-[family-name:var(--font-display)] text-[32px] font-semibold leading-none tracking-tight text-[#e6ecf5]">
         Requirement <em className="font-[family-name:var(--font-display)] italic text-[var(--polaris)]">chart</em>
       </h1>
       <ol className="flex items-stretch">
-        {STAGES.map((s, i) => {
-          const status = statusOf(s.id);
-          const badge = badgeOf(s.id, status);
-          const isSelected = s.id === selected;
+        {stages.map((st, i) => {
+          const sid = st.stage_id;
+          const disp = displayOf(sid);
+          const leadAgent = st.agent_bindings.find((b) => b.role === "lead")?.agent_id ?? st.agent_bindings[0]?.agent_id;
+          const agentLabel = disp.agent || leadAgent || (st.collab_mode !== "single" ? st.collab_mode : "—");
+          const status = statusOf(sid);
+          const badge = badgeOf(sid, status);
+          const isSelected = sid === selected;
           const isLocked = status === "locked";
           const topBorder = isSelected ? "border-t-[var(--polaris)]"
             : status === "approved" ? "border-t-[var(--approved)]"
@@ -1688,17 +1735,17 @@ function StageHeader({
             : isSelected ? "text-[var(--polaris)]"
             : "text-[var(--ink-muted)]";
           return (
-            <li key={s.id} className="flex flex-1 items-stretch">
-              <button disabled={isLocked} onClick={() => !isLocked && onSelect(s.id)}
+            <li key={sid} className="flex flex-1 items-stretch">
+              <button disabled={isLocked} onClick={() => !isLocked && onSelect(sid)}
                 className={`group relative w-full border-t-[2px] ${topBorder} py-3 pr-6 text-left transition ${isLocked ? "cursor-not-allowed opacity-55" : ""} ${isSelected ? "" : "hover:border-t-[#2e3441]"}`}>
                 <div className="flex items-baseline gap-3">
-                  <span className={`font-[family-name:var(--font-display)] text-[26px] font-semibold leading-none ${isLocked ? "text-[#404a5b]" : "text-[#e6ecf5]"}`}>{s.n}</span>
+                  <span className={`font-[family-name:var(--font-display)] text-[26px] font-semibold leading-none ${isLocked ? "text-[#404a5b]" : "text-[#e6ecf5]"}`}>{String(i + 1).padStart(2, "0")}</span>
                   <span className={`font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] ${badgeColor} ${status === "draft" && !isSelected ? "pulse-star" : ""}`}>{badge}</span>
                 </div>
-                <div className={`mt-1.5 font-[family-name:var(--font-display)] text-[16px] ${isLocked ? "text-[#5e6878]" : "text-[#cdd4df]"}`}>{s.label}</div>
-                <div className="mt-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{s.caption} · {s.agent}</div>
+                <div className={`mt-1.5 font-[family-name:var(--font-display)] text-[16px] ${isLocked ? "text-[#5e6878]" : "text-[#cdd4df]"}`}>{disp.label}</div>
+                <div className="mt-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">{disp.caption} · {agentLabel}</div>
               </button>
-              {i < STAGES.length - 1 && <div className="my-3 w-px self-stretch bg-[var(--rule-dark)]" />}
+              {i < stages.length - 1 && <div className="my-3 w-px self-stretch bg-[var(--rule-dark)]" />}
             </li>
           );
         })}
@@ -1787,7 +1834,9 @@ function PrdWorkspace({
           </ToolBtn>
         </div>
       </section>
-      <ChatPanel thread={thread} stageId="prd" stageLabel="SA Discovery"
+      {/* key=thread：切 thread 時整個 chat remount，重置 msgs/busy + 所有 QuestionnaireCard 的 sent/answers
+          （否則 index-based key 會讓舊卡片的 sent=true 殘留，新 thread 的選項變 disabled 無法選） */}
+      <ChatPanel key={thread ?? "none"} thread={thread} stageId="prd" stageLabel="SA Discovery"
         modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
     </div>
   );
@@ -2139,7 +2188,8 @@ function ArchWorkspace({
           </ToolBtn>
         </div>
       </section>
-      <ChatPanel thread={thread} stageId="architecture" stageLabel="Architecture Chat"
+      {/* key=thread：同 PRD chat，切 thread 時 remount 重置 QuestionnaireCard 卡片狀態 */}
+      <ChatPanel key={thread ?? "none"} thread={thread} stageId="architecture" stageLabel="Architecture Chat"
         modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
     </div>
   );
