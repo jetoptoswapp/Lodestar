@@ -23,7 +23,12 @@ def _slug(text: str) -> str:
     return (s or "lodestar-project")[:90]
 
 
-def resolve_project_repo(registry, thread_id: str) -> tuple[str, str]:
+def resolve_project_repo(registry, thread_id: str, *, create: bool = True) -> tuple[str, str]:
+    """回 (target, repo_full_name)。
+
+    create=False：唯讀解析（給 preview 用），new-mode 未建時回「預定要建的名稱」而不真的建 repo。
+    create=True ：new-mode 未建時呼 integration.create_repo lazy 建並回填 DB。
+    """
     proj = dal.get_project(thread_id)
     if proj is None:
         raise DeliveryRepoError(f"thread '{thread_id}' 不存在")
@@ -42,6 +47,12 @@ def resolve_project_repo(registry, thread_id: str) -> tuple[str, str]:
     if proj.get("repo_created"):
         return target, full                          # 已 lazy 建過，冪等回回填值
 
+    # new 模式、尚未建立：唯讀時回預定名稱，不產生副作用
+    name = (full.split("/")[-1] if full else "") or _slug(proj.get("name"))
+    owner = (proj.get("repo_owner") or "").strip()
+    if not create:
+        return target, (f"{owner}/{name}" if owner else name)
+
     integ = registry.integrations.get(target)
     if integ is None or getattr(integ, "create_repo", None) is None:
         raise DeliveryRepoError(f"integration '{target}' 不支援建立 repo")
@@ -49,8 +60,6 @@ def resolve_project_repo(registry, thread_id: str) -> tuple[str, str]:
     if not creds.get("token"):
         raise DeliveryRepoError(f"integration '{target}' 尚無 token（先到 INTEGRATIONS 設定）")
 
-    name = (full.split("/")[-1] if full else "") or _slug(proj.get("name"))
-    owner = (proj.get("repo_owner") or "").strip()
     visibility = (proj.get("repo_visibility") or "private").strip()
     created_full = integ.create_repo(creds, name, visibility, owner)
     dal.set_project_repo_created(thread_id, created_full)

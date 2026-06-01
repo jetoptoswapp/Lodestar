@@ -399,12 +399,13 @@ function PreviewStep({ items, itemCount, target }: { items: DeliveryItemPreview[
     return m;
   }, [items]);
   const totalEstimate = items.reduce((acc, it) => acc + it.estimate, 0);
-  // destination = config 裡的 repo（如 owner/repo）；所有 item 同一個，取第一筆即可。
-  const destination = items[0]?.destination ?? "";
-  const repoUrl =
-    destination && target === "github" ? `https://github.com/${destination}`
-    : destination && target === "gitlab" ? `https://gitlab.com/${destination}`
-    : null;
+  // destination = 專案 delivery repo；所有 item 同一個，取第一筆即可。
+  // 可能形式：完整 URL / owner-repo（owner/repo）/ 純名稱（new 模式尚未建立）。
+  const destination = (items[0]?.destination ?? "").trim();
+  const isUrl = /^https?:\/\//i.test(destination);
+  const isOwnerRepo = !isUrl && /^[\w.-]+\/[\w.-]+$/.test(destination);
+  const host = target === "gitlab" ? "https://gitlab.com" : "https://github.com";
+  const repoUrl = isUrl ? destination : isOwnerRepo ? `${host}/${destination}` : null;
 
   return (
     <div className="space-y-4">
@@ -435,6 +436,11 @@ function PreviewStep({ items, itemCount, target }: { items: DeliveryItemPreview[
             <code className="font-[family-name:var(--font-mono)] text-[13px] font-semibold text-[#e6ecf5]">
               {destination || "（未設定 repo）"}
             </code>
+          )}
+          {destination && !isUrl && !isOwnerRepo && (
+            <span className="border border-[var(--polaris)]/40 px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-wider text-[var(--polaris)]">
+              將新建
+            </span>
           )}
         </div>
       </div>

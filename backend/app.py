@@ -989,8 +989,16 @@ async def stories_preview_delivery(thread_id: str, req: DeliveryPublishRequest):
             detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
         )
     cfg = _effective_config(req.target, req.config)  # 合併 keystore 機密（如 token）
-    if not cfg.get("repo"):                          # token-only：repo 改由專案 delivery 設定提供（已建者）
-        cfg["repo"] = (dal.get_project(thread_id) or {}).get("repo_full_name", "")
+    # github/gitlab 有設專案 delivery → repo 以專案設定為準（蓋掉殘留在 keystore 的舊全域 repo）。
+    # preview 唯讀（create=False）：new 模式未建時回「預定要建的名稱」，不真的建 repo。
+    # 未設專案 delivery → 沿用 config/keystore 的 repo（向後相容）。
+    proj = dal.get_project(thread_id) or {}
+    if getattr(integ, "create_repo", None) is not None and (proj.get("delivery_target") or "").strip():
+        from delivery_repo import DeliveryRepoError, resolve_project_repo
+        try:
+            _, cfg["repo"] = resolve_project_repo(reg, thread_id, create=False)
+        except DeliveryRepoError:
+            pass                                     # 設定不完整 → preview 不阻擋，沿用既有值
     items = parse_stories_to_delivery_items(artifact, target_project=cfg.get("repo", ""))
     if not items:
         raise HTTPException(
@@ -1030,8 +1038,16 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
             detail=error_detail("stories_empty", "stories 還沒生成，不能 publish"),
         )
     cfg = _effective_config(req.target, req.config)  # 合併 keystore 機密（如 token）
-    if not cfg.get("repo"):                          # token-only：repo 改由專案 delivery 設定提供（已建者）
-        cfg["repo"] = (dal.get_project(thread_id) or {}).get("repo_full_name", "")
+    # github/gitlab 有設專案 delivery → repo 以專案設定為準；new 模式未建時在此 lazy 建（create=True）。
+    # 設定不完整（缺 token / existing 未填 repo）→ 明確 400，不默默退回殘留全域值。
+    # 未設專案 delivery → 沿用 config/keystore 的 repo（向後相容；publish_github 會自行驗 owner/repo）。
+    proj = dal.get_project(thread_id) or {}
+    if getattr(integ, "create_repo", None) is not None and (proj.get("delivery_target") or "").strip():
+        from delivery_repo import DeliveryRepoError, resolve_project_repo
+        try:
+            _, cfg["repo"] = await asyncio.to_thread(resolve_project_repo, reg, thread_id, create=True)
+        except DeliveryRepoError as exc:
+            raise HTTPException(400, detail=error_detail("delivery_repo_unresolved", str(exc)))
     items = parse_stories_to_delivery_items(artifact, target_project=cfg.get("repo", ""))
     if not items:
         raise HTTPException(400, detail=error_detail("stories_unparseable", "stories 解析失敗"))
