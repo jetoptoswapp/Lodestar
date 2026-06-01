@@ -399,6 +399,12 @@ function PreviewStep({ items, itemCount, target }: { items: DeliveryItemPreview[
     return m;
   }, [items]);
   const totalEstimate = items.reduce((acc, it) => acc + it.estimate, 0);
+  // destination = config 裡的 repo（如 owner/repo）；所有 item 同一個，取第一筆即可。
+  const destination = items[0]?.destination ?? "";
+  const repoUrl =
+    destination && target === "github" ? `https://github.com/${destination}`
+    : destination && target === "gitlab" ? `https://gitlab.com/${destination}`
+    : null;
 
   return (
     <div className="space-y-4">
@@ -410,6 +416,26 @@ function PreviewStep({ items, itemCount, target }: { items: DeliveryItemPreview[
           <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
             issues 將建立到 <span className="text-[var(--polaris)]">{target}</span> · 總估點 {totalEstimate}
           </span>
+        </div>
+        {/* 發到哪個 repo —— 發佈前最該確認的事，獨立一行顯眼標出 */}
+        <div className="mt-2.5 flex items-center gap-2 border-t border-[var(--rule-dark)] pt-2.5">
+          <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+            repo →
+          </span>
+          {repoUrl ? (
+            <a
+              href={repoUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="font-[family-name:var(--font-mono)] text-[13px] font-semibold text-[var(--polaris)] hover:underline"
+            >
+              {destination}
+            </a>
+          ) : (
+            <code className="font-[family-name:var(--font-mono)] text-[13px] font-semibold text-[#e6ecf5]">
+              {destination || "（未設定 repo）"}
+            </code>
+          )}
         </div>
       </div>
       {Object.entries(grouped).map(([group, list]) => (
