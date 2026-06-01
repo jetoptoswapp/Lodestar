@@ -30,22 +30,57 @@ def _git(wt: Path, args: list[str], *, check: bool = True) -> subprocess.Complet
     return proc
 
 
-def _create_pr(repo: str, token: str, head: str, base: str, session_id: int) -> str:
+def _gh_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "lodestar-impl",
+    }
+
+
+def list_open_issue_numbers(repo: str, token: str, *, max_pages: int = 5) -> list[int]:
+    """列 repo 的 open issue 編號（排除 PR——GitHub issues API 會混入 PR）。
+
+    給 PR body 自動帶 `Closes #N` 用：PR merge 進 default branch 時自動關閉這些 issue。
+    任何失敗回 []（開 PR 不該因列 issue 失敗而中斷）。"""
+    numbers: list[int] = []
+    try:
+        for page in range(1, max_pages + 1):
+            url = f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100&page={page}"
+            req = urllib.request.Request(url, headers=_gh_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not items:
+                break
+            for it in items:
+                if "pull_request" in it:        # PR 也出現在 issues API → 跳過
+                    continue
+                n = it.get("number")
+                if isinstance(n, int):
+                    numbers.append(n)
+            if len(items) < 100:
+                break
+    except Exception:                            # noqa: BLE001 —— 列舉失敗不影響開 PR
+        return []
+    return numbers
+
+
+def _create_pr(repo: str, token: str, head: str, base: str, session_id: int,
+               issue_numbers: Optional[list[int]] = None) -> str:
     url = f"https://api.github.com/repos/{repo}/pulls"
+    body = "Automated implementation by Lodestar. Review before merge."
+    if issue_numbers:
+        # GitHub：PR merge 進 default branch 時，body 內 `Closes #N` 會自動關閉對應 issue
+        body += "\n\n" + "\n".join(f"Closes #{n}" for n in issue_numbers)
     payload = {
         "title": f"Lodestar implementation (session {session_id})",
         "head": head, "base": base,
-        "body": "Automated implementation by Lodestar. Review before merge.",
+        "body": body,
     }
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "lodestar-impl",
-            "Content-Type": "application/json",
-        }, method="POST")
+        headers={**_gh_headers(token), "Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=20) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     pr_url = body.get("html_url")
@@ -93,8 +128,11 @@ def make_github_pr_opener(*, get_token: Callable[[], str],
         if push.returncode != 0:
             raise PrError(f"git push failed (exit {push.returncode})")   # 不回顯 stderr（含 token url）
 
+        # 自動關聯 issue：把 repo 現有 open issue 帶進 PR body 的 `Closes #N`
+        issue_numbers = list_open_issue_numbers(repo, token)
+
         try:
-            return _create_pr(repo, token, branch, base, session_id)
+            return _create_pr(repo, token, branch, base, session_id, issue_numbers)
         except Exception as exc:                       # rollback：刪遠端 branch
             subprocess.run(["git", "-C", str(wt), "push", remote, "--delete", branch],
                            capture_output=True)
