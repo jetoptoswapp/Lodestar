@@ -2884,6 +2884,91 @@ function ImplAttemptChip({ run }: { run: ImplementRun }) {
   );
 }
 
+// ---------- implement log：把 claude-cli stream-json 整理成可讀事件 + 統計 ----------
+type ImplTone = "agent" | "tool" | "ok" | "warn" | "muted";
+type ImplEvent = { key: string; attempt: number; tone: ImplTone; text: string };
+type ImplStats = {
+  turns: number; durationMs: number; costUsd: number;
+  toolCalls: number; filesWritten: number; hasCost: boolean;
+};
+
+const IMPL_TONE_CLASS: Record<ImplTone, string> = {
+  agent: "text-[#cdd4df]",
+  tool: "text-[var(--polaris)]",
+  ok: "text-[var(--approved)]",
+  warn: "text-[#e0a05b]",
+  muted: "text-[var(--ink-muted)]",
+};
+const IMPL_FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "Create"]);
+
+// clone 的絕對路徑 → repo 相對路徑（.../impl_work/{id}/repo/foo → foo）
+function implShortPath(p: string): string {
+  const i = p.indexOf("/repo/");
+  return i >= 0 ? p.slice(i + 6) : p;
+}
+
+// 解析整段 log：events = 過濾後可讀事件；stats = 彙整數字（隱藏 thinking_tokens / rate_limit 噪音）
+function parseImplLog(lines: ImplementLogLine[]): { events: ImplEvent[]; stats: ImplStats } {
+  const events: ImplEvent[] = [];
+  const stats: ImplStats = { turns: 0, durationMs: 0, costUsd: 0, toolCalls: 0, filesWritten: 0, hasCost: false };
+  for (const l of lines) {
+    const raw = l.content.replace(/\n$/, "");
+    if (!raw.trim()) continue;
+    let m: { type?: string; subtype?: string; model?: string; is_error?: boolean;
+             num_turns?: number; duration_ms?: number; total_cost_usd?: number;
+             message?: { content?: Array<Record<string, unknown>> } } | null = null;
+    try { m = JSON.parse(raw); } catch {
+      // 非 JSON（mock 純文字 / 後端 system 註記）→ 原樣顯示
+      events.push({ key: `${l.id}`, attempt: l.attempt, tone: l.kind === "system" ? "warn" : "muted", text: raw });
+      continue;
+    }
+    const t = m?.type;
+    if (t === "assistant") {
+      (m?.message?.content ?? []).forEach((b, bi) => {
+        if (b.type === "text" && typeof b.text === "string" && b.text.trim()) {
+          events.push({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "agent", text: b.text.trim() });
+        } else if (b.type === "tool_use") {
+          stats.toolCalls++;
+          const name = (b.name as string) ?? "tool";
+          if (IMPL_FILE_TOOLS.has(name)) stats.filesWritten++;
+          const inp = (b.input ?? {}) as Record<string, string>;
+          const arg = implShortPath(inp.file_path || inp.path || "") || inp.command || inp.pattern || "";
+          events.push({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "tool", text: `→ ${name}${arg ? " " + arg.slice(0, 120) : ""}` });
+        }
+        // thinking → 跳過
+      });
+    } else if (t === "user") {
+      (m?.message?.content ?? []).forEach((b, bi) => {
+        if (b.type === "tool_result" && b.is_error) {
+          const c = typeof b.content === "string" ? b.content : JSON.stringify(b.content);
+          events.push({ key: `${l.id}-${bi}`, attempt: l.attempt, tone: "warn", text: `✗ ${c.slice(0, 160)}` });
+        }
+        // 成功 tool_result（如 File created）→ 跳過，tool_use 已表達
+      });
+    } else if (t === "result") {
+      if (typeof m?.num_turns === "number") stats.turns = Math.max(stats.turns, m.num_turns);
+      if (typeof m?.duration_ms === "number") stats.durationMs += m.duration_ms;
+      if (typeof m?.total_cost_usd === "number") { stats.costUsd += m.total_cost_usd; stats.hasCost = true; }
+      const ok = m?.subtype === "success" && !m?.is_error;
+      events.push({ key: `${l.id}`, attempt: l.attempt, tone: ok ? "ok" : "warn",
+        text: ok ? "✓ attempt 完成" : `⚠ attempt 結束（${m?.subtype ?? "error"}）` });
+    } else if (t === "system" && m?.subtype === "init") {
+      events.push({ key: `${l.id}`, attempt: l.attempt, tone: "muted", text: `session 啟動${m?.model ? " · " + m.model : ""}` });
+    }
+    // system/thinking_tokens、rate_limit_event → 隱藏
+  }
+  return { events, stats };
+}
+
+function ImplStat({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex items-baseline gap-1.5">
+      <span className="text-[#e6ecf5]">{value}</span>
+      <span className="text-[var(--ink-muted)]">{label}</span>
+    </span>
+  );
+}
+
 function ImplementWorkspace({
   thread, storiesArtifact, storiesApproved, delivery, onSetError,
 }: {
@@ -2901,8 +2986,12 @@ function ImplementWorkspace({
   const [session, setSession] = useState<ImplementSession | null>(null);
   const [lines, setLines] = useState<ImplementLogLine[]>([]);
   const [starting, setStarting] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
   const cursorRef = useRef(0);
   const logBottomRef = useRef<HTMLDivElement>(null);
+
+  // log 整理：過濾噪音 + 彙整統計（claude-cli stream-json）
+  const { events: logEvents, stats: logStats } = useMemo(() => parseImplLog(lines), [lines]);
 
   // runner 清單（data-driven：第三方 runner plugin 會自動出現）
   useEffect(() => {
@@ -3095,21 +3184,53 @@ function ImplementWorkspace({
               </div>
             )}
 
+            {/* 統計列：把 token/turns/時長/成本 等彙整資訊集中顯示，不再逐行洗版 */}
+            {lines.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em]">
+                <ImplStat label="files" value={String(logStats.filesWritten)} />
+                <ImplStat label="tools" value={String(logStats.toolCalls)} />
+                <ImplStat label="turns" value={String(logStats.turns)} />
+                <ImplStat label="elapsed" value={`${(logStats.durationMs / 1000).toFixed(0)}s`} />
+                {logStats.hasCost && <ImplStat label="cost" value={`$${logStats.costUsd.toFixed(3)}`} />}
+              </div>
+            )}
+
             {/* log stream */}
             <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
-              <div className="mb-2 flex items-center gap-2 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
-                {polling && <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />}
-                log · {polling ? "streaming" : status === "idle" ? "idle" : "complete"}
+              <div className="mb-2 flex items-center justify-between gap-2 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                <span className="flex items-center gap-2">
+                  {polling && <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />}
+                  log · {polling ? "streaming" : status === "idle" ? "idle" : "complete"}
+                </span>
+                {lines.length > 0 && (
+                  <button onClick={() => setShowRaw((v) => !v)} className="border border-[var(--rule-dark)] px-2 py-0.5 tracking-[0.16em] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
+                    {showRaw ? "整理後" : "raw"}
+                  </button>
+                )}
               </div>
               {lines.length === 0 ? (
                 <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
                   尚無輸出。選 runner（mock = 安全 dry-run）後按「開始自動實作」。
                 </div>
-              ) : (
+              ) : showRaw ? (
                 <ul className="space-y-0.5 font-[family-name:var(--font-mono)] text-[11px] leading-5">
                   {lines.map((l) => (
                     <li key={l.id} className={l.kind === "system" ? "text-[#e0a05b]" : "text-[#cdd4df]"}>
                       <span className="opacity-40">[a{l.attempt}]</span> {l.content.replace(/\n$/, "")}
+                    </li>
+                  ))}
+                  <div ref={logBottomRef} />
+                </ul>
+              ) : logEvents.length === 0 ? (
+                <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                  {polling ? "agent 思考中…（無可顯示事件）" : "無可顯示事件，可切「raw」看原始輸出。"}
+                </div>
+              ) : (
+                <ul className="space-y-1 font-[family-name:var(--font-mono)] text-[11px] leading-5">
+                  {logEvents.map((e) => (
+                    <li key={e.key} className={IMPL_TONE_CLASS[e.tone]}>
+                      <span className="opacity-30">[a{e.attempt}]</span>{" "}
+                      <span className={e.tone === "agent" ? "whitespace-pre-wrap" : ""}>{e.text}</span>
                     </li>
                   ))}
                   <div ref={logBottomRef} />
