@@ -4076,7 +4076,7 @@ function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated
             rows={2}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(); } }}
             disabled={disabled || busy}
             placeholder={disabled ? "選一個專案……" : "補充需求 / 要求修正……"}
             className="flex-1 resize-none bg-transparent text-[13px] text-[#cdd4df] outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50"
@@ -4090,7 +4090,7 @@ function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated
           </button>
         </div>
         <div className="mt-2 flex items-center justify-between font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-          <span>↵ send · ⇧↵ newline</span>
+          <span>⌘↵ send · ↵ newline</span>
           <span>{stageId}</span>
         </div>
       </div>
