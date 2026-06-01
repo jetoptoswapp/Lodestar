@@ -93,15 +93,17 @@ def start_batch(
     persona_for: Optional[orchestrator.PersonaProvider] = None,
     runner_for: Optional[orchestrator.RunnerProvider] = None,
     merge_pr: Optional[Callable[[int], bool]] = None,
+    skip_keys: Optional[set[str]] = None,
 ) -> dict:
     """解析 stories → 排序 → 對應 issue → 建 batch + 逐 story 的 session → 背景依序跑。
 
-    立刻回 {batch_id, total, items}（非阻塞，比照 orchestrator.start_session）。
+    立刻回 {batch_id, total, skipped, items}（非阻塞，比照 orchestrator.start_session）。
 
     list_issues：（真實執行）回 repo 的 open issue (number, title)，供比對；mock 可不給（None → 不對應）。
     build_opener：（真實執行）build_opener(batch_id=, issue_number_for=, pr_title_for=) → PrOpener；
         需 batch_id 以指向共用 clone dir。None → mock（run_implementation 用示意 url）。
     runner_factory：每個 session 開新 runner 實例（cancel 以 session_id 找 _ACTIVE_RUNNERS）。
+    skip_keys：冪等重跑——已完成（issue 已關）或進行中（已有 open PR）的 story 編號集，跳過不重做。
     """
     items = parse_stories_to_delivery_items(story_artifact)
     if not items:
@@ -111,13 +113,24 @@ def start_batch(
     open_issues = list_issues() if list_issues else []
     issue_map = match_issues(items, open_issues)
 
+    # 冪等：跳過已完成 / 進行中的 story（依 GitHub issue/PR 狀態，由 endpoint 算好）
+    skip_keys = skip_keys or set()
+    to_run = [it for it in items if _story_key(it.title) not in skip_keys]
+    skipped = len(items) - len(to_run)
+    if not to_run:
+        raise BatchError(
+            f"全部 {len(items)} 個 story 的 issue 皆已關閉或已有 PR 進行中，無待實作；"
+            "若要重做某 story，請先 reopen 其 issue 或關掉其 PR")
+    if skipped:
+        _log.info("batch 冪等跳過 %d 個已完成/進行中 story，實作其餘 %d 個", skipped, len(to_run))
+
     batch_id = impl_dal.create_batch(
         thread_id=thread_id, target_repo=target_repo, runner=runner_choice,
-        mode=mode, total=len(items), stop_on_failure=stop_on_failure,
+        mode=mode, total=len(to_run), stop_on_failure=stop_on_failure,
     )
 
     session_items: list[_SessionItem] = []
-    for it in items:
+    for it in to_run:
         skey = _story_key(it.title)
         issue_no = issue_map.get(skey)
         if list_issues and issue_no is None:
@@ -152,6 +165,7 @@ def start_batch(
     return {
         "batch_id": batch_id,
         "total": len(session_items),
+        "skipped": skipped,
         "items": [
             {"session_id": s.session_id, "story_key": s.story_key,
              "title": s.title, "issue_number": s.issue_number}

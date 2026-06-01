@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 import app as appmod
@@ -190,6 +192,39 @@ def test_make_github_pr_merger_parses_pr_number(monkeypatch):
     assert calls == [("o/r", 45, "squash")]
     assert merger(8) is False            # 無 pr_url → 不呼叫 merge_pr
     assert len(calls) == 1
+
+
+# ---- 冪等重跑：跳過已完成 / 進行中的 story --------------------------------
+
+def test_start_batch_skips_done_keys(tmp_db, monkeypatch):
+    """skip_keys 內的 story 不建 session；total=剩餘、skipped 正確。"""
+    dal.create_project("t", "demo")
+    monkeypatch.setattr(batch.task_registry, "spawn", lambda coro, **k: coro.close())  # 不真跑、close 掉 coroutine
+    res = batch.start_batch(
+        thread_id="t", story_artifact=STORIES_MD,
+        runner_factory=lambda: object(), runner_choice="mock", mode="roles",
+        skip_keys={"1.2"})                       # STORIES_MD 有 1.10 / 1.2 / 2.1
+    assert res["skipped"] == 1 and res["total"] == 2
+    assert {it["story_key"] for it in res["items"]} == {"1.10", "2.1"}   # 1.2 被跳過
+
+
+def test_start_batch_all_skipped_raises(tmp_db, monkeypatch):
+    """全部 story 都已完成/進行中 → BatchError（無待實作）。"""
+    dal.create_project("t2", "demo")
+    monkeypatch.setattr(batch.task_registry, "spawn", lambda coro, **k: coro.close())
+    with pytest.raises(batch.BatchError):
+        batch.start_batch(
+            thread_id="t2", story_artifact=STORIES_MD,
+            runner_factory=lambda: object(), runner_choice="mock",
+            skip_keys={"1.10", "1.2", "2.1"})
+
+
+def test_closes_regex_parses_keywords():
+    """list_open_pr_issue_numbers 用的 Closes/Fixes/Resolves 關鍵字解析。"""
+    from async_runtime.github_pr import _CLOSES_RE
+    body = "Automated.\n\nCloses #45\nfixes #7\nResolved #9\nsee #3"
+    nums = {int(m.group(1)) for m in _CLOSES_RE.finditer(body)}
+    assert nums == {45, 7, 9}                    # 'see #3' 非關鍵字、不算
 
 
 # ---- 一個專案一個目錄 + 並行保護 -------------------------------------------

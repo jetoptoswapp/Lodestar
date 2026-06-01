@@ -74,6 +74,56 @@ def list_open_issue_numbers(repo: str, token: str, *, max_pages: int = 5) -> lis
     return [n for n, _ in list_open_issues(repo, token, max_pages=max_pages)]
 
 
+def list_closed_issues(repo: str, token: str, *, max_pages: int = 5) -> list[tuple[int, str]]:
+    """列 repo 的 closed issue (number, title)（排除 PR）。給 batch 冪等重跑：issue 已關 = 已交付 → 跳過。
+    任何失敗回 []（不因列舉失敗而誤判：寧可重做也不要漏做）。"""
+    out: list[tuple[int, str]] = []
+    try:
+        for page in range(1, max_pages + 1):
+            url = f"https://api.github.com/repos/{repo}/issues?state=closed&per_page=100&page={page}"
+            req = urllib.request.Request(url, headers=_gh_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not items:
+                break
+            for it in items:
+                if "pull_request" in it:
+                    continue
+                n = it.get("number")
+                if isinstance(n, int):
+                    out.append((n, it.get("title") or ""))
+            if len(items) < 100:
+                break
+    except Exception:                            # noqa: BLE001
+        return []
+    return out
+
+
+_CLOSES_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
+
+
+def list_open_pr_issue_numbers(repo: str, token: str, *, max_pages: int = 5) -> set[int]:
+    """列「目前 open PR 的 body 透過關鍵字（Closes/Fixes/Resolves #N）連到的 issue 編號」。
+    給 batch 冪等重跑：issue 還開著但已有 open PR 在處理 → 視為進行中、跳過（避免開重複 PR）。失敗回 set()。"""
+    out: set[int] = set()
+    try:
+        for page in range(1, max_pages + 1):
+            url = f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100&page={page}"
+            req = urllib.request.Request(url, headers=_gh_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not items:
+                break
+            for pr in items:
+                for m in _CLOSES_RE.finditer(pr.get("body") or ""):
+                    out.add(int(m.group(1)))
+            if len(items) < 100:
+                break
+    except Exception:                            # noqa: BLE001
+        return set()
+    return out
+
+
 def add_issue_comment(repo: str, token: str, issue_number: int, body: str) -> None:
     """在 issue 上留 comment（POST /issues/{n}/comments）。失敗只記 log、不上拋。"""
     url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"

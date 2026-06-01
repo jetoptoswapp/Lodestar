@@ -449,6 +449,7 @@ class ImplementBatchItem(BaseModel):
 class ImplementBatchStartResponse(BaseModel):
     batch_id: int
     total: int
+    skipped: int = 0                 # 冪等：跳過幾個已完成/進行中的 story
     items: list[ImplementBatchItem]
 
 

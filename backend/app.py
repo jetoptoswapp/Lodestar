@@ -1180,6 +1180,32 @@ def _batch_issue_lister(target: str, creds: dict, repo: str):
     return lambda: gh_list(repo, token)
 
 
+def _batch_skip_keys(target: str, creds: dict, repo: str) -> set[str]:
+    """冪等重跑：回「已完成（issue 已關）或進行中（已有 open PR）」的 story 編號集（如 {'1.1','1.3'}）。
+    目前僅 github；token 缺 / 非 github → set()（不跳過，寧可重做也不漏做）。失敗回 set()。"""
+    if target != "github":
+        return set()
+    token = creds.get("token", "")
+    if not token:
+        return set()
+    from async_runtime.github_pr import (
+        list_closed_issues, list_open_issues, list_open_pr_issue_numbers,
+    )
+    keys: set[str] = set()
+    for _n, title in list_closed_issues(repo, token):          # issue 已關 = 已交付
+        k = impl_batch._story_key(title)
+        if k:
+            keys.add(k)
+    in_prog = list_open_pr_issue_numbers(repo, token)          # 開著但已有 open PR = 進行中
+    if in_prog:
+        num2key = {n: impl_batch._story_key(t) for n, t in list_open_issues(repo, token)}
+        for n in in_prog:
+            k = num2key.get(n)
+            if k:
+                keys.add(k)
+    return keys
+
+
 def _implement_persona_provider(reg: Registry, thread_id: str):
     """組 roles pipeline 的 persona 注入器：step(lead/rd/tester/reviewer) → 綁定 agent 的 system_prompt。
 
@@ -1327,6 +1353,7 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
     list_issues = None
     build_opener = None
     merge_pr = None
+    skip_keys = None
     if is_real:
         from delivery_repo import DeliveryRepoError, resolve_project_repo
         try:
@@ -1355,6 +1382,9 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
         elif req.auto_merge and target != "github":
             log.warning("auto_merge 目前僅支援 github（target=%s）→ 不自動 merge", target)
 
+        # 冪等重跑：跳過已完成（issue 已關）/ 進行中（已有 open PR）的 story
+        skip_keys = await asyncio.to_thread(_batch_skip_keys, target, creds, target_repo)
+
     persona_for = _implement_persona_provider(reg, req.thread_id) if mode == "roles" else None
     runner_for = (_implement_runner_provider(reg, req.thread_id)
                   if (mode == "roles" and req.runner != "mock") else None)
@@ -1365,11 +1395,13 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
             target_repo=target_repo, clone_url=clone_url, list_issues=list_issues,
             build_opener=build_opener, hooks=hooks, stop_on_failure=req.stop_on_failure,
             persona_for=persona_for, runner_for=runner_for, merge_pr=merge_pr,
+            skip_keys=skip_keys,
         )
     except impl_batch.BatchError as exc:
         raise HTTPException(400, detail=error_detail("batch_empty", str(exc)))
     return ImplementBatchStartResponse(
         batch_id=result["batch_id"], total=result["total"],
+        skipped=result.get("skipped", 0),
         items=[ImplementBatchItem(**it) for it in result["items"]],
     )
 
