@@ -3998,11 +3998,11 @@ function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, busy]);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (override?: string) => {
+    const text = (override ?? input).trim();
     if (!text || !thread || busy) return;
     setErr(null);
-    setInput("");
+    if (!override) setInput("");
     setMsgs((prev) => [...prev, { role: "user", content: text, created_at: null }]);
     setBusy(true);
     try {
@@ -4051,12 +4051,13 @@ function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated
                   </div>
                 </div>
               ) : (
-                <div key={i} className="flex flex-col items-start gap-1.5">
-                  <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.2em] text-[var(--ink-muted)]">{stageId} · agent</span>
-                  <div className="max-w-[92%] whitespace-pre-wrap border-l-2 border-[color-mix(in_oklab,var(--polaris)_45%,transparent)] px-3 py-1 text-[13px] leading-6 text-[#cdd4df]">
-                    {m.content}
-                  </div>
-                </div>
+                <AssistantMessage
+                  key={i}
+                  content={m.content}
+                  stageId={stageId}
+                  onPick={(label) => void send(label)}
+                  disabled={busy}
+                />
               ),
             )}
             {busy && (
@@ -4095,6 +4096,85 @@ function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated
         </div>
       </div>
     </section>
+  );
+}
+
+// ============================== Chat questionnaire（quick-reply 卡片）==============================
+type QQuestion = { id?: string; category?: string; question: string; options?: string[] };
+type QObj = { title?: string; questions: QQuestion[] };
+
+// 從 assistant 內容抽出 json-questionnaire block；解析失敗 / 無 block → questionnaire=null（容錯，純文字照顯示）
+function parseQuestionnaire(content: string): { text: string; questionnaire: QObj | null } {
+  const m = /```json-questionnaire\s*\n([\s\S]*?)\n```/.exec(content);
+  if (!m) return { text: content, questionnaire: null };
+  let q: QObj | null = null;
+  try {
+    const parsed = JSON.parse(m[1]);
+    if (parsed && Array.isArray(parsed.questions)) q = parsed as QObj;
+  } catch {
+    q = null;
+  }
+  if (!q) return { text: content, questionnaire: null };
+  const text = (content.slice(0, m.index) + content.slice(m.index + m[0].length)).trim();
+  return { text, questionnaire: q };
+}
+
+function AssistantMessage({ content, stageId, onPick, disabled }: {
+  content: string;
+  stageId: string;
+  onPick: (label: string) => void;
+  disabled: boolean;
+}) {
+  const { text, questionnaire } = parseQuestionnaire(content);
+  return (
+    <div className="flex flex-col items-start gap-1.5">
+      <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.2em] text-[var(--ink-muted)]">{stageId} · agent</span>
+      {text && (
+        <div className="max-w-[92%] whitespace-pre-wrap border-l-2 border-[color-mix(in_oklab,var(--polaris)_45%,transparent)] px-3 py-1 text-[13px] leading-6 text-[#cdd4df]">
+          {text}
+        </div>
+      )}
+      {questionnaire && <QuestionnaireCard q={questionnaire} onPick={onPick} disabled={disabled} />}
+    </div>
+  );
+}
+
+function QuestionnaireCard({ q, onPick, disabled }: {
+  q: QObj;
+  onPick: (label: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="mt-1 w-[92%] space-y-3 border border-[var(--rule-dark)] bg-[var(--bg)]/40 px-3 py-3">
+      {q.title && (
+        <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">{q.title}</div>
+      )}
+      {q.questions.map((qq, idx) => (
+        <div key={qq.id ?? idx} className="space-y-1.5">
+          <div className="text-[12.5px] leading-5 text-[#cdd4df]">
+            {qq.category && (
+              <span className="mr-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--polaris)]">{qq.category}</span>
+            )}
+            {qq.question}
+          </div>
+          {qq.options && qq.options.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {qq.options.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onPick(`${qq.question}：${opt}`)}
+                  className="border border-[var(--polaris-dim)] bg-[color-mix(in_oklab,var(--polaris)_8%,transparent)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--polaris)] transition hover:bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 

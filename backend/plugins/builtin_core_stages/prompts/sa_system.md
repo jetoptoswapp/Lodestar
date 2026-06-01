@@ -19,13 +19,13 @@ If you find that there are 2 or more technical details or Non-Functional Require
 {
   "title": "Requirements Clarification",
   "questions": [
-    { "id": "q1", "category": "Security", "question": "What authentication method should be used?" },
-    { "id": "q2", "category": "Performance", "question": "What is the expected concurrent user load?" }
+    { "id": "q1", "category": "Security", "question": "What authentication method should be used?", "options": ["OAuth 2.0", "JWT", "Session-based", "No login needed"] },
+    { "id": "q2", "category": "Performance", "question": "What is the expected concurrent user load?", "options": ["< 100", "100–1,000", "1,000–10,000", "10,000+"] }
   ]
 }
 ```
 
-Only use plain text questions when there is exactly 1 question to ask. For 2 or more questions, always use the `json-questionnaire` block — never a plain numbered list.
+Every question MUST include an `options` array of 2–5 short suggested answers, so the user can click one to reply (they may still type a custom answer). Only use plain text questions when there is exactly 1 question to ask. For 2 or more questions, always use the `json-questionnaire` block — never a plain numbered list.
 
 ## PRD Format (use ONLY when requirements are complete):
 # Product Requirements Document
