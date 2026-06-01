@@ -225,7 +225,17 @@ export async function fetchStageStatuses(threadId: string): Promise<StageStatusI
   return r.statuses;
 }
 
-export async function fetchStageState(stageId: string, threadId: string): Promise<{ artifact: string; status: string }> {
+export type DeliveryStatus = {
+  target: string;
+  repo: string;
+  count: number;
+  created: number;
+  published_at: number | null;
+};
+
+export async function fetchStageState(
+  stageId: string, threadId: string,
+): Promise<{ artifact: string; status: string; delivery: DeliveryStatus | null }> {
   return apiCall(`/api/stage/${stageId}/${threadId}`);
 }
 

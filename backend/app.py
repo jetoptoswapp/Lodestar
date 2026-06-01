@@ -41,6 +41,7 @@ from api_models import (  # noqa: E402
     AttachmentResponse,
     CreateProjectRequest,
     DeliveryItemPreview,
+    DeliveryStatus,
     DeliveryPreviewResponse,
     DeliveryPublishRequest,
     DeliveryPublishResponse,
@@ -1057,7 +1058,12 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
     dal.append_event(
         thread_id, "stories",
         event_type="delivery_published" if result.success else "delivery_publish_failed",
-        detail=f'{{"target":"{result.target}","count":{result.count},"created":{result.count if result.success else 0}}}',
+        detail=json.dumps({
+            "target": result.target,
+            "count": result.count,
+            "created": len(result.created),
+            "repo": cfg.get("repo", ""),
+        }),
     )
     return DeliveryPublishResponse(
         success=result.success,
@@ -1348,6 +1354,23 @@ async def stage_state(stage_id: str, thread_id: str):
         stage_id=stage_id, status=status, artifact=artifact,
         has_content=bool(artifact.strip()),
         last_updated_at=meta.get("updated_at"),
+        delivery=_last_delivery_status(thread_id, stage_id),
+    )
+
+
+def _last_delivery_status(thread_id: str, stage_id: str) -> Optional[DeliveryStatus]:
+    """從 stage_events 取最後一次成功發佈結果（給 UI 的「已發佈」狀態）。"""
+    ev = dal.latest_event(thread_id, stage_id, "delivery_published")
+    if not ev:
+        return None
+    try:
+        d = json.loads(ev.get("detail") or "{}")
+    except (ValueError, TypeError):
+        d = {}
+    return DeliveryStatus(
+        target=d.get("target", ""), repo=d.get("repo", ""),
+        count=int(d.get("count", 0)), created=int(d.get("created", 0)),
+        published_at=ev.get("created_at"),
     )
 
 

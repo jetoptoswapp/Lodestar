@@ -373,6 +373,18 @@ def list_events(thread_id: str, since_id: int = 0, limit: int = 100) -> list[dic
     return [dict(r) for r in rows]
 
 
+def latest_event(thread_id: str, stage_id: str, event_type: str) -> Optional[dict]:
+    """回該 thread × stage 最新一筆指定型別事件（無則 None）。"""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, event_type, detail, created_at FROM stage_events "
+            "WHERE thread_id = ? AND stage_id = ? AND event_type = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (thread_id, stage_id, event_type),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 # ============================================================
 #  Stage messages（chat 對話歷史）
 # ============================================================

@@ -184,6 +184,15 @@ class StageHistoryResponse(BaseModel):
 # ============================================================
 #  Stage state / status / summary（讀取）
 # ============================================================
+class DeliveryStatus(BaseModel):
+    """最後一次發佈到 tracker 的結果（給 UI 顯示「已發佈」狀態）。"""
+    target: str
+    repo: str = ""
+    count: int = 0
+    created: int = 0
+    published_at: Optional[float] = None
+
+
 class StageStateResponse(BaseModel):
     """thread × stage 的當前完整狀態（artifact + status + meta）。"""
     stage_id: str
@@ -191,6 +200,7 @@ class StageStateResponse(BaseModel):
     artifact: str
     has_content: bool
     last_updated_at: Optional[float] = None
+    delivery: Optional[DeliveryStatus] = None    # 僅 stories：最後一次成功發佈結果
 
 
 class StageStatusItem(BaseModel):

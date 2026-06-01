@@ -53,6 +53,7 @@ import {
   fetchImplementLog,
   cancelImplement,
   type StageChatMessage,
+  type DeliveryStatus,
   fetchStageHistory,
   stageChat,
 } from "@/lib/api";
@@ -273,6 +274,7 @@ export default function Page() {
   const [storiesArtifact, setStoriesArtifact] = useState<string>("");
   const [storiesStatus, setStoriesStatus] = useState<string>("draft");
   const [storiesBusy, setStoriesBusy] = useState<StageBusy>(false);
+  const [storiesDelivery, setStoriesDelivery] = useState<DeliveryStatus | null>(null);
   // ===== M2 baseline：真實 thread list + plugin count + model list + modal state =====
   const [threadList, setThreadList] = useState<Project[]>([]);
   const [pluginCount, setPluginCount] = useState<number | null>(null);
@@ -312,6 +314,7 @@ export default function Page() {
     setStoriesArtifact("");
     setStoriesStatus("draft");
     setStoriesBusy(false);
+    setStoriesDelivery(null);
   }, []);
 
   // 切換 active thread —— 同時寫 localStorage、清衍生狀態、回到 workspace / PRD
@@ -664,9 +667,10 @@ export default function Page() {
 
   const refreshStories = useCallback(async (tid: string) => {
     try {
-      const s = await apiFetch<{ artifact: string; status: string }>(`/api/stage/stories/${tid}`);
+      const s = await apiFetch<{ artifact: string; status: string; delivery: DeliveryStatus | null }>(`/api/stage/stories/${tid}`);
       setStoriesArtifact(s.artifact || "");
       setStoriesStatus(s.status);
+      setStoriesDelivery(s.delivery ?? null);
     } catch (e) {
       console.warn("讀取 stories 失敗：", (e as Error).message);
     }
@@ -1024,6 +1028,7 @@ export default function Page() {
                       artifact={storiesArtifact}
                       status={storiesStatus}
                       busy={storiesBusy}
+                      delivery={storiesDelivery}
                       archReady={archArtifact.trim().length > 0}
                       onGenerate={onGenerateStories}
                       onRefine={onRefineStories}
@@ -1131,7 +1136,7 @@ export default function Page() {
         open={publishOpen}
         thread={thread}
         apiBase={API_BASE}
-        onClose={() => setPublishOpen(false)}
+        onClose={() => { setPublishOpen(false); if (thread) refreshStories(thread); }}
       />
       <IntegrationsModal
         open={integrationsOpen}
@@ -2485,13 +2490,14 @@ function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChan
 //
 // M2.3 wire 真實 API：接 /api/stage/stories/{thread}；empty state 顯示「架構未生成」提示。
 function StoriesWorkspace({
-  thread, artifact, status, busy, archReady,
+  thread, artifact, status, busy, delivery, archReady,
   onGenerate, onRefine, onApprove, onPublish,
 }: {
   thread: string | null;
   artifact: string;
   status: string;
   busy: StageBusyLike;
+  delivery: DeliveryStatus | null;
   archReady: boolean;
   onGenerate: () => void;
   onRefine: () => void;
@@ -2533,12 +2539,20 @@ function StoriesWorkspace({
                 needs revision
               </span>
             )}
+            {delivery && (
+              <span
+                title={`已發佈 ${delivery.created}/${delivery.count} 筆到 ${delivery.repo || delivery.target}`}
+                className="border border-[var(--approved)]/40 bg-[color-mix(in_oklab,var(--approved)_10%,transparent)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--approved)]"
+              >
+                ✓ 已發佈 {delivery.created} 筆
+              </span>
+            )}
             <button
               onClick={onPublish}
               disabled={!hasContent}
               className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              發佈到 tracker…
+              {delivery ? "重新發佈…" : "發佈到 tracker…"}
             </button>
           </>
         } />
@@ -2672,7 +2686,7 @@ function StoriesWorkspace({
             {isApproved ? "已核准 ✓" : "核准故事"}
           </ToolBtn>
           <ToolBtn primary onClick={onPublish} disabled={!hasContent}>
-            發佈到 tracker…
+            {delivery ? "重新發佈…" : "發佈到 tracker…"}
           </ToolBtn>
         </div>
       </section>
