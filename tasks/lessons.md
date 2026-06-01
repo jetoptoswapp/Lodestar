@@ -62,3 +62,9 @@
   DAL／API／前端／執行消費），DB 要 grep 整個 schema 而非只看主表，spec 文件也要查設計意圖。
   寧可精確說「X 層有、Y 層斷」，不要籠統說「都沒有」。
 - **通則**：subagent 回報的片面事實，要自己補全關鍵缺口再外推；強否定結論（「完全沒有」）成本最高、最該先驗。
+
+## 後端 fix「沒生效」先查 running server 是不是舊 code（沒重啟）
+- **症狀**：修了後端 bug、測試綠、push，使用者實測卻說「還是壞的 / 又變這樣」。差點繞去重查 code 與前端路徑，其實 code 是對的。
+- **真因**：使用者的 uvicorn（`start.sh` 起、**無 `--reload`**）在改 code 前就啟動，running process 跑的是舊 code；改檔 / commit 不會自動載入。
+- **診斷法**：`ps -eo pid,lstart,command | grep uvicorn` 取 process 啟動時間，比對 fix 的 commit 時間（`git log -1`）/ 改檔時間（`stat`）。process **早於** fix → 舊 code → 要重啟。一次比對就定位，免得瞎猜或重查。
+- **通則**：使用者回報「fix 沒生效」時，**先確認 running server 已重啟**（process 啟動時間晚於改檔）再懷疑 code。dev server 建議開 `--reload` 根治此坑。
