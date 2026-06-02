@@ -4644,7 +4644,7 @@ function ChatPanel({ thread, stageId, stageLabel, modelChoice, onArtifactUpdated
 }
 
 // ============================== Chat questionnaire（quick-reply 卡片）==============================
-type QQuestion = { id?: string; category?: string; question: string; options?: string[] };
+type QQuestion = { id?: string; category?: string; question: string; options?: string[]; multi?: boolean };
 type QObj = { title?: string; questions: QQuestion[] };
 
 // 從 assistant 內容抽出 json-questionnaire block；解析失敗 / 無 block → questionnaire=null（容錯，純文字照顯示）
@@ -4688,18 +4688,20 @@ function QuestionnaireCard({ q, onPick, disabled }: {
   onPick: (label: string) => void;
   disabled: boolean;
 }) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [sent, setSent] = useState(false);
   const keyOf = (qq: QQuestion, idx: number) => qq.id ?? String(idx);
-  const answeredCount = q.questions.filter((qq, idx) => answers[keyOf(qq, idx)]).length;
+  // 多選判定：明確 multi 欄位優先，否則看題目文字（可多選 / 複選 / multiple / select all）
+  const isMulti = (qq: QQuestion) => qq.multi ?? /多選|複選|multiple|multi-?select|select all/i.test(qq.question);
+  const answeredCount = q.questions.filter((qq, idx) => (answers[keyOf(qq, idx)] ?? []).length > 0).length;
 
-  // 點選 = 選取（不送出）；按「送出」才把所有已答題一次回給 agent。
+  // 點選 = 選取（不送出）；按「送出」才把所有已答題一次回給 agent。多選題以「、」串接。
   const submit = () => {
     if (disabled || sent) return;
     const lines = q.questions
       .map((qq, idx) => {
-        const a = answers[keyOf(qq, idx)];
-        return a ? `${qq.question}：${a}` : null;
+        const a = answers[keyOf(qq, idx)] ?? [];
+        return a.length ? `${qq.question}：${a.join("、")}` : null;
       })
       .filter((x): x is string => x !== null);
     if (lines.length === 0) return;
@@ -4725,13 +4727,19 @@ function QuestionnaireCard({ q, onPick, disabled }: {
             {qq.options && qq.options.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {qq.options.map((opt) => {
-                  const selected = answers[key] === opt;
+                  const selected = (answers[key] ?? []).includes(opt);
                   return (
                     <button
                       key={opt}
                       type="button"
                       disabled={disabled || sent}
-                      onClick={() => setAnswers((a) => ({ ...a, [key]: opt }))}
+                      onClick={() => setAnswers((a) => {
+                        const c = a[key] ?? [];
+                        if (isMulti(qq)) {                              // 多選 → toggle 進/出
+                          return { ...a, [key]: c.includes(opt) ? c.filter((x) => x !== opt) : [...c, opt] };
+                        }
+                        return { ...a, [key]: c.includes(opt) ? [] : [opt] };   // 單選 → 取代/取消
+                      })}
                       className={`border px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
                         selected
                           ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_24%,transparent)] text-[#e6ecf5]"
