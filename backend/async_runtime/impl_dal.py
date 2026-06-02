@@ -56,8 +56,11 @@ def update_session(session_id: int, *, status: Optional[str] = None,
 
 
 def fail_orphaned_running() -> int:
-    """啟動恢復：把孤兒 session/batch（running/pending —— 進程重啟後 asyncio task 已隨之消失）
-    標為 failed。awaiting_approval 不動（worktree 仍在磁碟、可由使用者 approve）。回受影響 session 筆數。"""
+    """啟動恢復：把孤兒 session/batch/run（running/pending —— 進程重啟後 asyncio task 已隨之消失）
+    標為 failed。awaiting_approval 不動（worktree 仍在磁碟、可由使用者 approve）。回受影響 session 筆數。
+
+    同時收掉 impl_runs 的孤兒 running 列：重啟後沒有任何 run 真的在執行，殘留的 running 會在每次
+    重啟越積越多（曾累積到 24h+），讓查詢 / Flight Log 誤判「還在跑」。一律標 failed 並補 ended_at。"""
     with connect() as conn:
         cur = conn.execute(
             "UPDATE impl_sessions SET status='failed', "
@@ -68,6 +71,9 @@ def fail_orphaned_running() -> int:
             "UPDATE impl_batches SET status='failed', "
             "error_message='interrupted by server restart', "
             "updated_at=strftime('%s','now') "
+            "WHERE status='running'")
+        conn.execute(
+            "UPDATE impl_runs SET status='failed', ended_at=strftime('%s','now') "
             "WHERE status='running'")
         return cur.rowcount
 
