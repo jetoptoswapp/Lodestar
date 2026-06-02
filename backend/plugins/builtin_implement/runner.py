@@ -32,10 +32,14 @@ class ClaudeCliRunner(AgentRunner):
 
     def build_argv(self, *, cwd: str, prompt: str) -> list[str]:
         # prompt 走 stdin；agentic 模式允許在 cwd 讀寫，stream-json 便於前端逐事件呈現。
+        # bypassPermissions：自主 implement agent 在隔離 clone 內須能跑 npm/cargo/pytest 等 Bash 安裝/建置/
+        # 測試指令——acceptEdits 只自動核可「改檔」、Bash 仍要互動核准，非互動下會被擋死、agent 卡在權限牆
+        # （甚至試圖改 ~/.claude/settings.json 自我放行）。危險操作（git push / 開 PR）仍由 DISALLOWED_TOOLS 擋、
+        # 交 host 受控執行。
         return [
             "claude", "-p",
             "--output-format", "stream-json", "--verbose",
-            "--permission-mode", "acceptEdits",
+            "--permission-mode", "bypassPermissions",
             "--add-dir", cwd,
             "--disallowedTools", *self.DISALLOWED_TOOLS,
         ]
