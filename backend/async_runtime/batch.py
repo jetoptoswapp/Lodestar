@@ -124,6 +124,10 @@ def start_batch(
     if skipped:
         _log.info("batch 冪等跳過 %d 個已完成/進行中 story，實作其餘 %d 個", skipped, len(to_run))
 
+    # 原子守衛：endpoint 已先擋一次，但 check→此處之間隔著 await（resolve repo / 列 issue）；
+    # 建 batch row 前同步再查一次（此後到 create_batch 無 await），關掉兩請求並行的 race。
+    if impl_dal.has_active_for_thread(thread_id):
+        raise impl_dal.ImplActiveError(thread_id)
     batch_id = impl_dal.create_batch(
         thread_id=thread_id, target_repo=target_repo, runner=runner_choice,
         mode=mode, total=len(to_run), stop_on_failure=stop_on_failure,

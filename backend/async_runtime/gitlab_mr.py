@@ -32,6 +32,19 @@ def _git(wt: Path, args: list[str], *, check: bool = True) -> subprocess.Complet
     return proc
 
 
+def _reattach_to_work_branch(wt: Path, branch: str) -> None:
+    """把 HEAD 釘回 work branch（agent bypassPermissions 可能 git checkout 把 HEAD 切離，
+    例如 tester 切到 base 跑測試後沒切回 → detached）。branch 由 prepare 建立、agent 的 commit
+    都在其上；未提交變更若無衝突會被 checkout 帶過去。已在該 branch → no-op；branch 不存在或
+    切換失敗（衝突）→ 保持原狀、不丟資料（後續 add/commit/push 仍以當前 HEAD 收尾）。"""
+    cur = (_git(wt, ["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout or "").strip()
+    if cur == branch:
+        return
+    if _git(wt, ["rev-parse", "--verify", branch], check=False).returncode != 0:
+        return
+    _git(wt, ["checkout", branch], check=False)
+
+
 def _gl_headers(token: str) -> dict:
     return {"PRIVATE-TOKEN": token, "User-Agent": "lodestar-impl"}
 
@@ -121,8 +134,12 @@ def make_gitlab_mr_opener(*, get_token: Callable[[], str],
         wt = workdir_for(session_id)
         branch = f"lodestar/impl-{session_id}"
 
+        # agent 可能把 HEAD 切離 work branch（detached / 別條）→ 先釘回，否則下面以「當前 HEAD」
+        # 為準的 diff/push 會漏掉真正的工作 commit（症狀：工作有做卻誤判空 diff、failed）。
+        _reattach_to_work_branch(wt, branch)
         cur = (_git(wt, ["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout or "").strip()
-        base_branch = cur if (cur and cur != branch) else "main"
+        # detached 時 rev-parse 回字面 "HEAD"——不能拿它當 base；連同已在 work branch 的情形 → base 用 main。
+        base_branch = cur if (cur and cur not in ("HEAD", branch)) else "main"
         _git(wt, ["add", "-A"])
         # agent（bypassPermissions）可能已自行 git commit → 沒得 stage；有殘留未提交則收進一個 commit
         if _git(wt, ["diff", "--cached", "--quiet"], check=False).returncode != 0:
@@ -225,25 +242,27 @@ def list_closed_issues(base: str, token: str, repo: str, *, max_pages: int = 5) 
     return out
 
 
-def list_open_mr_issue_iids(base: str, token: str, repo: str, *, max_pages: int = 5) -> set[int]:
-    """列「目前 opened MR 的 description 透過 Closes/Fixes #N 連到的 issue iid」。
-    冪等重跑：issue 還開著但已有 open MR 在處理 → 視為進行中、跳過。失敗回 set()。"""
+def list_active_mr_issue_iids(base: str, token: str, repo: str, *, max_pages: int = 5) -> set[int]:
+    """列「opened 或 merged MR 的 description 透過 Closes/Fixes #N 連到的 issue iid」。
+    冪等重跑：開著的 MR = 進行中；merged 的 MR = 已交付（GitLab auto-close 不穩，issue 可能沒關，
+    故不能只靠 issue 狀態）。兩者都跳過、不重做。closed/declined（未 merge 就關）不算。失敗回 set()。"""
     pid = urllib.parse.quote(repo, safe="")
     out: set[int] = set()
     try:
-        for page in range(1, max_pages + 1):
-            url = (f"{base}/api/v4/projects/{pid}/merge_requests"
-                   f"?state=opened&per_page=100&page={page}")
-            req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                items = json.loads(resp.read().decode("utf-8"))
-            if not items:
-                break
-            for mr in items:
-                for m in _CLOSES_RE.finditer(mr.get("description") or ""):
-                    out.add(int(m.group(1)))
-            if len(items) < 100:
-                break
+        for state in ("opened", "merged"):
+            for page in range(1, max_pages + 1):
+                url = (f"{base}/api/v4/projects/{pid}/merge_requests"
+                       f"?state={state}&per_page=100&page={page}")
+                req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    items = json.loads(resp.read().decode("utf-8"))
+                if not items:
+                    break
+                for mr in items:
+                    for m in _CLOSES_RE.finditer(mr.get("description") or ""):
+                        out.add(int(m.group(1)))
+                if len(items) < 100:
+                    break
     except Exception:                            # noqa: BLE001
         return set()
     return out

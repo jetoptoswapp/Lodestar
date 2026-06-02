@@ -379,6 +379,22 @@ def _reviewer_approved(output: str) -> bool:
     return not _CHANGES_REQUESTED_RE.search(output or "")
 
 
+def _pin_head_to_work_branch(cwd: str, session_id: int) -> None:
+    """每個 role 跑完後把 HEAD 釘回 work branch。agent（bypassPermissions）可能 git checkout
+    把 HEAD 切離 lodestar/impl-{id}（如 tester 為驗 base 切過去後沒切回 → detached），
+    害下游 role 看到 7.2 之前的舊樹、且 host 開 PR 時以當前 HEAD 為準漏掉工作 commit。
+    best-effort：非 git / branch 不存在 / 已在該 branch → 略過、不丟未提交變更。"""
+    branch = f"lodestar/impl-{session_id}"
+    cur = subprocess.run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+                         capture_output=True, text=True)
+    if cur.returncode != 0 or (cur.stdout or "").strip() == branch:
+        return
+    if subprocess.run(["git", "-C", cwd, "rev-parse", "--verify", branch],
+                      capture_output=True).returncode != 0:
+        return
+    subprocess.run(["git", "-C", cwd, "checkout", branch], capture_output=True)
+
+
 async def _run_role(
     *, session_id: int, runner: AgentRunner, role: str, attempt: int,
     prompt: str, cwd: str, timeout: int, hooks: list, parent: Optional[int],
@@ -400,6 +416,7 @@ async def _run_role(
     impl_dal.finish_run(run_id, status=_status_from_result(result), exit_code=result.exit_code,
                         cancelled=result.cancelled, timed_out=result.timed_out,
                         last_output=result.last_output)
+    _pin_head_to_work_branch(cwd, session_id)  # agent 可能切走 HEAD → 釘回，保下游 role 與開 PR 看到正確的樹
     return run_id, result
 
 
@@ -554,6 +571,10 @@ def start_session(
     否則 prepare_worktree（LODESTAR_IMPL_BASE_REPO 本地 base，或空目錄）。
     runner 登記到 _ACTIVE_RUNNERS 供 cancel；task 強引用由 task_registry 持有（防 GC）。
     """
+    # 原子守衛：endpoint 已先擋一次，但 check→此處之間隔著 await；這裡建 row 前同步再查一次，
+    # 關掉「兩個分頁同時按 → 雙雙放行 → 共用 worktree 互相 checkout 打架」的 race。
+    if impl_dal.has_active_for_thread(thread_id):
+        raise impl_dal.ImplActiveError(thread_id)
     session_id = impl_dal.create_session(
         thread_id=thread_id, title=title or "(implementation)",
         target_repo=target_repo, runner=runner_choice,

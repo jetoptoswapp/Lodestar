@@ -10,6 +10,19 @@ from typing import Optional
 
 from persistence.dal import connect
 
+
+class ImplActiveError(RuntimeError):
+    """該 thread 已有實作在進行中（共用一份 working copy，不可並行）。
+
+    endpoint 已先擋一次，但 check→start 之間隔著 await（resolve repo / 列 issue），
+    兩個請求可能雙雙通過。start_session / start_batch 在「建 row」前同步再查一次並拋此例外，
+    因建 row 過程無 await（相對其他 coroutine 為原子），故第二個競爭者必然看到第一個的 row 而中止。"""
+
+    def __init__(self, thread_id: str):
+        super().__init__(f"thread '{thread_id}' 已有實作在進行中")
+        self.thread_id = thread_id
+
+
 # ---- impl_sessions ----------------------------------------------------------
 
 def create_session(*, thread_id: str, title: str, target_repo: str,

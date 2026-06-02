@@ -851,6 +851,15 @@ async def get_project(thread_id: str):
     return ProjectResponse(**project)
 
 
+@app.get("/api/projects/{thread_id}/summary")
+async def get_project_summary(thread_id: str):
+    """專案 Flight Log：階段時間軸 + 各 story 現況/耗時/重跑/成本 + 總計（含 token/$）。唯讀聚合。"""
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    import project_summary
+    return await asyncio.to_thread(project_summary.project_summary, thread_id)
+
+
 @app.patch("/api/projects/{thread_id}", response_model=ProjectResponse)
 async def update_project(thread_id: str, req: UpdateProjectRequest):
     """改 name 與/或 delivery repo 設定（皆 optional；只更新有帶的部分）。"""
@@ -1189,13 +1198,13 @@ def _batch_skip_keys(target: str, creds: dict, repo: str) -> set[str]:
     keys: set[str] = set()
     if target == "github":
         from async_runtime.github_pr import (
-            list_closed_issues, list_open_issues, list_open_pr_issue_numbers,
+            list_closed_issues, list_open_issues, list_active_pr_issue_numbers,
         )
         for _n, title in list_closed_issues(repo, token):          # issue 已關 = 已交付
             k = impl_batch._story_key(title)
             if k:
                 keys.add(k)
-        in_prog = list_open_pr_issue_numbers(repo, token)          # 開著但已有 open PR = 進行中
+        in_prog = list_active_pr_issue_numbers(repo, token)        # open 或 merged PR = 進行中/已交付
         if in_prog:
             num2key = {n: impl_batch._story_key(t) for n, t in list_open_issues(repo, token)}
             for n in in_prog:
@@ -1204,14 +1213,14 @@ def _batch_skip_keys(target: str, creds: dict, repo: str) -> set[str]:
                     keys.add(k)
     elif target == "gitlab":
         from async_runtime.gitlab_mr import (
-            list_closed_issues as gl_closed, list_open_issues as gl_open, list_open_mr_issue_iids,
+            list_closed_issues as gl_closed, list_open_issues as gl_open, list_active_mr_issue_iids,
         )
         base = (creds.get("base_url") or "https://gitlab.com").rstrip("/")
         for _iid, title in gl_closed(base, token, repo):
             k = impl_batch._story_key(title)
             if k:
                 keys.add(k)
-        in_prog = list_open_mr_issue_iids(base, token, repo)
+        in_prog = list_active_mr_issue_iids(base, token, repo)
         if in_prog:
             iid2key = {iid: impl_batch._story_key(t) for iid, t in gl_open(base, token, repo)}
             for iid in in_prog:
@@ -1331,12 +1340,15 @@ async def implement_start(req: ImplementStartRequest):
     # per-step runner 只在「真實 runner」時套用；mock = 整條 dry-run，不被 per-step 覆蓋
     runner_for = (_implement_runner_provider(reg, req.thread_id)
                   if (mode == "roles" and req.runner != "mock") else None)
-    session_id = orchestrator.start_session(
-        thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
-        target_repo=target_repo, title=title, hooks=hooks, mode=mode,
-        open_pr=open_pr, auto_approve=auto_approve, clone_url=clone_url,
-        persona_for=persona_for, runner_for=runner_for,
-    )
+    try:
+        session_id = orchestrator.start_session(
+            thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
+            target_repo=target_repo, title=title, hooks=hooks, mode=mode,
+            open_pr=open_pr, auto_approve=auto_approve, clone_url=clone_url,
+            persona_for=persona_for, runner_for=runner_for,
+        )
+    except impl_dal.ImplActiveError:
+        raise HTTPException(409, detail=error_detail("impl_in_progress", "此專案已有實作在進行中（共用一份工作目錄），請等它結束或先取消"))
     return ImplementStartResponse(session_id=session_id)
 
 
@@ -1420,6 +1432,8 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
             persona_for=persona_for, runner_for=runner_for, merge_pr=merge_pr,
             skip_keys=skip_keys,
         )
+    except impl_dal.ImplActiveError:
+        raise HTTPException(409, detail=error_detail("impl_in_progress", "此專案已有實作在進行中（共用一份工作目錄），請等它結束或先取消"))
     except impl_batch.BatchError as exc:
         raise HTTPException(400, detail=error_detail("batch_empty", str(exc)))
     return ImplementBatchStartResponse(

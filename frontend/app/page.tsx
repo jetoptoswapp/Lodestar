@@ -178,6 +178,7 @@ const DEFAULT_MODEL = "claude-cli";
 
 const NAV = [
   { id: "workspace", label: "WORKSPACE" },
+  { id: "summary",   label: "FLIGHT LOG" },
   { id: "workflows", label: "WORKFLOWS" },
   { id: "agents",    label: "AGENTS" },
   { id: "skills",    label: "SKILLS" },
@@ -1082,6 +1083,7 @@ export default function Page() {
                 onDelete={(s) => setDeleteConfirm({ kind: "skill", id: s.skill_id, name: s.name })}
               />
             )}
+            {nav === "summary"   && <FlightLogView key={thread ?? "none"} thread={thread} />}
             {nav === "plugins"   && <PluginsView plugins={pluginList} onToggle={onTogglePlugin} />}
             {/* BuildSeal 只在無 ChatPanel 的 view 顯示，避免跟 footer 的「↵ send · ⌘↵ refine」overlap */}
             <BuildSeal visible={nav !== "workspace"} />
@@ -4453,6 +4455,192 @@ function SkillCard({ skill, onEdit, onDelete }: {
       <div className="mt-auto flex items-center justify-end gap-2 border-t border-[var(--rule-dark)] pt-3">
         <ToolBtn onClick={onEdit}>編輯</ToolBtn>
         <ToolBtn onClick={onDelete}>刪除</ToolBtn>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Flight Log（專案總結：階段時間軸 + story 表 + 花費）----------
+type FLRole = { role: string; attempt: number; status: string; seconds: number | null };
+type FLStory = {
+  story_key: string; title: string; session_id: number; batch_id: number | null;
+  status: string; pr_url: string; error_message: string; duration_sec: number | null;
+  attempts: number; batch_runs: number; roles: FLRole[]; cost_usd: number; total_tokens: number;
+};
+type FLStage = {
+  stage_id: string; status: string | null; first_at: number | null; last_at: number | null;
+  agent_runs: number; agent_seconds: number; regens: number; events: { event: string; at: number }[];
+};
+type FLBatch = { batch_id: number; status: string; total: number; mode: string; created_at: number };
+type ProjectSummary = {
+  thread_id: string;
+  stages: FLStage[];
+  implement: { batches: FLBatch[]; stories: FLStory[]; total_runs: number };
+  usage: { cost_usd: number; total_tokens: number; output_tokens: number; cache_read_tokens: number };
+  totals: {
+    span_sec: number | null; stories_total: number; stories_with_mr: number; stories_failed: number;
+    agent_runs: number; cost_usd: number; total_tokens: number; first_activity: number | null; last_activity: number | null;
+  };
+};
+
+const flColor = (s: string | null): string =>
+  s === "succeeded" || s === "approved" ? "var(--approved)"
+    : s === "failed" ? "#e06c75"
+      : s === "running" || s === "pending" ? "var(--polaris)"
+        : s === "orphaned" ? "#d9a441"
+          : "var(--ink-muted)";
+
+const flDur = (sec: number | null): string => {
+  if (sec == null) return "—";
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  if (m < 60) return s ? `${m}m${s}s` : `${m}m`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
+};
+const flTok = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`);
+const flClock = (sec: number | null): string => (sec == null ? "—" : new Date(sec * 1000).toLocaleString());
+const FL_STAGE_LABEL: Record<string, string> = { prd: "01 · SPECIFY", architecture: "02 · DESIGN", stories: "03 · STORIES" };
+
+function FLChip({ status }: { status: string | null }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em]"
+      style={{ color: flColor(status) }}>
+      <span className="h-1.5 w-1.5 rounded-full" style={{ background: flColor(status) }} />
+      {status || "—"}
+    </span>
+  );
+}
+
+function FlightLogView({ thread }: { thread: string | null }) {
+  const [data, setData] = useState<ProjectSummary | null>(null);
+  const [err, setErr] = useState("");
+  const [reload, setReload] = useState(0);
+
+  // 只在 .then/.catch（非同步）裡 setState，不在 effect body 同步呼叫；切專案時由父層 key 重掛清空。
+  useEffect(() => {
+    if (!thread) return;
+    let on = true;
+    apiFetch<ProjectSummary>(`/api/projects/${thread}/summary`)
+      .then((d) => { if (on) { setData(d); setErr(""); } })
+      .catch((e) => { if (on) setErr((e as Error).message); });
+    return () => { on = false; };
+  }, [thread, reload]);
+  const loading = !data && !err;
+
+  const t = data?.totals;
+  const stories = data?.implement.stories ?? [];
+  const maxStageSec = Math.max(1, ...(data?.stages ?? []).map((s) => s.agent_seconds));
+  const hasOrphan = stories.some((s) => s.roles.some((r) => r.status === "orphaned"));
+
+  const cards: { label: string; value: string; sub?: string }[] = t ? [
+    { label: "TOTAL SPAN", value: flDur(t.span_sec) },
+    { label: "STORIES", value: `${t.stories_with_mr}/${t.stories_total}`, sub: "開出 MR" },
+    { label: "COST", value: `$${t.cost_usd.toFixed(2)}`, sub: "implement 側" },
+    { label: "TOKENS", value: flTok(t.total_tokens), sub: `${flTok(data!.usage.cache_read_tokens)} cache-read` },
+    { label: "AGENT RUNS", value: String(t.agent_runs) },
+  ] : [];
+
+  return (
+    <div className="rise-3 flex min-h-0 flex-1 flex-col overflow-hidden">
+      <ViewHeader title="Flight Log · 專案總結"
+        sub="這個專案做了什麼、各階段花多久、每個 story 的現況與花費。唯讀。"
+        right={
+          <button onClick={() => setReload((n) => n + 1)} disabled={!thread}
+            className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:opacity-40">
+            {loading ? "載入中…" : "↻ 重新整理"}
+          </button>
+        } />
+      <div className="min-h-0 flex-1 overflow-y-auto p-8">
+        {!thread ? (
+          <div className="border border-dashed border-[var(--rule-dark)] py-12 text-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">先選一個專案</div>
+        ) : err ? (
+          <div className="border border-[#e06c75]/40 bg-[#e06c75]/5 px-4 py-3 font-[family-name:var(--font-mono)] text-[12px] text-[#e06c75]">讀取失敗：{err}</div>
+        ) : !data ? (
+          <div className="border border-dashed border-[var(--rule-dark)] py-12 text-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">載入中…</div>
+        ) : (
+          <>
+            {/* 總計卡片 */}
+            <div className="grid grid-cols-5 gap-3">
+              {cards.map((c) => (
+                <div key={c.label} className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-4 py-3">
+                  <div className="font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">{c.label}</div>
+                  <div className="mt-1 font-[family-name:var(--font-display)] text-[24px] font-semibold leading-none text-[#e6ecf5]">{c.value}</div>
+                  {c.sub && <div className="mt-1 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.16em] text-[var(--ink-muted)]">{c.sub}</div>}
+                </div>
+              ))}
+            </div>
+
+            {/* 健康警示 */}
+            {(t!.stories_failed > 0 || hasOrphan) && (
+              <div className="mt-4 border-l-2 border-[#d9a441] bg-[#d9a441]/5 px-4 py-2.5 font-[family-name:var(--font-mono)] text-[11px] tracking-[0.04em] text-[#d9b35e]">
+                ⚠ {t!.stories_failed > 0 && <span>{t!.stories_failed} 個 story 仍失敗。</span>}
+                {hasOrphan && <span> 偵測到孤兒 run（session 已終局但 run 沒收尾＝重啟殘留）。</span>}
+              </div>
+            )}
+
+            {/* 階段時間軸 */}
+            <div className="mt-8"><SectionLabel>階段時間軸 · {flClock(t!.first_activity)} → {flClock(t!.last_activity)}</SectionLabel></div>
+            <div className="mt-3 space-y-2">
+              {data.stages.map((s) => (
+                <div key={s.stage_id} className="flex items-center gap-3">
+                  <div className="w-28 shrink-0 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.14em] text-[#cdd4df]">{FL_STAGE_LABEL[s.stage_id] ?? s.stage_id}</div>
+                  <div className="relative h-6 flex-1 bg-[var(--rule-dark)]">
+                    <div className="absolute inset-y-0 left-0 opacity-80" style={{ width: `${Math.max(4, (s.agent_seconds / maxStageSec) * 100)}%`, background: flColor(s.status) }} />
+                  </div>
+                  <div className="w-20 shrink-0"><FLChip status={s.status} /></div>
+                  <div className="w-44 shrink-0 text-right font-[family-name:var(--font-mono)] text-[10px] tracking-[0.08em] text-[var(--ink-muted)]">
+                    {flDur(s.agent_seconds)} · {s.agent_runs} runs{s.regens ? ` · regen×${s.regens}` : ""}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Story 表 */}
+            <div className="mt-8"><SectionLabel>Stories · {stories.length} 個（去重取最新；成本含所有重跑）</SectionLabel></div>
+            <div className="mt-2 border border-[var(--rule-dark)]">
+              <div className="grid grid-cols-[64px_1fr_96px_72px_64px_1fr_72px_40px] items-center gap-2 border-b border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-2 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
+                <div>STORY</div><div>TITLE</div><div>STATUS</div><div className="text-right">DUR</div><div className="text-right">⟳ / ×</div><div>ROLES</div><div className="text-right">COST</div><div className="text-center">MR</div>
+              </div>
+              {stories.map((s) => {
+                const roleTot = Math.max(1, s.roles.reduce((a, r) => a + (r.seconds ?? 0), 0));
+                return (
+                  <div key={s.session_id} className="grid grid-cols-[64px_1fr_96px_72px_64px_1fr_72px_40px] items-center gap-2 border-b border-[var(--rule-dark)] px-3 py-2 text-[12px] last:border-b-0">
+                    <div className="font-[family-name:var(--font-mono)] text-[11px] text-[#cdd4df]">{s.story_key || "—"}</div>
+                    <div className="truncate text-[#aeb6c6]" title={s.title}>{s.title}</div>
+                    <div><FLChip status={s.status} /></div>
+                    <div className="text-right font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">{flDur(s.duration_sec)}</div>
+                    <div className="text-right font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
+                      {s.attempts > 1 ? `${s.attempts}⟳ ` : ""}×{s.batch_runs}
+                    </div>
+                    <div className="flex h-3 items-center gap-px overflow-hidden" title={s.roles.map((r) => `${r.role}:${r.status} ${flDur(r.seconds)}`).join("  ·  ")}>
+                      {s.roles.length === 0 ? <span className="font-[family-name:var(--font-mono)] text-[9px] text-[var(--ink-muted)]">—</span>
+                        : s.roles.map((r, i) => (
+                          <div key={i} className="h-3" style={{ width: `${((r.seconds ?? 0) / roleTot) * 100}%`, minWidth: 3, background: flColor(r.status) }} />
+                        ))}
+                    </div>
+                    <div className="text-right font-[family-name:var(--font-mono)] text-[11px] text-[#aeb6c6]">${s.cost_usd.toFixed(2)}</div>
+                    <div className="text-center">
+                      {s.pr_url ? <a href={s.pr_url} target="_blank" rel="noreferrer" className="text-[var(--polaris)] hover:text-[var(--polaris-hi)]" title={s.pr_url}>↗</a>
+                        : <span className="text-[var(--ink-muted)]">—</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 批次重跑紀錄 */}
+            <div className="mt-8"><SectionLabel>批次紀錄 · {data.implement.batches.length} 次 · 共 {data.implement.total_runs} agent runs</SectionLabel></div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {data.implement.batches.map((b) => (
+                <div key={b.batch_id} className="flex items-center gap-2 border border-[var(--rule-dark)] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[10px] tracking-[0.08em]">
+                  <span className="text-[var(--ink-muted)]">#{b.batch_id}</span>
+                  <FLChip status={b.status} />
+                  <span className="text-[var(--ink-muted)]">{b.total} story</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

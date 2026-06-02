@@ -220,7 +220,7 @@ def test_start_batch_all_skipped_raises(tmp_db, monkeypatch):
 
 
 def test_closes_regex_parses_keywords():
-    """list_open_pr_issue_numbers 用的 Closes/Fixes/Resolves 關鍵字解析。"""
+    """list_active_pr_issue_numbers 用的 Closes/Fixes/Resolves 關鍵字解析。"""
     from async_runtime.github_pr import _CLOSES_RE
     body = "Automated.\n\nCloses #45\nfixes #7\nResolved #9\nsee #3"
     nums = {int(m.group(1)) for m in _CLOSES_RE.finditer(body)}

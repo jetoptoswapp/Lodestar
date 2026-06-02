@@ -34,6 +34,19 @@ def _git(wt: Path, args: list[str], *, check: bool = True) -> subprocess.Complet
     return proc
 
 
+def _reattach_to_work_branch(wt: Path, branch: str) -> None:
+    """把 HEAD 釘回 work branch（agent bypassPermissions 可能 git checkout 把 HEAD 切離，
+    例如 tester 切到 base 跑測試後沒切回 → detached）。branch 由 prepare 建立、agent 的 commit
+    都在其上；未提交變更若無衝突會被 checkout 帶過去。已在該 branch → no-op；branch 不存在或
+    切換失敗（衝突）→ 保持原狀、不丟資料（後續 add/commit/push 仍以當前 HEAD 收尾）。"""
+    cur = (_git(wt, ["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout or "").strip()
+    if cur == branch:
+        return
+    if _git(wt, ["rev-parse", "--verify", branch], check=False).returncode != 0:
+        return
+    _git(wt, ["checkout", branch], check=False)
+
+
 def _gh_headers(token: str) -> dict:
     return {
         "Authorization": f"Bearer {token}",
@@ -102,19 +115,23 @@ def list_closed_issues(repo: str, token: str, *, max_pages: int = 5) -> list[tup
 _CLOSES_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
 
 
-def list_open_pr_issue_numbers(repo: str, token: str, *, max_pages: int = 5) -> set[int]:
-    """列「目前 open PR 的 body 透過關鍵字（Closes/Fixes/Resolves #N）連到的 issue 編號」。
-    給 batch 冪等重跑：issue 還開著但已有 open PR 在處理 → 視為進行中、跳過（避免開重複 PR）。失敗回 set()。"""
+def list_active_pr_issue_numbers(repo: str, token: str, *, max_pages: int = 5) -> set[int]:
+    """列「open 或 merged PR 的 body 透過關鍵字（Closes/Fixes/Resolves #N）連到的 issue 編號」。
+    冪等重跑：open PR = 進行中；merged PR = 已交付（不能只靠 issue 是否關閉，auto-close 可能漏）。
+    兩者都跳過、不重做。closed-未-merge 不算。失敗回 set()。"""
     out: set[int] = set()
     try:
         for page in range(1, max_pages + 1):
-            url = f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100&page={page}"
+            # state=all：涵蓋 open + closed；merged PR 在 GitHub 是 closed + merged_at 非空
+            url = f"https://api.github.com/repos/{repo}/pulls?state=all&per_page=100&page={page}"
             req = urllib.request.Request(url, headers=_gh_headers(token), method="GET")
             with urllib.request.urlopen(req, timeout=20) as resp:
                 items = json.loads(resp.read().decode("utf-8"))
             if not items:
                 break
             for pr in items:
+                if pr.get("state") != "open" and not pr.get("merged_at"):
+                    continue                     # closed-未-merge → 跳過不算
                 for m in _CLOSES_RE.finditer(pr.get("body") or ""):
                     out.add(int(m.group(1)))
             if len(items) < 100:
@@ -221,10 +238,14 @@ def make_github_pr_opener(*, get_token: Callable[[], str],
         wt = workdir_for(session_id)
         branch = f"lodestar/impl-{session_id}"
 
+        # agent 可能把 HEAD 切離 work branch（detached / 別條）→ 先釘回，否則下面以「當前 HEAD」
+        # 為準的 diff/push 會漏掉真正的工作 commit（症狀：工作有做卻誤判空 diff、failed）。
+        _reattach_to_work_branch(wt, branch)
         # base：clone 模式本地在 default branch（main/master）→ 當 base；worktree 模式本地已在
         # work branch（== branch）→ 用參數 base_branch。head 一律推當前 commit 上去（HEAD:）。
+        # detached 時 rev-parse 回字面 "HEAD"——不能拿它當 base，退回參數 base_branch。
         cur = (_git(wt, ["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout or "").strip()
-        base = base_branch if (not cur or cur == branch) else cur
+        base = base_branch if (not cur or cur in ("HEAD", branch)) else cur
         _git(wt, ["add", "-A"])
         # agent（bypassPermissions）可能已自行 git commit → 沒得 stage；有殘留未提交則收進一個 commit
         if _git(wt, ["diff", "--cached", "--quiet"], check=False).returncode != 0:
