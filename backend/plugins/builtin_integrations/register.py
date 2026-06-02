@@ -190,7 +190,9 @@ def _create_gitlab_repo(config: dict[str, str], name: str,
         raise RuntimeError("缺 GitLab token")
     base = _gitlab_base(config)
     vis = visibility if visibility in ("public", "internal", "private") else "private"
-    payload: dict = {"name": name, "visibility": vis}
+    # initialize_with_readme：建 repo 即帶初始 README commit（對齊 GitHub auto_init）。
+    # 否則 repo 是空的、無 default branch → implement clone 後 checkout -B ... origin/main 會 exit 128。
+    payload: dict = {"name": name, "visibility": vis, "initialize_with_readme": True}
     org = (owner or "").strip()
     if org:
         try:

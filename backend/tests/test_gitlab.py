@@ -36,7 +36,8 @@ def test_create_gitlab_personal(monkeypatch):
     out = _create_gitlab_repo({"token": "t"}, "proj", "private", "")
     assert out == "me/proj"
     url, payload = seen[-1]
-    assert url.endswith("/api/v4/projects") and payload == {"name": "proj", "visibility": "private"}
+    assert url.endswith("/api/v4/projects")
+    assert payload == {"name": "proj", "visibility": "private", "initialize_with_readme": True}
 
 
 def test_create_gitlab_group_with_namespace(monkeypatch):
@@ -103,3 +104,23 @@ def test_gitlab_mr_rollback(monkeypatch):
     with pytest.raises(MrError, match="回滾"):
         opener(7, "g/p", "")
     assert any("--delete" in a for a in rec)
+
+
+def test_make_gitlab_mr_merger_parses_iid(monkeypatch):
+    """make_gitlab_mr_merger：MR web_url → 解析 iid → 呼叫 merge_mr；無 url → 不呼叫、回 False。"""
+    from async_runtime import gitlab_mr as gl
+    calls = []
+    monkeypatch.setattr(gl, "merge_mr", lambda base, token, repo, iid, **k: calls.append((base, repo, iid)) or True)
+    urls = {7: "https://gl.x/o/r/-/merge_requests/9", 8: ""}
+    merger = gl.make_gitlab_mr_merger(get_token=lambda: "t", base_url="https://gl.x/", repo="o/r",
+                                      pr_url_for=lambda sid: urls.get(sid, ""))
+    assert merger(7) is True
+    assert calls == [("https://gl.x", "o/r", 9)]
+    assert merger(8) is False           # 無 MR url → 不呼叫 merge_mr
+    assert len(calls) == 1
+
+
+def test_gitlab_closes_regex():
+    from async_runtime.gitlab_mr import _CLOSES_RE
+    nums = {int(m.group(1)) for m in _CLOSES_RE.finditer("Closes #3\nfixes #7\nsee #9")}
+    assert nums == {3, 7}

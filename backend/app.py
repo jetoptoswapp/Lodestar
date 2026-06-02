@@ -1181,28 +1181,43 @@ def _batch_issue_lister(target: str, creds: dict, repo: str):
 
 
 def _batch_skip_keys(target: str, creds: dict, repo: str) -> set[str]:
-    """冪等重跑：回「已完成（issue 已關）或進行中（已有 open PR）」的 story 編號集（如 {'1.1','1.3'}）。
-    目前僅 github；token 缺 / 非 github → set()（不跳過，寧可重做也不漏做）。失敗回 set()。"""
-    if target != "github":
-        return set()
+    """冪等重跑：回「已完成（issue 已關）或進行中（已有 open PR/MR）」的 story 編號集（如 {'1.1','1.3'}）。
+    github / gitlab 皆支援；token 缺 / 其他 target → set()（不跳過，寧可重做也不漏做）。失敗回 set()。"""
     token = creds.get("token", "")
     if not token:
         return set()
-    from async_runtime.github_pr import (
-        list_closed_issues, list_open_issues, list_open_pr_issue_numbers,
-    )
     keys: set[str] = set()
-    for _n, title in list_closed_issues(repo, token):          # issue 已關 = 已交付
-        k = impl_batch._story_key(title)
-        if k:
-            keys.add(k)
-    in_prog = list_open_pr_issue_numbers(repo, token)          # 開著但已有 open PR = 進行中
-    if in_prog:
-        num2key = {n: impl_batch._story_key(t) for n, t in list_open_issues(repo, token)}
-        for n in in_prog:
-            k = num2key.get(n)
+    if target == "github":
+        from async_runtime.github_pr import (
+            list_closed_issues, list_open_issues, list_open_pr_issue_numbers,
+        )
+        for _n, title in list_closed_issues(repo, token):          # issue 已關 = 已交付
+            k = impl_batch._story_key(title)
             if k:
                 keys.add(k)
+        in_prog = list_open_pr_issue_numbers(repo, token)          # 開著但已有 open PR = 進行中
+        if in_prog:
+            num2key = {n: impl_batch._story_key(t) for n, t in list_open_issues(repo, token)}
+            for n in in_prog:
+                k = num2key.get(n)
+                if k:
+                    keys.add(k)
+    elif target == "gitlab":
+        from async_runtime.gitlab_mr import (
+            list_closed_issues as gl_closed, list_open_issues as gl_open, list_open_mr_issue_iids,
+        )
+        base = (creds.get("base_url") or "https://gitlab.com").rstrip("/")
+        for _iid, title in gl_closed(base, token, repo):
+            k = impl_batch._story_key(title)
+            if k:
+                keys.add(k)
+        in_prog = list_open_mr_issue_iids(base, token, repo)
+        if in_prog:
+            iid2key = {iid: impl_batch._story_key(t) for iid, t in gl_open(base, token, repo)}
+            for iid in in_prog:
+                k = iid2key.get(iid)
+                if k:
+                    keys.add(k)
     return keys
 
 
@@ -1371,7 +1386,7 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
             return _batch_opener_builder(target, creds, req.thread_id)(
                 issue_number_for=issue_number_for, pr_title_for=pr_title_for)
 
-        # 策略 A：過 gate 即依序 merge（目前僅 github）。gitlab + auto_merge 暫不支援（merge_pr 留 None）
+        # 策略 A：過 gate 即依序 merge（github + gitlab）
         if req.auto_merge and target == "github":
             from async_runtime.github_pr import make_github_pr_merger
             merge_pr = make_github_pr_merger(
@@ -1379,8 +1394,16 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
                 repo=target_repo,
                 pr_url_for=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url") or "",
             )
-        elif req.auto_merge and target != "github":
-            log.warning("auto_merge 目前僅支援 github（target=%s）→ 不自動 merge", target)
+        elif req.auto_merge and target == "gitlab":
+            from async_runtime.gitlab_mr import make_gitlab_mr_merger
+            merge_pr = make_gitlab_mr_merger(
+                get_token=lambda: keystore.get_credentials("gitlab").get("token", ""),
+                base_url=(creds.get("base_url") or "https://gitlab.com"),
+                repo=target_repo,
+                pr_url_for=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url") or "",
+            )
+        elif req.auto_merge:
+            log.warning("auto_merge 僅支援 github / gitlab（target=%s）→ 不自動 merge", target)
 
         # 冪等重跑：跳過已完成（issue 已關）/ 進行中（已有 open PR）的 story
         skip_keys = await asyncio.to_thread(_batch_skip_keys, target, creds, target_repo)

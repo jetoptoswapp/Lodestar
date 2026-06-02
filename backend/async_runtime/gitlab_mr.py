@@ -6,13 +6,19 @@ token 不外流（只在 remote url，錯誤訊息不回顯）。冪等（alread
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
 
 PrOpener = Callable[[int, str, str], str]
+
+_MR_IID_RE = re.compile(r"/merge_requests/(\d+)")
+_CLOSES_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
 
 
 class MrError(RuntimeError):
@@ -144,3 +150,96 @@ def make_gitlab_mr_opener(*, get_token: Callable[[], str],
         return mr_url
 
     return open_mr
+
+
+# ============================================================
+#  策略 A（GitLab）：merge MR + 冪等重跑（對齊 github_pr）
+# ============================================================
+def merge_mr(base: str, token: str, repo: str, mr_iid: int, *,
+             attempts: int = 4, delay: float = 1.5) -> bool:
+    """Merge 一個 MR（PUT /merge_requests/:iid/merge）。回 True=已 merge。
+
+    GitLab 開 MR 後 merge_status 可能還在 'checking' → 首次 merge 回 405；故短暫重試幾次。
+    真正不可 merge（衝突 / 需 pipeline / 405 持續）→ 回 False（不上拋，由 batch 記 log 續跑）。"""
+    pid = urllib.parse.quote(repo, safe="")
+    url = f"{base}/api/v4/projects/{pid}/merge_requests/{mr_iid}/merge"
+    for i in range(attempts):
+        req = urllib.request.Request(url, data=b"{}", method="PUT",
+                                     headers={**_gl_headers(token), "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            return body.get("state") == "merged"
+        except urllib.error.HTTPError as exc:
+            if exc.code in (405, 406, 409):       # not mergeable / 還在 checking / 衝突
+                if i < attempts - 1:
+                    time.sleep(delay)             # 多半是 merge_status='checking'，等一下再試
+                    continue
+                return False
+            raise MrError(f"merge MR !{mr_iid} failed (HTTP {exc.code})") from exc
+    return False
+
+
+def make_gitlab_mr_merger(*, get_token: Callable[[], str], base_url: str, repo: str,
+                          pr_url_for: Callable[[int], str]) -> Callable[[int], bool]:
+    """組 merge(session_id)->bool：查該 session 的 MR web_url → 解析 iid → API merge。"""
+    base = (base_url or "https://gitlab.com").rstrip("/")
+
+    def do_merge(session_id: int) -> bool:
+        m = _MR_IID_RE.search((pr_url_for(session_id) or "").strip())
+        if not m:
+            return False
+        token = (get_token() or "").strip()
+        if not token:
+            return False
+        return merge_mr(base, token, repo, int(m.group(1)))
+
+    return do_merge
+
+
+def list_closed_issues(base: str, token: str, repo: str, *, max_pages: int = 5) -> list[tuple[int, str]]:
+    """列 GitLab project 的 closed issue (iid, title)。冪等重跑：issue 已關 = 已交付 → 跳過。失敗回 []。"""
+    pid = urllib.parse.quote(repo, safe="")
+    out: list[tuple[int, str]] = []
+    try:
+        for page in range(1, max_pages + 1):
+            url = (f"{base}/api/v4/projects/{pid}/issues"
+                   f"?state=closed&per_page=100&page={page}")
+            req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not items:
+                break
+            for it in items:
+                iid = it.get("iid")
+                if isinstance(iid, int):
+                    out.append((iid, it.get("title") or ""))
+            if len(items) < 100:
+                break
+    except Exception:                            # noqa: BLE001
+        return []
+    return out
+
+
+def list_open_mr_issue_iids(base: str, token: str, repo: str, *, max_pages: int = 5) -> set[int]:
+    """列「目前 opened MR 的 description 透過 Closes/Fixes #N 連到的 issue iid」。
+    冪等重跑：issue 還開著但已有 open MR 在處理 → 視為進行中、跳過。失敗回 set()。"""
+    pid = urllib.parse.quote(repo, safe="")
+    out: set[int] = set()
+    try:
+        for page in range(1, max_pages + 1):
+            url = (f"{base}/api/v4/projects/{pid}/merge_requests"
+                   f"?state=opened&per_page=100&page={page}")
+            req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not items:
+                break
+            for mr in items:
+                for m in _CLOSES_RE.finditer(mr.get("description") or ""):
+                    out.add(int(m.group(1)))
+            if len(items) < 100:
+                break
+    except Exception:                            # noqa: BLE001
+        return set()
+    return out

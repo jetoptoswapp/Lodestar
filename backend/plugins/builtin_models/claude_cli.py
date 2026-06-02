@@ -25,8 +25,10 @@ from pathlib import Path
 
 from plugin_api import ModelAdapter
 
-# Read tool 可能多輪 → 比 240s 留更多 headroom（一張高解析圖片可能需 30–60s）
-TIMEOUT_SECONDS = 360
+# 大型單次生成（如 stories 拆完整 Epic/Story + AC/Gherkin/估點，或大 PRD 的架構）opus 可能
+# 跑 10 分鐘以上；Read tool 多輪 / 高解析圖片再加碼。前端 fetch 無 client timeout，等多久都收，
+# 故放寬到 15 分鐘避免大專案生成被腰斬（症狀：stories TimeoutExpired(360) → 產出空）。
+TIMEOUT_SECONDS = 900
 
 _UPLOADS_ENV = "LODESTAR_UPLOADS_DIR"
 
@@ -59,12 +61,26 @@ def _tool_flags(allowed_tools: tuple[str, ...]) -> list[str]:
     return flags
 
 
+# single-shot 產生器守門：禁止 claude 開子代理 / 啟動 workflow。
+# 否則對「架構」這類大任務，claude（受使用者全域 CLAUDE.md「多用 subagent」影響）會嘗試派並行
+# subagent / 動態 workflow → 非互動模式給不了核准 → 只回「等待核准」meta 訊息、產不出真正內容
+# （症狀：architecture 跑完僅 162 chars、0 sections）。配合 system prompt 明示「直接 inline 寫出」。
+_NO_DELEGATE_TOOLS = ("Task", "Agent", "Workflow")
+_INLINE_DIRECTIVE = (
+    "You are a single-shot document generator. Write the FULL requested artifact directly and inline "
+    "in this reply. Do NOT spawn subagents or sub-tasks, do NOT create/launch/await any workflow, do "
+    "NOT ask for approval or delegation — produce the complete deliverable now in your text output."
+)
+
+
 def _build_cmd(allowed_tools: tuple[str, ...] = ()) -> list[str]:
     return [
         "claude", "-p",
         "--output-format", "text",
         "--no-session-persistence",
+        "--append-system-prompt", _INLINE_DIRECTIVE,
         *_tool_flags(allowed_tools),
+        "--disallowedTools", *_NO_DELEGATE_TOOLS,   # 置於末端：variadic 不誤吞後續 flag
     ]
 
 

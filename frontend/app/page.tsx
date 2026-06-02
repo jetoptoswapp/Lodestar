@@ -2097,6 +2097,68 @@ function AttachmentChip({ a, onDelete }: { a: AttachmentInfo; onDelete: () => vo
 // 直接渲染 markdown 結構。M2.3 會把 markdown 來源換成 /api/stage/architecture/{thread}。
 type StageBusyLike = false | "generate" | "refine" | "chat";
 
+// 可縮放 / 拖曳 / 全螢幕的 Mermaid 圖：滾輪或 ＋/− 縮放、拖曳平移、⤢ 全螢幕（Esc 離開）。
+function ZoomableDiagram({ code, idPrefix }: { code: string; idPrefix?: string }) {
+  const [scale, setScale] = useState(1);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const [fs, setFs] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const clamp = (n: number) => Math.min(5, Math.max(0.2, n));
+  const reset = () => { setScale(1); setPos({ x: 0, y: 0 }); };
+
+  // 滾輪縮放（非 passive 才能 preventDefault，避免連帶捲動頁面）
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => { e.preventDefault(); setScale((s) => clamp(s * (e.deltaY < 0 ? 1.12 : 1 / 1.12))); };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [fs]);
+
+  // 全螢幕時 Esc 離開
+  useEffect(() => {
+    if (!fs) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFs(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fs]);
+
+  const onDown = (e: React.MouseEvent) => { drag.current = { x: e.clientX, y: e.clientY, px: pos.x, py: pos.y }; setDragging(true); };
+  const onMove = (e: React.MouseEvent) => {
+    if (!drag.current) return;
+    setPos({ x: drag.current.px + (e.clientX - drag.current.x), y: drag.current.py + (e.clientY - drag.current.y) });
+  };
+  const onUp = () => { drag.current = null; setDragging(false); };
+
+  const btn = "grid h-7 w-7 place-items-center border border-[var(--rule-dark)] bg-[var(--bg)]/80 text-[13px] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]";
+  const stage = (
+    <div
+      ref={wrapRef}
+      onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+      className="relative h-full w-full overflow-hidden"
+      style={{ cursor: dragging ? "grabbing" : "grab" }}
+    >
+      <div className="absolute right-3 top-3 z-10 flex items-center gap-1">
+        <button className={btn} title="縮小" onClick={() => setScale((s) => clamp(s / 1.2))}>−</button>
+        <button className="border border-[var(--rule-dark)] bg-[var(--bg)]/80 px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px] tabular-nums text-[var(--ink-muted)] transition hover:text-[var(--polaris)]" title="重置縮放/位置" onClick={reset}>{Math.round(scale * 100)}%</button>
+        <button className={btn} title="放大" onClick={() => setScale((s) => clamp(s * 1.2))}>＋</button>
+        <button className={btn} title={fs ? "離開全螢幕 (Esc)" : "全螢幕"} onClick={() => setFs((v) => !v)}>{fs ? "⤡" : "⤢"}</button>
+      </div>
+      <div
+        className="grid h-full w-full place-items-center"
+        style={{ transform: `translate(${pos.x}px, ${pos.y}px) scale(${scale})`, transformOrigin: "center", transition: dragging ? "none" : "transform 80ms" }}
+      >
+        <MermaidDiagram code={code} idPrefix={idPrefix} />
+      </div>
+    </div>
+  );
+
+  if (fs) return <div className="fixed inset-0 z-50 bg-[var(--bg)]/96 backdrop-blur-sm">{stage}</div>;
+  return <div className="h-full w-full">{stage}</div>;
+}
+
 function ArchWorkspace({
   thread, artifact, status, busy, prdReady,
   onGenerate, onRefine, onApprove, modelChoice, onChatArtifact,
@@ -2168,7 +2230,7 @@ function ArchWorkspace({
                       no mermaid diagrams in this architecture
                     </div>
                   ) : (
-                    <MermaidDiagram code={parsed.mermaids[activeDiagram]} idPrefix={`arch-${activeDiagram}`} />
+                    <ZoomableDiagram code={parsed.mermaids[activeDiagram]} idPrefix={`arch-${activeDiagram}`} />
                   )}
                 </div>
               </div>
@@ -3467,11 +3529,23 @@ function ImplementWorkspace({
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
                   {lines.length === 0 ? (
-                    <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
-                      {runMode === "batch" && batch
-                        ? "點左側任一 story 看該 issue 的實作 log。"
-                        : "尚無輸出。選 runner（mock = 安全 dry-run）後按「開始自動實作」。"}
-                    </div>
+                    status === "failed" && session?.error_message ? (
+                      // 失敗但無 agent log（多半是準備工作目錄 / 前置階段就掛）→ 直接秀原因，別只留空白
+                      <div className="space-y-2">
+                        <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#e0608a]">
+                          ✗ 實作失敗（無 agent 輸出 — 多為準備工作目錄 / 前置失敗）
+                        </div>
+                        <pre className="whitespace-pre-wrap border-l-2 border-[#e0608a]/50 bg-[#e0608a]/8 px-3 py-2 font-[family-name:var(--font-mono)] text-[11px] leading-5 text-[#f0a8bd]">
+                          {session.error_message}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                        {runMode === "batch" && batch
+                          ? "點左側任一 story 看該 issue 的實作 log。"
+                          : "尚無輸出。選 runner（mock = 安全 dry-run）後按「開始自動實作」。"}
+                      </div>
+                    )
                   ) : showRaw ? (
                     <ul className="space-y-0.5 font-[family-name:var(--font-mono)] text-[11px] leading-5">
                       {lines.map((l) => (
