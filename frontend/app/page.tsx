@@ -2990,6 +2990,9 @@ function ImplBatchProgress({
         <span className="text-[var(--approved)]">已完成 {ok}</span>
         <span className="text-[#e0608a]">失敗 {failed}</span>
         <span>進度 {done}/{batch.total}</span>
+        <span className={batch.auto_merge ? "text-[var(--polaris)]" : "text-[var(--ink-muted)]"}>
+          auto-merge {batch.auto_merge ? "ON" : "OFF"}
+        </span>
       </div>
       <div className="bg-[var(--bg-elev)]/30 px-6 pb-2.5 pt-1.5">
         <div className="h-1 w-full overflow-hidden rounded bg-[var(--rule)]">
@@ -3170,7 +3173,7 @@ function ImplementWorkspace({
   const [runner, setRunner] = useState<string>("mock");
   const [mode, setMode] = useState<"single" | "roles">("roles");
   const [runMode, setRunMode] = useState<"batch" | "session">("batch");
-  const [autoMerge, setAutoMerge] = useState<boolean>(false);
+  const [autoMerge, setAutoMerge] = useState<boolean>(true);   // 預設開：過 gate 即依序 merge（策略 A）
   const [logExpanded, setLogExpanded] = useState<boolean>(false);   // ⤢ 展開 log（隱藏左側儀表軌）
   const [targetRepo, setTargetRepo] = useState<string>("");
   const [sessionId, setSessionId] = useState<number | null>(null);

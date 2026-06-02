@@ -120,6 +120,9 @@ class AgentRunner(ABC):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                # StreamReader 行緩衝上限：預設 64KB，stream-json 單行可塞大 blob（檔案內容 / 長輸出）→
+                # 超過會丟 "Separator is not found, and chunk exceed the limit"、整個 run 崩。放寬到 16MB。
+                limit=16 * 1024 * 1024,
             )
         except (OSError, ValueError) as exc:
             _log.warning("runner %s spawn failed: %s", self.name, exc)

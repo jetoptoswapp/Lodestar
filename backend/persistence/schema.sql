@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS impl_batches (
     total           INTEGER NOT NULL DEFAULT 0,            -- 共幾個 story
     status          TEXT NOT NULL DEFAULT 'running',       -- running/succeeded/failed/cancelled/partial
     stop_on_failure INTEGER NOT NULL DEFAULT 0,            -- 1=遇錯即停；0=continue-on-failure（預設）
+    auto_merge      INTEGER NOT NULL DEFAULT 0,            -- 1=過 gate 即依序 merge PR/MR（策略 A）
     error_message   TEXT NOT NULL DEFAULT '',
     created_at      REAL NOT NULL DEFAULT (strftime('%s','now')),
     updated_at      REAL NOT NULL DEFAULT (strftime('%s','now'))

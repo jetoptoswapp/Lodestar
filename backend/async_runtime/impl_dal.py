@@ -105,12 +105,14 @@ def list_sessions_by_batch(batch_id: int) -> list[dict]:
 # ---- impl_batches -----------------------------------------------------------
 
 def create_batch(*, thread_id: str, target_repo: str, runner: str,
-                 mode: str, total: int, stop_on_failure: bool = False) -> int:
+                 mode: str, total: int, stop_on_failure: bool = False,
+                 auto_merge: bool = False) -> int:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO impl_batches (thread_id, target_repo, runner, mode, total, status, stop_on_failure) "
-            "VALUES (?, ?, ?, ?, ?, 'running', ?)",
-            (thread_id, target_repo, runner, mode, total, 1 if stop_on_failure else 0),
+            "INSERT INTO impl_batches (thread_id, target_repo, runner, mode, total, status, "
+            "stop_on_failure, auto_merge) VALUES (?, ?, ?, ?, ?, 'running', ?, ?)",
+            (thread_id, target_repo, runner, mode, total,
+             1 if stop_on_failure else 0, 1 if auto_merge else 0),
         )
         return int(cur.lastrowid)
 

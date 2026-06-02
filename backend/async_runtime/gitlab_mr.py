@@ -121,13 +121,17 @@ def make_gitlab_mr_opener(*, get_token: Callable[[], str],
         wt = workdir_for(session_id)
         branch = f"lodestar/impl-{session_id}"
 
-        _git(wt, ["add", "-A"])
-        if _git(wt, ["diff", "--cached", "--quiet"], check=False).returncode == 0:
-            raise MrError("worktree 無變更，不開空 MR")
-        _git(wt, ["commit", "-m", f"Lodestar impl session {session_id}"])
-
         cur = (_git(wt, ["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout or "").strip()
         base_branch = cur if (cur and cur != branch) else "main"
+        _git(wt, ["add", "-A"])
+        # agent（bypassPermissions）可能已自行 git commit → 沒得 stage；有殘留未提交則收進一個 commit
+        if _git(wt, ["diff", "--cached", "--quiet"], check=False).returncode != 0:
+            _git(wt, ["commit", "-m", f"Lodestar impl session {session_id}"])
+        # 真正判斷有無東西可 MR：HEAD 相對 origin/base 有無差異（涵蓋 agent 自 commit + host commit）。
+        # 只看 staged 會在 agent 已 commit 時誤判「無變更」（症狀：工作有做卻說空 diff、failed）。
+        if _git(wt, ["diff", "--quiet", f"origin/{base_branch}", "HEAD"], check=False).returncode == 0:
+            raise MrError("worktree 無變更，不開空 MR")
+
         remote = f"https://oauth2:{token}@{host}/{repo}.git"
         push = subprocess.run(
             ["git", "-C", str(wt), "push", remote, f"HEAD:{branch}", "--force"],

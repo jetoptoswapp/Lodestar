@@ -127,6 +127,7 @@ def start_batch(
     batch_id = impl_dal.create_batch(
         thread_id=thread_id, target_repo=target_repo, runner=runner_choice,
         mode=mode, total=len(to_run), stop_on_failure=stop_on_failure,
+        auto_merge=merge_pr is not None,           # 有 merger = 本批 auto-merge on（存進紀錄供 UI 顯示）
     )
 
     session_items: list[_SessionItem] = []

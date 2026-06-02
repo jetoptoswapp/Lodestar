@@ -355,6 +355,7 @@ export type ImplementBatch = {
   total: number;
   status: string;                 // running/succeeded/failed/cancelled/partial
   stop_on_failure: boolean;
+  auto_merge?: boolean;           // 本批是否「過 gate 自動 merge」
   error_message: string;
   created_at: number | null;
   updated_at: number | null;

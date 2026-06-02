@@ -434,7 +434,7 @@ class ImplementBatchStartRequest(BaseModel):
     target_repo: str = ""           # 留空 → 由專案 delivery 設定 resolve
     mode: str = "roles"             # batch 預設 roles（tester+reviewer 即 QA gate）
     stop_on_failure: bool = False   # False=continue-on-failure（預設）
-    auto_merge: bool = False        # True=過 gate 即依序 merge PR（策略 A，後者吃得到前者）；僅 github 真跑生效
+    auto_merge: bool = True         # 預設開：過 gate 即依序 merge PR/MR（策略 A，後者吃得到前者）；github/gitlab 真跑生效
 
 
 class ImplementBatchItem(BaseModel):
@@ -462,6 +462,7 @@ class ImplementBatchResponse(BaseModel):
     total: int
     status: str                     # running/succeeded/failed/cancelled/partial
     stop_on_failure: bool = False
+    auto_merge: bool = False        # 本批是否「過 gate 自動 merge」（策略 A）
     error_message: str = ""
     created_at: Optional[float] = None
     updated_at: Optional[float] = None

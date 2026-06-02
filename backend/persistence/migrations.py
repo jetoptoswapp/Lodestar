@@ -26,6 +26,7 @@ _ADD_COLUMNS = [
     ("impl_sessions", "batch_id", "INTEGER"),
     ("impl_sessions", "issue_number", "INTEGER"),
     ("impl_sessions", "story_key", "TEXT NOT NULL DEFAULT ''"),
+    ("impl_batches", "auto_merge", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

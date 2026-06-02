@@ -1442,7 +1442,8 @@ def _batch_response(b: dict) -> ImplementBatchResponse:
     return ImplementBatchResponse(
         batch_id=b["batch_id"], thread_id=b["thread_id"], target_repo=b["target_repo"],
         runner=b["runner"], mode=b["mode"], total=b["total"], status=b["status"],
-        stop_on_failure=bool(b["stop_on_failure"]), error_message=b["error_message"],
+        stop_on_failure=bool(b["stop_on_failure"]), auto_merge=bool(_row_get(b, "auto_merge", 0)),
+        error_message=b["error_message"],
         created_at=b["created_at"], updated_at=b["updated_at"], items=items,
     )
 
