@@ -201,9 +201,27 @@ def merge_mr(base: str, token: str, repo: str, mr_iid: int, *,
     return False
 
 
+def close_issue(base: str, token: str, repo: str, issue_iid: int) -> None:
+    """主動關 issue（merge 後備援）。GitLab 的 `Closes #N` auto-close 不穩——同樣寫法有時關、
+    有時沒解析到（實測 MR merge 進 default branch 後 issue 仍 open），故 host 自己補關。
+    idempotent（關已關的 issue 是 no-op）、失敗只吞、不影響 merge 結果。"""
+    pid = urllib.parse.quote(repo, safe="")
+    url = f"{base}/api/v4/projects/{pid}/issues/{issue_iid}?state_event=close"
+    req = urllib.request.Request(url, data=b"", method="PUT", headers=_gl_headers(token))
+    try:
+        with urllib.request.urlopen(req, timeout=20):
+            pass
+    except Exception:                            # noqa: BLE001
+        pass
+
+
 def make_gitlab_mr_merger(*, get_token: Callable[[], str], base_url: str, repo: str,
-                          pr_url_for: Callable[[int], str]) -> Callable[[int], bool]:
-    """組 merge(session_id)->bool：查該 session 的 MR web_url → 解析 iid → API merge。"""
+                          pr_url_for: Callable[[int], str],
+                          issue_iid_for: Optional[Callable[[int], Optional[int]]] = None,
+                          ) -> Callable[[int], bool]:
+    """組 merge(session_id)->bool：查該 session 的 MR web_url → 解析 iid → API merge。
+
+    issue_iid_for 給定時，merge 成功後主動關該 issue（備援 GitLab 不穩的 auto-close）。"""
     base = (base_url or "https://gitlab.com").rstrip("/")
 
     def do_merge(session_id: int) -> bool:
@@ -213,7 +231,12 @@ def make_gitlab_mr_merger(*, get_token: Callable[[], str], base_url: str, repo: 
         token = (get_token() or "").strip()
         if not token:
             return False
-        return merge_mr(base, token, repo, int(m.group(1)))
+        merged = merge_mr(base, token, repo, int(m.group(1)))
+        if merged and issue_iid_for:
+            iid = issue_iid_for(session_id)
+            if iid:
+                close_issue(base, token, repo, int(iid))   # 備援：確保 issue 真的關掉
+        return merged
 
     return do_merge
 

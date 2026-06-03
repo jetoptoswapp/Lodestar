@@ -1413,6 +1413,7 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
                 base_url=(creds.get("base_url") or "https://gitlab.com"),
                 repo=target_repo,
                 pr_url_for=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url") or "",
+                issue_iid_for=lambda sid: (impl_dal.get_session(sid) or {}).get("issue_number"),
             )
         elif req.auto_merge:
             log.warning("auto_merge 僅支援 github / gitlab（target=%s）→ 不自動 merge", target)

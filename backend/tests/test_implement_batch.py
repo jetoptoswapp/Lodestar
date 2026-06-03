@@ -194,6 +194,25 @@ def test_make_github_pr_merger_parses_pr_number(monkeypatch):
     assert len(calls) == 1
 
 
+def test_make_gitlab_mr_merger_closes_issue_on_merge(monkeypatch):
+    """make_gitlab_mr_merger：merge 成功後主動關 issue（備援 GitLab 不穩的 auto-close）；
+    merge 失敗 → 不關。"""
+    from async_runtime import gitlab_mr
+    closed = []
+    monkeypatch.setattr(gitlab_mr, "merge_mr",
+                        lambda base, token, repo, iid: iid != 99)   # iid 99 視為 merge 失敗
+    monkeypatch.setattr(gitlab_mr, "close_issue",
+                        lambda base, token, repo, issue_iid: closed.append(issue_iid))
+    urls = {7: "https://gl/o/r/-/merge_requests/12", 8: "https://gl/o/r/-/merge_requests/99"}
+    issues = {7: 16, 8: 17}
+    merger = gitlab_mr.make_gitlab_mr_merger(
+        get_token=lambda: "tok", base_url="https://gl", repo="o/r",
+        pr_url_for=lambda sid: urls.get(sid, ""),
+        issue_iid_for=lambda sid: issues.get(sid))
+    assert merger(7) is True and closed == [16]      # merge 成功 → 關對應 issue 16
+    assert merger(8) is False and closed == [16]     # merge 失敗（MR 99）→ 不關 issue
+
+
 # ---- 冪等重跑：跳過已完成 / 進行中的 story --------------------------------
 
 def test_start_batch_skips_done_keys(tmp_db, monkeypatch):
