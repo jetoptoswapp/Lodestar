@@ -82,7 +82,10 @@ def _implement_section(conn, thread_id: str) -> dict:
     stories = []
     for key, group in by_key.items():
         group.sort(key=lambda s: s["session_id"])
-        current = group[-1]                                   # 最新一次 = 現況
+        # 交付過就以「成功那次」為準——story 一旦 merge 就是 done；晚於它的失敗多半是後續 batch
+        # 重跑時「已 merge → 空 diff」而 failed，不該蓋掉現況（否則 5.1/5.3 這種會誤標 failed）。
+        delivered = [s for s in group if s["status"] == "succeeded"]
+        current = delivered[-1] if delivered else group[-1]
         sruns = runs_by_session.get(current["session_id"], [])
         terminal = current["status"] in _TERMINAL
         starts = [x["started_at"] for x in sruns if x["started_at"]]
