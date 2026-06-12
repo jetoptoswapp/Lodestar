@@ -14,6 +14,7 @@ import { ConfirmDialog, PromptDialog } from "@/components/Modal";
 import { PublishModal } from "@/components/PublishModal";
 import { IntegrationsModal } from "@/components/IntegrationsModal";
 import { ProjectDeliveryModal } from "@/components/ProjectDeliveryModal";
+import { DocsPublishModal } from "@/components/DocsPublishModal";
 import RcaWorkspace from "@/components/RcaWorkspace";
 import {
   type Agent,
@@ -294,6 +295,7 @@ export default function Page() {
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
   // M2.5：Publish modal 開啟旗標（獨立 state，因為它是 multi-step internal state machine）
   const [publishOpen, setPublishOpen] = useState(false);
+  const [docsPublishOpen, setDocsPublishOpen] = useState(false);
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
   const [projectModal, setProjectModal] = useState<{ open: boolean; thread: string | null }>({ open: false, thread: null });
   // M3：workflows / agents 真實 list（給 /workflows, /agents 頁面與 thread switcher 共用）
@@ -1041,6 +1043,7 @@ export default function Page() {
                       onRefine={onRefineStories}
                       onApprove={onApproveStories}
                       onPublish={() => setPublishOpen(true)}
+                      onPublishDocs={() => setDocsPublishOpen(true)}
                     />
                   )}
                   {selected === "implement"    && (
@@ -1146,6 +1149,12 @@ export default function Page() {
         thread={thread}
         apiBase={API_BASE}
         onClose={() => { setPublishOpen(false); if (thread) refreshStories(thread); }}
+      />
+      <DocsPublishModal
+        open={docsPublishOpen}
+        thread={thread}
+        apiBase={API_BASE}
+        onClose={() => setDocsPublishOpen(false)}
       />
       <IntegrationsModal
         open={integrationsOpen}
@@ -2562,7 +2571,7 @@ function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChan
 // M2.3 wire 真實 API：接 /api/stage/stories/{thread}；empty state 顯示「架構未生成」提示。
 function StoriesWorkspace({
   thread, artifact, status, busy, delivery, archReady,
-  onGenerate, onRefine, onApprove, onPublish,
+  onGenerate, onRefine, onApprove, onPublish, onPublishDocs,
 }: {
   thread: string | null;
   artifact: string;
@@ -2574,6 +2583,7 @@ function StoriesWorkspace({
   onRefine: () => void;
   onApprove: () => void;
   onPublish: () => void;
+  onPublishDocs: () => void;
 }) {
   const parsed = useMemo(() => parseStories(artifact || ""), [artifact]);
   const counts = useMemo(() => countStoriesAndEstimate(parsed.raw), [parsed.raw]);
@@ -2618,6 +2628,13 @@ function StoriesWorkspace({
                 ✓ 已發佈 {delivery.created} 筆
               </span>
             )}
+            <button
+              onClick={onPublishDocs}
+              title="把 PRD + Architecture 發到 GitHub Wiki / GitLab Pages"
+              className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
+            >
+              發佈文件…
+            </button>
             <button
               onClick={onPublish}
               disabled={!hasContent}

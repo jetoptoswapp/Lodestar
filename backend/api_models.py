@@ -365,6 +365,14 @@ class DeliveryPublishResponse(BaseModel):
     created: list[str]      # 已建立的 issue / ticket URL
 
 
+class DocsPublishResponse(BaseModel):
+    ok: bool
+    target: str             # github / gitlab（皆發到 Wiki）
+    repo: str               # owner/repo 或 group/project
+    url: str                # Wiki 網址（github /wiki、gitlab /-/wikis/home）
+    note: str               # 使用提示
+
+
 # ---- Runners（async runner 清單，M5）----
 class RunnerInfo(BaseModel):
     choice: str

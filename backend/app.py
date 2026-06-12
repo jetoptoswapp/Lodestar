@@ -45,6 +45,7 @@ from api_models import (  # noqa: E402
     DeliveryPreviewResponse,
     DeliveryPublishRequest,
     DeliveryPublishResponse,
+    DocsPublishResponse,
     ModelAdapterListResponse,
     ModelAdapterResponse,
     PluginListResponse,
@@ -1085,6 +1086,47 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
         target=result.target,
         count=result.count,
         created=list(result.created),
+    )
+
+
+@app.post("/api/docs/{thread_id}/publish", response_model=DocsPublishResponse)
+async def docs_publish(thread_id: str):
+    """把 PRD + Architecture 發到 Wiki：github → /wiki；gitlab → /-/wikis（即推即看 markdown）。
+
+    手動觸發、可重發（覆寫）。文件本身不進 code，與 stories→issue / implement→PR 分流。
+    """
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    prd = dal.get_artifact(thread_id, "prd") or ""
+    arch = dal.get_artifact(thread_id, "architecture") or ""
+    if not prd.strip() or not arch.strip():
+        raise HTTPException(400, detail=error_detail("docs_not_ready", "PRD / Architecture 尚未生成，無法發佈文件"))
+
+    from delivery_repo import DeliveryRepoError, resolve_project_repo
+    try:
+        target, repo = await asyncio.to_thread(resolve_project_repo, _registry(), thread_id, create=True)
+    except DeliveryRepoError as exc:
+        raise HTTPException(400, detail=error_detail("delivery_repo_unresolved", str(exc)))
+    if target not in ("github", "gitlab"):
+        raise HTTPException(400, detail=error_detail(
+            "docs_target_unsupported", f"文件發佈僅支援 github / gitlab（Wiki），不支援 '{target}'"))
+
+    import docs_publisher
+    creds = keystore.get_credentials(target)
+    try:
+        result = await asyncio.to_thread(
+            docs_publisher.publish_docs, thread_id, target, repo, creds,
+            {"PRD": prd, "Architecture": arch})
+    except docs_publisher.DocsPublishError as exc:
+        dal.append_event(thread_id, "architecture", event_type="docs_publish_failed",
+                         detail=json.dumps({"target": target, "repo": repo}))
+        raise HTTPException(502, detail=error_detail("docs_publish_failed", str(exc)))
+
+    dal.append_event(thread_id, "architecture", event_type="docs_published",
+                     detail=json.dumps({"target": target, "repo": repo, "url": result.get("url", "")}))
+    return DocsPublishResponse(
+        ok=bool(result.get("ok")), target=target, repo=repo,
+        url=result.get("url", ""), note=result.get("note", ""),
     )
 
 
