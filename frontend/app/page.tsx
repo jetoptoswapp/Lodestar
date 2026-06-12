@@ -68,6 +68,7 @@ import {
   countStoriesAndEstimate,
   parseArchitecture,
   parseStories,
+  parseUiDesign,
   type Story as ParsedStory,
 } from "@/lib/parse";
 
@@ -126,8 +127,9 @@ const STAGES: Array<{
 }> = [
   { id: "prd",          n: "01", label: "PRD",            caption: "PRODUCT REQUIREMENTS", status: "draft",   badge: "CHARTING", agent: "system_analyst"     },
   { id: "architecture", n: "02", label: "Architecture",   caption: "SYSTEM DESIGN",        status: "draft",   badge: "CHARTING", agent: "software_architect" },
-  { id: "stories",      n: "03", label: "Stories",        caption: "DELIVERABLE STORIES",  status: "draft",   badge: "DRAFTED",  agent: "product_owner"      },
-  { id: "implement",    n: "04", label: "Implementation", caption: "AUTO-CODE · M5",       status: "locked",  badge: "DISPATCH", agent: "3 agents · dispatch"},
+  { id: "ui_design",    n: "03", label: "UI Design",      caption: "VISUAL DESIGN",        status: "draft",   badge: "CHARTING", agent: "ui_designer"        },
+  { id: "stories",      n: "04", label: "Stories",        caption: "DELIVERABLE STORIES",  status: "draft",   badge: "DRAFTED",  agent: "product_owner"      },
+  { id: "implement",    n: "05", label: "Implementation", caption: "AUTO-CODE · M5",       status: "locked",  badge: "DISPATCH", agent: "3 agents · dispatch"},
 ];
 
 // ============================== Project（M1 / M2 baseline）==============================
@@ -145,13 +147,14 @@ function projectGlyph(p: Project): string {
 }
 
 // ============================== Modal state（取代 window.prompt / window.confirm）==============================
-type StageRefineKind = "prd" | "architecture" | "stories";
+type StageRefineKind = "prd" | "architecture" | "ui_design" | "stories";
 const STAGE_LABEL: Record<StageRefineKind, string> = {
-  prd: "PRD", architecture: "架構", stories: "使用者故事",
+  prd: "PRD", architecture: "架構", ui_design: "UI 設計", stories: "使用者故事",
 };
 const STAGE_REFINE_PLACEHOLDER: Record<StageRefineKind, string> = {
   prd: "例：加上 OAuth 登入；NFR 並發提到 10k；補充 OPS 監控指標……",
   architecture: "例：拆出獨立 Notification service；改用 gRPC 取代 REST；資料庫換 PostgreSQL……",
+  ui_design: "例：整體改暗色系；Dashboard 加空狀態畫面；標題字體換 serif；行動版優先……",
   stories: "例：拆掉超過 4h 的故事；補上 CI/CD scaffold story；對齊 NFR 切跨 epic……",
 };
 
@@ -197,8 +200,8 @@ const WORKFLOWS: Array<{
   collab_mode: Record<string, CollabMode>;
 }> = [
   {
-    id: "default", label: "Standard Pipeline", desc: "PRD → Architecture → Stories → (M5) Implementation",
-    stages: ["prd", "architecture", "stories", "implement"],
+    id: "default", label: "Standard Pipeline", desc: "PRD → Architecture ∥ UI Design → Stories → (M5) Implementation",
+    stages: ["prd", "architecture", "ui_design", "stories", "implement"],
     source: "builtin_core_stages", builtin: true, threads: 4,
     agent_bindings: {
       prd: [
@@ -279,6 +282,9 @@ export default function Page() {
   const [archArtifact, setArchArtifact] = useState<string>("");
   const [archStatus, setArchStatus] = useState<string>("draft");
   const [archBusy, setArchBusy] = useState<StageBusy>(false);
+  const [uiArtifact, setUiArtifact] = useState<string>("");
+  const [uiStatus, setUiStatus] = useState<string>("draft");
+  const [uiBusy, setUiBusy] = useState<StageBusy>(false);
   const [storiesArtifact, setStoriesArtifact] = useState<string>("");
   const [storiesStatus, setStoriesStatus] = useState<string>("draft");
   const [storiesBusy, setStoriesBusy] = useState<StageBusy>(false);
@@ -327,6 +333,9 @@ export default function Page() {
     setArchArtifact("");
     setArchStatus("draft");
     setArchBusy(false);
+    setUiArtifact("");
+    setUiStatus("draft");
+    setUiBusy(false);
     setStoriesArtifact("");
     setStoriesStatus("draft");
     setStoriesBusy(false);
@@ -685,6 +694,16 @@ export default function Page() {
     }
   }, []);
 
+  const refreshUiDesign = useCallback(async (tid: string) => {
+    try {
+      const s = await apiFetch<{ artifact: string; status: string }>(`/api/stage/ui_design/${tid}`);
+      setUiArtifact(s.artifact || "");
+      setUiStatus(s.status);
+    } catch (e) {
+      console.warn("讀取 ui_design 失敗：", (e as Error).message);
+    }
+  }, []);
+
   const refreshStories = useCallback(async (tid: string) => {
     try {
       const s = await apiFetch<{ artifact: string; status: string; delivery: DeliveryStatus | null }>(`/api/stage/stories/${tid}`);
@@ -712,9 +731,10 @@ export default function Page() {
     if (!thread) return;
     refreshPrd(thread);
     refreshArchitecture(thread);
+    refreshUiDesign(thread);
     refreshStories(thread);
     refreshChangeRequest(thread);
-  }, [thread, refreshPrd, refreshArchitecture, refreshStories, refreshChangeRequest]);
+  }, [thread, refreshPrd, refreshArchitecture, refreshUiDesign, refreshStories, refreshChangeRequest]);
 
   // M3：切 thread workflow（hoisted 到 refreshXxx 之後避免 hoisting issue）
   const onChangeProjectWorkflow = useCallback(async (workflowId: string | null) => {
@@ -724,15 +744,16 @@ export default function Page() {
       await setProjectWorkflow(thread, workflowId);
       setCurrentProjectWorkflowId(workflowId);
       // 切後分頁對齊交給 activeStages 的 effect 處理（currentProjectWorkflowId 變 → 自動跳第一個 stage）
-      // 切後重 fetch 三 stage state
+      // 切後重 fetch stage state
       resetThreadDerivedState();
       refreshPrd(thread);
       refreshArchitecture(thread);
+      refreshUiDesign(thread);
       refreshStories(thread);
     } catch (e) {
       setErr(`切換 workflow 失敗：${(e as Error).message}`);
     }
-  }, [thread, resetThreadDerivedState, refreshPrd, refreshArchitecture, refreshStories]);
+  }, [thread, resetThreadDerivedState, refreshPrd, refreshArchitecture, refreshUiDesign, refreshStories]);
 
   // 拿 attachments
   const refreshAttachments = useCallback(async (tid: string) => {
@@ -801,15 +822,16 @@ export default function Page() {
       setPrdArtifact(data.artifact || "");
       setPrdStatus("draft");
       // 上游 PRD 重生若改變 artifact，後端會把已核准的下游標 needs_revision；
-      // 同步重抓 architecture / stories 讓 UI 反映（與 onGenerateArch / submitRefine 一致）。
+      // 同步重抓 architecture / ui_design / stories 讓 UI 反映（與 onGenerateArch / submitRefine 一致）。
       refreshArchitecture(thread);
+      refreshUiDesign(thread);
       refreshStories(thread);
     } catch (e) {
       setErr(`生成 PRD 失敗：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
-  }, [thread, busy, modelChoice, refreshArchitecture, refreshStories]);
+  }, [thread, busy, modelChoice, refreshArchitecture, refreshUiDesign, refreshStories]);
 
   // ===== 修改既有專案：change_request handlers =====
   const onGenerateChangeRequest = useCallback(async () => {
@@ -895,6 +917,26 @@ export default function Page() {
     }
   }, [thread, archBusy, modelChoice, refreshStories]);
 
+  const onGenerateUiDesign = useCallback(async () => {
+    if (!thread || uiBusy) return;
+    setErr(null);
+    setUiBusy("generate");
+    try {
+      const data = await apiFetch<{ artifact: string }>("/api/stage/ui_design/generate", {
+        method: "POST",
+        body: JSON.stringify({ thread_id: thread, model_choice: modelChoice }),
+      });
+      setUiArtifact(data.artifact || "");
+      setUiStatus("draft");
+      // 上游若 reset 下游：下游 stories 變 needs_revision
+      refreshStories(thread);
+    } catch (e) {
+      setErr(`生成 UI 設計失敗：${(e as Error).message}`);
+    } finally {
+      setUiBusy(false);
+    }
+  }, [thread, uiBusy, modelChoice, refreshStories]);
+
   const onGenerateStories = useCallback(async () => {
     if (!thread || storiesBusy) return;
     setErr(null);
@@ -919,10 +961,11 @@ export default function Page() {
     // busy check 依 stage
     const isBusy = stageId === "prd" ? !!busy
       : stageId === "architecture" ? !!archBusy
+      : stageId === "ui_design" ? !!uiBusy
       : !!storiesBusy;
     if (isBusy) return;
     setModal({ kind: "refineStage", stageId });
-  }, [thread, busy, archBusy, storiesBusy]);
+  }, [thread, busy, archBusy, uiBusy, storiesBusy]);
 
   // 統一 submit refine：根據 modal.stageId 派到對應 endpoint + state setter
   const submitRefine = useCallback(async (instruction: string) => {
@@ -935,13 +978,14 @@ export default function Page() {
     const setBusyFor: Record<StageRefineKind, (b: StageBusy) => void> = {
       prd: setBusy as (b: StageBusy) => void,
       architecture: setArchBusy,
+      ui_design: setUiBusy,
       stories: setStoriesBusy,
     };
     const setArtFor: Record<StageRefineKind, (s: string) => void> = {
-      prd: setPrdArtifact, architecture: setArchArtifact, stories: setStoriesArtifact,
+      prd: setPrdArtifact, architecture: setArchArtifact, ui_design: setUiArtifact, stories: setStoriesArtifact,
     };
     const setStatusFor: Record<StageRefineKind, (s: string) => void> = {
-      prd: setPrdStatus, architecture: setArchStatus, stories: setStoriesStatus,
+      prd: setPrdStatus, architecture: setArchStatus, ui_design: setUiStatus, stories: setStoriesStatus,
     };
 
     setBusyFor[stageId]("refine");
@@ -955,8 +999,9 @@ export default function Page() {
       // refine 上游 → 下游 reset
       if (stageId === "prd") {
         refreshArchitecture(thread);
+        refreshUiDesign(thread);
         refreshStories(thread);
-      } else if (stageId === "architecture") {
+      } else if (stageId === "architecture" || stageId === "ui_design") {
         refreshStories(thread);
       }
     } catch (e) {
@@ -964,12 +1009,15 @@ export default function Page() {
     } finally {
       setBusyFor[stageId](false);
     }
-  }, [modal, thread, modelChoice, refreshArchitecture, refreshStories]);
+  }, [modal, thread, modelChoice, refreshArchitecture, refreshUiDesign, refreshStories]);
 
   // 統一 approve：根據 stageId 派
   const approveStage = useCallback(async (stageId: StageRefineKind) => {
     if (!thread) return;
-    const art = stageId === "prd" ? prdArtifact : stageId === "architecture" ? archArtifact : storiesArtifact;
+    const art = stageId === "prd" ? prdArtifact
+      : stageId === "architecture" ? archArtifact
+      : stageId === "ui_design" ? uiArtifact
+      : storiesArtifact;
     if (!art.trim()) return;
     setErr(null);
     try {
@@ -978,19 +1026,22 @@ export default function Page() {
       });
       if (stageId === "prd") setPrdStatus(r.status);
       else if (stageId === "architecture") setArchStatus(r.status);
+      else if (stageId === "ui_design") setUiStatus(r.status);
       else setStoriesStatus(r.status);
     } catch (e) {
       setErr(`核准 ${STAGE_LABEL[stageId]} 失敗：${(e as Error).message}`);
     }
-  }, [thread, prdArtifact, archArtifact, storiesArtifact]);
+  }, [thread, prdArtifact, archArtifact, uiArtifact, storiesArtifact]);
 
   const onApprovePrd = useCallback(() => approveStage("prd"), [approveStage]);
   const onApproveArch = useCallback(() => approveStage("architecture"), [approveStage]);
+  const onApproveUi = useCallback(() => approveStage("ui_design"), [approveStage]);
   const onApproveStories = useCallback(() => approveStage("stories"), [approveStage]);
 
   // Stage-specific refine wrappers — workspace 點按鈕時直接呼叫
   const onRefinePrd = useCallback(() => onRefine("prd"), [onRefine]);
   const onRefineArch = useCallback(() => onRefine("architecture"), [onRefine]);
+  const onRefineUi = useCallback(() => onRefine("ui_design"), [onRefine]);
   const onRefineStories = useCallback(() => onRefine("stories"), [onRefine]);
 
   useEffect(() => {
@@ -1076,6 +1127,7 @@ export default function Page() {
                   onSelect={setSelected}
                   prdStatus={prdStatus}
                   archStatus={archStatus}
+                  uiStatus={uiStatus}
                   storiesStatus={storiesStatus}
                   threadName={threadList.find((p) => p.thread_id === thread)?.name ?? null}
                   workflows={workflowList}
@@ -1118,6 +1170,20 @@ export default function Page() {
                       onChatArtifact={setArchArtifact}
                     />
                   )}
+                  {selected === "ui_design" && (
+                    <UiDesignWorkspace
+                      thread={thread}
+                      artifact={uiArtifact}
+                      status={uiStatus}
+                      busy={uiBusy}
+                      prdReady={prdArtifact.trim().length > 0}
+                      onGenerate={onGenerateUiDesign}
+                      onRefine={onRefineUi}
+                      onApprove={onApproveUi}
+                      modelChoice={modelChoice}
+                      onChatArtifact={setUiArtifact}
+                    />
+                  )}
                   {selected === "stories" && (
                     <StoriesWorkspace
                       thread={thread}
@@ -1126,6 +1192,7 @@ export default function Page() {
                       busy={storiesBusy}
                       delivery={storiesDelivery}
                       archReady={archArtifact.trim().length > 0}
+                      uiReady={uiArtifact.trim().length > 0}
                       onGenerate={onGenerateStories}
                       onRefine={onRefineStories}
                       onApprove={onApproveStories}
@@ -1811,7 +1878,7 @@ function WorkflowSwitcher({ workflows, currentId, onChange }: {
 
 
 function StageHeader({
-  selected, onSelect, prdStatus, archStatus, storiesStatus, threadName,
+  selected, onSelect, prdStatus, archStatus, uiStatus, storiesStatus, threadName,
   workflows, currentWorkflowId, onChangeWorkflow,
   stages, stageMeta, workflowSource,
 }: {
@@ -1819,6 +1886,7 @@ function StageHeader({
   onSelect: (s: string) => void;
   prdStatus: string;            // M2 baseline：PRD 從真實 state 來
   archStatus: string;           // M2.3：架構從真實 state 來
+  uiStatus: string;             // UI 設計從真實 state 來
   storiesStatus: string;        // M2.3：故事從真實 state 來
   threadName: string | null;    // 從 thread list 找對應名稱
   workflows: Workflow[];        // M3：thread workflow switcher
@@ -1845,6 +1913,7 @@ function StageHeader({
   const statusOf = (sid: string): StageStatus => {
     if (sid === "prd") return normalize(prdStatus);
     if (sid === "architecture") return normalize(archStatus);
+    if (sid === "ui_design") return normalize(uiStatus);
     if (sid === "stories") return normalize(storiesStatus);
     // M5.3：implement 依賴 stories——stories 核准前 locked，核准後可進入（draft）
     if (sid === "implement") return storiesStatus === "approved" ? "draft" : "locked";
@@ -2771,11 +2840,243 @@ function ViewToggle({ value, onChange }: { value: "document" | "diagram"; onChan
   );
 }
 
+// ============================== UI Design workspace ==============================
+//
+// 接 /api/stage/ui_design/{thread}；artifact = markdown 設計文件（理念 + tokens + 每畫面
+// `## Screen:` 內嵌自包含 HTML）。preview 用 sandboxed iframe（只給 allow-scripts，不給
+// allow-same-origin —— 模型生成的 JS 與主 app 完全隔離）。
+type UiDesignView = "document" | "preview" | "code";
+
+function UiViewToggle({ value, onChange }: { value: UiDesignView; onChange: (v: UiDesignView) => void }) {
+  return (
+    <div className="flex border border-[var(--rule-dark)] bg-[var(--bg-elev)]">
+      {(["document", "preview", "code"] as const).map((v) => (
+        <button key={v} onClick={() => onChange(v)}
+          className={`px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] transition ${
+            v === value ? "bg-[var(--polaris)] text-white" : "text-[var(--ink-muted)] hover:text-[#b8c0cf]"
+          }`}>
+          {v}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function UiDesignWorkspace({
+  thread, artifact, status, busy, prdReady,
+  onGenerate, onRefine, onApprove, modelChoice, onChatArtifact,
+}: {
+  thread: string | null;
+  artifact: string;
+  status: string;
+  busy: StageBusyLike;
+  prdReady: boolean;
+  onGenerate: () => void;
+  onRefine: () => void;
+  onApprove: () => void;
+  modelChoice: string;
+  onChatArtifact: (content: string) => void;
+}) {
+  const parsed = useMemo(() => parseUiDesign(artifact || ""), [artifact]);
+  const [view, setView] = useState<UiDesignView>("preview");
+  const [activeScreen, setActiveScreen] = useState(0);
+  const hasContent = artifact.trim().length > 0;
+  const isApproved = status === "approved";
+  const needsRevision = status === "needs_revision";
+
+  // artifact 變動（重生 / refine / chat 更新）→ clamp 選中畫面，避免指向已不存在的 index
+  useEffect(() => {
+    setActiveScreen((i) => Math.min(i, Math.max(0, parsed.screens.length - 1)));
+  }, [parsed.screens.length]);
+
+  const screen = parsed.screens[activeScreen] ?? null;
+
+  const screenTabs = parsed.screens.length > 0 && (
+    <div className="flex flex-wrap items-center gap-1">
+      {parsed.screens.map((s, i) => (
+        <button
+          key={s.name + i}
+          onClick={() => setActiveScreen(i)}
+          className={`border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] transition ${
+            i === activeScreen
+              ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_18%,transparent)] text-[var(--polaris)]"
+              : "border-[var(--rule-dark)] bg-transparent text-[var(--ink-muted)] hover:text-[#cdd4df]"
+          }`}
+        >
+          {s.name}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1">
+      <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
+        <ArtifactBar artifact="ui_design" stage="design" op="generate_ui_design" right={
+          <>
+            {hasContent && <UiViewToggle value={view} onChange={setView} />}
+            {hasContent && (isApproved ? <ApprovedSeal /> : <DraftPill />)}
+            {needsRevision && (
+              <span className="border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#f59e0b]">
+                needs revision
+              </span>
+            )}
+          </>
+        } />
+        <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
+          {hasContent ? (
+            view === "document" ? (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <UiDesignDocument parsed={parsed} />
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="flex items-center justify-between gap-3 border-b border-[var(--rule)] px-6 py-2.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[#7a8499]">
+                  <span className="shrink-0">{`// ui design · ${parsed.screens.length} screen${parsed.screens.length === 1 ? "" : "s"}`}</span>
+                  {screenTabs}
+                  <span className="shrink-0">{view === "preview" ? "sandboxed iframe" : "html source"}</span>
+                </div>
+                <div className="relative min-h-0 flex-1 overflow-hidden">
+                  {!screen ? (
+                    <div className="grid h-full place-items-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                      no screens in this design document
+                    </div>
+                  ) : view === "preview" ? (
+                    screen.html ? (
+                      // key：切畫面 / 切 thread 時強制 remount，避免 srcDoc 殘留舊內容
+                      <iframe
+                        key={`${thread}-${activeScreen}`}
+                        sandbox="allow-scripts"
+                        srcDoc={screen.html}
+                        title={`UI prototype — ${screen.name}`}
+                        className="h-full w-full border-0 bg-white"
+                      />
+                    ) : (
+                      <div className="grid h-full place-items-center px-10 text-center font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+                        此畫面缺 ```html 原型（請 refine 補齊）
+                      </div>
+                    )
+                  ) : (
+                    <pre className="h-full overflow-auto px-6 py-4 font-[family-name:var(--font-mono)] text-[12px] leading-[1.6] text-[#cdd4df]">
+                      <code>{screen.html ?? "(此畫面缺 html 原型)"}</code>
+                    </pre>
+                  )}
+                </div>
+              </div>
+            )
+          ) : (
+            <UiDesignEmptyState busy={busy} thread={thread} prdReady={prdReady} onGenerate={onGenerate} />
+          )}
+        </article>
+        <BottomMeta
+          left={
+            hasContent ? (
+              <>
+                {parsed.screens.length} screens · {parsed.sections.length} sections ·{" "}
+                {artifact.length} chars · designed by ui_designer
+              </>
+            ) : (
+              <>empty · {prdReady ? "ready to design" : "PRD 須先有內容"}</>
+            )
+          }
+          right={<>thread <code className="text-[#cdd4df]">{thread ?? "(none)"}</code> · depends_on <span className="text-[#b8c0cf]">prd</span> · downstream <span className="text-[#b8c0cf]">stories</span></>}
+        />
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <ToolBtn onClick={onRefine} disabled={!thread || !hasContent || !!busy}>
+            {busy === "refine" ? "Refining…" : "Refine…"}
+          </ToolBtn>
+          <ToolBtn onClick={onGenerate} disabled={!thread || !prdReady || !!busy}>
+            {busy === "generate" ? "Designing…" : hasContent ? "重新生成" : "產生 UI 設計"}
+          </ToolBtn>
+          <ToolBtn primary onClick={onApprove} disabled={!hasContent || !!busy || isApproved}>
+            {isApproved ? "已核准 ✓" : "核准設計"}
+          </ToolBtn>
+        </div>
+      </section>
+      {/* key=thread：同 PRD chat，切 thread 時 remount 重置 QuestionnaireCard 卡片狀態 */}
+      <ChatPanel key={thread ?? "none"} thread={thread} stageId="ui_design" stageLabel="UI Design Chat"
+        modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
+    </div>
+  );
+}
+
+function UiDesignEmptyState({ busy, thread, prdReady, onGenerate }: {
+  busy: StageBusyLike;
+  thread: string | null;
+  prdReady: boolean;
+  onGenerate: () => void;
+}) {
+  return (
+    <div className="flex h-full items-start justify-center overflow-y-auto px-10 py-12">
+      <div className="w-full max-w-xl text-center">
+        <div className="mx-auto mb-5 grid h-14 w-14 place-items-center border-2 border-[var(--polaris)] font-[family-name:var(--font-display)] text-[22px] font-semibold text-[var(--polaris)]">
+          03
+        </div>
+        <h3 className="font-[family-name:var(--font-display)] text-[26px] font-semibold text-[#e6ecf5]">
+          {prdReady ? "等待視覺設計" : "尚未具備上游需求"}
+        </h3>
+        <p className="mt-2 text-[13px] leading-6 text-[#7a8499]">
+          {prdReady
+            ? "PRD 已就緒，UI Designer agent 將產出設計理念、design tokens 與各關鍵畫面可直接預覽的 HTML 原型。"
+            : "需要先在 PRD 階段完成（至少有內容）才能生成下游 UI 設計。"}
+        </p>
+        <div className="mx-auto my-7 h-px w-24 bg-[var(--rule-dark)]" />
+        <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          agent: ui_designer · model: claude-cli
+        </div>
+        <button
+          onClick={onGenerate}
+          disabled={!thread || !prdReady || !!busy}
+          className="border-2 border-[var(--polaris)] bg-[var(--polaris)] px-8 py-3 font-[family-name:var(--font-mono)] text-[12px] uppercase tracking-[0.22em] text-white transition hover:bg-[var(--polaris-hi)] disabled:cursor-not-allowed disabled:bg-transparent disabled:text-[var(--polaris)] disabled:opacity-50"
+        >
+          {busy === "generate" ? "★  designing…（120–240s）" : "✦  產生 UI 設計"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---- UI Design document view（理念 / tokens 章節 + 每畫面描述）----
+function UiDesignDocument({ parsed }: { parsed: ReturnType<typeof parseUiDesign> }) {
+  return (
+    <div className="mx-auto max-w-none px-10 py-10">
+      <header className="mb-9 border-b border-[var(--rule)] pb-5">
+        <div className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          UI DESIGN · DRAFT
+        </div>
+        {parsed.title && (
+          <h2 className="mt-2 font-[family-name:var(--font-display)] text-[26px] font-semibold leading-tight text-[#e6ecf5]">
+            {parsed.title}
+          </h2>
+        )}
+        <div className="mt-3 flex items-center gap-3 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
+          <span>designed by ui_designer</span>
+          <span className="h-1 w-1 rounded-full bg-[var(--ink-muted)]" />
+          <span>{parsed.sections.length} sections · {parsed.screens.length} screens</span>
+        </div>
+      </header>
+      <div className="space-y-9">
+        {parsed.sections.map((sec, i) => (
+          <ArchSectionView key={sec.id + i} heading={sec.heading} body={sec.body} num={String(i + 1)} />
+        ))}
+        {parsed.screens.map((s, i) => (
+          <ArchSectionView
+            key={`screen-${i}`}
+            heading={`Screen: ${s.name}`}
+            body={s.description || "(no description)"}
+            num={`S${i + 1}`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ============================== Stories workspace ==============================
 //
 // M2.3 wire 真實 API：接 /api/stage/stories/{thread}；empty state 顯示「架構未生成」提示。
 function StoriesWorkspace({
-  thread, artifact, status, busy, delivery, archReady,
+  thread, artifact, status, busy, delivery, archReady, uiReady,
   onGenerate, onRefine, onApprove, onPublish, onPublishDocs,
 }: {
   thread: string | null;
@@ -2784,12 +3085,14 @@ function StoriesWorkspace({
   busy: StageBusyLike;
   delivery: DeliveryStatus | null;
   archReady: boolean;
+  uiReady: boolean;
   onGenerate: () => void;
   onRefine: () => void;
   onApprove: () => void;
   onPublish: () => void;
   onPublishDocs: () => void;
 }) {
+  const upstreamReady = archReady && uiReady;   // stories depends_on (architecture, ui_design)
   const parsed = useMemo(() => parseStories(artifact || ""), [artifact]);
   const counts = useMemo(() => countStoriesAndEstimate(parsed.raw), [parsed.raw]);
   const allStories = useMemo(() => parsed.epics.flatMap((e) => e.stories.map((s) => ({ epicNum: e.num, story: s }))), [parsed.epics]);
@@ -2835,7 +3138,7 @@ function StoriesWorkspace({
             )}
             <button
               onClick={onPublishDocs}
-              title="把 PRD + Architecture 發到 GitHub Wiki / GitLab Pages"
+              title="把 PRD + Architecture + UI 設計（若已生成）發到 GitHub Wiki / GitLab Wiki"
               className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
             >
               發佈文件…
@@ -2851,7 +3154,7 @@ function StoriesWorkspace({
         } />
         {!hasContent ? (
           <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
-            <StoriesEmptyState busy={busy} thread={thread} archReady={archReady} onGenerate={onGenerate} />
+            <StoriesEmptyState busy={busy} thread={thread} archReady={archReady} uiReady={uiReady} onGenerate={onGenerate} />
           </article>
         ) : (
         <div className="shadow-anvil paper-texture min-h-0 flex-1 overflow-y-auto bg-[var(--paper)] px-8 py-7">
@@ -2964,15 +3267,15 @@ function StoriesWorkspace({
           left={
             hasContent
               ? `${counts.stories} stories · ${counts.epics} epics · ${counts.hours.toFixed(1)} hrs · ${parsed.raw.length} chars`
-              : <>empty · {archReady ? "ready to chart" : "需架構先有內容"}</>
+              : <>empty · {upstreamReady ? "ready to chart" : !archReady ? "需架構先有內容" : "需 UI 設計先有內容"}</>
           }
-          right={<>thread <code className="text-[#cdd4df]">{thread ?? "(none)"}</code> · depends_on <span className="text-[#b8c0cf]">architecture</span> · publish to <span className="text-[#b8c0cf]">github / jira</span></>}
+          right={<>thread <code className="text-[#cdd4df]">{thread ?? "(none)"}</code> · depends_on <span className="text-[#b8c0cf]">architecture + ui_design</span> · publish to <span className="text-[#b8c0cf]">github / jira</span></>}
         />
         <div className="mt-4 flex items-center justify-end gap-2">
           <ToolBtn onClick={onRefine} disabled={!thread || !hasContent || !!busy}>
             {busy === "refine" ? "Refining…" : "Refine…"}
           </ToolBtn>
-          <ToolBtn onClick={onGenerate} disabled={!thread || !archReady || !!busy}>
+          <ToolBtn onClick={onGenerate} disabled={!thread || !upstreamReady || !!busy}>
             {busy === "generate" ? "Drafting…" : hasContent ? "重新生成" : "產生使用者故事"}
           </ToolBtn>
           <ToolBtn onClick={onApprove} disabled={!hasContent || !!busy || isApproved}>
@@ -2988,25 +3291,28 @@ function StoriesWorkspace({
   );
 }
 
-function StoriesEmptyState({ busy, thread, archReady, onGenerate }: {
+function StoriesEmptyState({ busy, thread, archReady, uiReady, onGenerate }: {
   busy: StageBusyLike;
   thread: string | null;
   archReady: boolean;
+  uiReady: boolean;
   onGenerate: () => void;
 }) {
+  const upstreamReady = archReady && uiReady;
+  const missing = !archReady && !uiReady ? "架構與 UI 設計" : !archReady ? "架構" : "UI 設計";
   return (
     <div className="flex h-full items-start justify-center overflow-y-auto px-10 py-12">
       <div className="w-full max-w-xl text-center">
         <div className="mx-auto mb-5 grid h-14 w-14 place-items-center border-2 border-[var(--polaris)] font-[family-name:var(--font-display)] text-[22px] font-semibold text-[var(--polaris)]">
-          03
+          04
         </div>
         <h3 className="font-[family-name:var(--font-display)] text-[26px] font-semibold text-[#e6ecf5]">
-          {archReady ? "等待拆故事" : "上游架構尚未就緒"}
+          {upstreamReady ? "等待拆故事" : `上游${missing}尚未就緒`}
         </h3>
         <p className="mt-2 text-[13px] leading-6 text-[#7a8499]">
-          {archReady
-            ? "Product Owner agent 將依 PRD + 架構，按 tier 規則拆 Epic / Story（≤4h 一條），含 AC（Gherkin）/ 估點 / Requirement IDs。"
-            : "需要先在架構階段完成（至少有內容）才能生成下游使用者故事。"}
+          {upstreamReady
+            ? "Product Owner agent 將依 PRD + 架構 + UI 設計，按 tier 規則拆 Epic / Story（≤4h 一條），含 AC（Gherkin）/ 估點 / Requirement IDs，畫面類 story 會對齊設計稿。"
+            : `需要先在${missing}階段完成（至少有內容）才能生成下游使用者故事。`}
         </p>
         <div className="mx-auto my-7 h-px w-24 bg-[var(--rule-dark)]" />
         <div className="mb-4 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
@@ -3014,7 +3320,7 @@ function StoriesEmptyState({ busy, thread, archReady, onGenerate }: {
         </div>
         <button
           onClick={onGenerate}
-          disabled={!thread || !archReady || !!busy}
+          disabled={!thread || !upstreamReady || !!busy}
           className="border-2 border-[var(--polaris)] bg-[var(--polaris)] px-8 py-3 font-[family-name:var(--font-mono)] text-[12px] uppercase tracking-[0.22em] text-white transition hover:bg-[var(--polaris-hi)] disabled:cursor-not-allowed disabled:bg-transparent disabled:text-[var(--polaris)] disabled:opacity-50"
         >
           {busy === "generate" ? "★  drafting…（120–240s）" : "✦  產生使用者故事"}

@@ -6,7 +6,8 @@
   chat     → stories_chat.md（[CONTENT_START]/[CONTENT_END] 包整份更新後 artifact）
 
 雙詞彙：id="stories" / telemetry_stage="deliver"。
-依賴：depends_on=("architecture",)；handler 透過 upstream_artifacts 取 prd / architecture。
+依賴：depends_on=("architecture", "ui_design")；handler 透過 upstream_artifacts 取
+prd / architecture / ui_design（UI 設計稿 strip 掉 HTML 原型後當 brief 餵入）。
 
 Structural validator 警告 heading shape 偏差（spec 附錄 D HARD RULE：parser 依賴
 `## Epic N:` / `### Story N.M —` 否則 publish pipeline 零產出）。
@@ -33,6 +34,7 @@ from ._shared import (
     format_conversation,
     format_focus_section,
     render_skills_block,
+    strip_html_prototypes,
 )
 
 
@@ -121,11 +123,14 @@ def _stories_structural_validator(
 # ============================================================
 #  Helpers
 # ============================================================
-def _upstream(ctx: StageContext) -> tuple[str, str]:
-    """回 (prd, architecture)；缺則回空字串（engine 已經在 dispatch 前擋過）。"""
+def _upstream(ctx: StageContext) -> tuple[str, str, str]:
+    """回 (prd, architecture, ui_design_brief)；缺則回空字串（engine 已在 dispatch 前擋過）。
+
+    ui_design 取出後先 strip HTML 原型（只留理念 / tokens / Screen 名稱與描述）。"""
     return (
         ctx.upstream_artifacts.get("prd", ""),
         ctx.upstream_artifacts.get("architecture", ""),
+        strip_html_prototypes(ctx.upstream_artifacts.get("ui_design", "")),
     )
 
 
@@ -145,13 +150,14 @@ _DEFAULT_PM_CHAT_PERSONA = (
 #  Handlers
 # ============================================================
 def _stories_generate(ctx: StageContext, run) -> StageResult:
-    """stories generate：PRD + Architecture → user_stories.md → invoke。"""
-    prd, arch = _upstream(ctx)
+    """stories generate：PRD + Architecture + UI 設計稿 → user_stories.md → invoke。"""
+    prd, arch, ui = _upstream(ctx)
     prompt = run.render_prompt("user_stories.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_PM_PERSONA),
         "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
+        "UI_DESIGN_BRIEF": ui or "(not provided)",
     })
     prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
     result = run.harnessed_step(
@@ -166,11 +172,12 @@ def _stories_generate(ctx: StageContext, run) -> StageResult:
 
 
 def _stories_refine(ctx: StageContext, run) -> StageResult:
-    """stories refine：PRD + Architecture + 現有 stories + instruction → 完整更新版。"""
-    prd, arch = _upstream(ctx)
+    """stories refine：PRD + Architecture + UI 設計稿 + 現有 stories + instruction → 完整更新版。"""
+    prd, arch, ui = _upstream(ctx)
     prompt = run.render_prompt("user_stories_refine.md", {
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
+        "UI_DESIGN_BRIEF": ui or "(not provided)",
         "USER_STORIES_DRAFT": ctx.current_artifact or "(empty)",
         "INSTRUCTION": ctx.instruction or "",
         "ATTACHMENTS": format_attachments(ctx.metadata.get("attachments", [])),
@@ -187,13 +194,14 @@ def _stories_refine(ctx: StageContext, run) -> StageResult:
 
 
 def _stories_chat(ctx: StageContext, run) -> StageChatResult:
-    """stories chat：含三 artifact + 對話歷史。[CONTENT_START]/[CONTENT_END] 是更新訊號。"""
-    prd, arch = _upstream(ctx)
+    """stories chat：含上游 artifacts + 對話歷史。[CONTENT_START]/[CONTENT_END] 是更新訊號。"""
+    prd, arch, ui = _upstream(ctx)
     prompt = run.render_prompt("stories_chat.md", {
         "PERSONA": effective_persona(ctx, _DEFAULT_PM_CHAT_PERSONA),
         "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
         "PRD_DRAFT": prd,
         "ARCHITECTURE_DRAFT": arch,
+        "UI_DESIGN_BRIEF": ui or "(not provided)",
         "USER_STORIES_DRAFT": ctx.current_artifact or "(empty)",
         "CONVERSATION_TEXT": format_conversation(ctx.conversation, ai_label="PM"),
         "FOCUS_SECTION": format_focus_section(ctx.focus_section),
@@ -220,7 +228,7 @@ STORIES_STAGE = StageSpec(
     generate_operation="generate_user_stories",
     refine_operation="refine_user_stories",
     chat_operation="chat_user_stories",
-    depends_on=("architecture",),
+    depends_on=("architecture", "ui_design"),
     artifact_key="stories",
     prompt_keys=("user_stories.md", "user_stories_refine.md", "stories_chat.md"),
     default_agent_role="stories",

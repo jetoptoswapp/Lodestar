@@ -1138,14 +1138,16 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
 
 @app.post("/api/docs/{thread_id}/publish", response_model=DocsPublishResponse)
 async def docs_publish(thread_id: str):
-    """把 PRD + Architecture 發到 Wiki：github → /wiki；gitlab → /-/wikis（即推即看 markdown）。
+    """把 PRD + Architecture（+ UI 設計，若已生成）發到 Wiki：github → /wiki；gitlab → /-/wikis。
 
     手動觸發、可重發（覆寫）。文件本身不進 code，與 stories→issue / implement→PR 分流。
+    UI 設計稿是選配：未生成不擋發佈（400 檢核維持只看 PRD / Architecture）。
     """
     if dal.get_project(thread_id) is None:
         raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
     prd = dal.get_artifact(thread_id, "prd") or ""
     arch = dal.get_artifact(thread_id, "architecture") or ""
+    ui = dal.get_artifact(thread_id, "ui_design") or ""
     if not prd.strip() or not arch.strip():
         raise HTTPException(400, detail=error_detail("docs_not_ready", "PRD / Architecture 尚未生成，無法發佈文件"))
 
@@ -1160,10 +1162,12 @@ async def docs_publish(thread_id: str):
 
     import docs_publisher
     creds = keystore.get_credentials(target)
+    docs = {"PRD": prd, "Architecture": arch}
+    if ui.strip():
+        docs["UI-Design"] = ui
     try:
         result = await asyncio.to_thread(
-            docs_publisher.publish_docs, thread_id, target, repo, creds,
-            {"PRD": prd, "Architecture": arch})
+            docs_publisher.publish_docs, thread_id, target, repo, creds, docs)
     except docs_publisher.DocsPublishError as exc:
         dal.append_event(thread_id, "architecture", event_type="docs_publish_failed",
                          detail=json.dumps({"target": target, "repo": repo}))

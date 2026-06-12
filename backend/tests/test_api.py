@@ -10,11 +10,11 @@ def test_endpoints(tmp_db):
     with TestClient(appmod.app) as client:
         assert client.get("/api/health").json() == {"status": "ok"}
 
-        # M2：catalog 含 prd / architecture / stories 三個 builtin stage
+        # catalog 含 prd / architecture / ui_design / stories 四個 builtin stage
         stages = client.get("/api/stages").json()["stages"]
         by_id = {s["id"]: s for s in stages}
-        assert {"prd", "architecture", "stories"}.issubset(by_id), \
-            f"expected prd/architecture/stories, got {sorted(by_id)}"
+        assert {"prd", "architecture", "ui_design", "stories"}.issubset(by_id), \
+            f"expected prd/architecture/ui_design/stories, got {sorted(by_id)}"
 
         prd = by_id["prd"]
         assert prd["supports_chat"] is True
@@ -29,9 +29,15 @@ def test_endpoints(tmp_db):
         assert arch["downstream"] == ["stories"]
         assert arch["supports_chat"] is True
 
+        ui = by_id["ui_design"]
+        assert ui["telemetry_stage"] == "design"
+        assert ui["depends_on"] == ["prd"]
+        assert ui["downstream"] == ["stories"]
+        assert ui["supports_chat"] is True
+
         sto = by_id["stories"]
         assert sto["telemetry_stage"] == "deliver"
-        assert sto["depends_on"] == ["architecture"]
+        assert sto["depends_on"] == ["architecture", "ui_design"]
         # M5：implement stage depends_on stories → stories 多了下游 implement
         assert "implement" in sto["downstream"]
         assert sto["supports_chat"] is True
@@ -42,19 +48,20 @@ def test_endpoints(tmp_db):
         assert set(bi["provides"]["integrations"]) == {"github", "jira", "gitlab"}
         core = next(p for p in plugins if p["id"] == "builtin_core_stages")
         assert core["enabled"] is True
-        assert {"prd", "architecture", "stories"}.issubset(set(core["provides"]["stages"]))
+        assert {"prd", "architecture", "ui_design", "stories"}.issubset(set(core["provides"]["stages"]))
 
         integ = client.get("/api/integrations").json()["integrations"]
         assert {i["target"] for i in integ} == {"github", "jira", "gitlab"}
         gh = next(i for i in integ if i["target"] == "github")
         assert "fields" in gh["config_schema"]
 
-        # M2：default workflow = (prd, architecture, stories)；新 thread → 三個 stage 全 draft
+        # default workflow = (prd, architecture, ui_design, stories)；新 thread → 四個 stage 全 draft
         tid = client.post("/api/projects", json={"name": "test"}).json()["thread_id"]
         statuses = client.get(f"/api/stage/statuses/{tid}").json()["statuses"]
         assert statuses == [
             {"stage_id": "prd", "status": "draft"},
             {"stage_id": "architecture", "status": "draft"},
+            {"stage_id": "ui_design", "status": "draft"},
             {"stage_id": "stories", "status": "draft"},
         ]
 

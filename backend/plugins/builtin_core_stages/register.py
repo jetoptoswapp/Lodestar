@@ -12,26 +12,29 @@ from .architecture_stage import ARCHITECTURE_STAGE, VALIDATORS as ARCH_VALIDATOR
 from .change_request_stage import CHANGE_REQUEST_STAGE
 from .prd_stage import PRD_STAGE, VALIDATORS as PRD_VALIDATORS
 from .stories_stage import STORIES_STAGE, VALIDATORS as STORIES_VALIDATORS
+from .ui_design_stage import UI_DESIGN_STAGE, VALIDATORS as UI_VALIDATORS
 
 
 def register(host: PluginHost) -> None:
-    # 1. stages —— 三個 builtin stage + change_request（修改既有專案）
+    # 1. stages —— 四個 builtin stage + change_request（修改既有專案）
     host.register_stage(PRD_STAGE)
     host.register_stage(ARCHITECTURE_STAGE)
+    host.register_stage(UI_DESIGN_STAGE)
     host.register_stage(STORIES_STAGE)
     host.register_stage(CHANGE_REQUEST_STAGE)
 
     # 2. validators —— 雙詞彙 (telemetry_stage, operation) 對應 registry
-    for vlist in (PRD_VALIDATORS, ARCH_VALIDATORS, STORIES_VALIDATORS):
+    for vlist in (PRD_VALIDATORS, ARCH_VALIDATORS, UI_VALIDATORS, STORIES_VALIDATORS):
         for telemetry_stage, operation, fn in vlist:
             host.register_validator(telemetry_stage, operation, fn)
 
-    # 3. default workflow —— PRD → Architecture → Stories
+    # 3. default workflow —— PRD → (Architecture ∥ UI 設計) → Stories
+    #    stages 順序只是顯示/拓樸序；平行性由 depends_on 表達（architecture 與 ui_design 都只依賴 prd）。
     host.register_workflow(WorkflowSpec(
         id="default",
         label="Standard Pipeline",
-        description="Lodestar default：想法 → PRD → 架構 → 使用者故事",
-        stages=("prd", "architecture", "stories"),
+        description="Lodestar default：想法 → PRD → 架構 ∥ UI 設計 → 使用者故事",
+        stages=("prd", "architecture", "ui_design", "stories"),
         source_plugin="builtin_core_stages",
     ))
 
@@ -41,8 +44,8 @@ def register(host: PluginHost) -> None:
     host.register_workflow(WorkflowSpec(
         id="requirements_panel",
         label="Requirements Panel（討論）",
-        description="PRD 多 agent 討論：SA 主筆 + PM／資安 peer 評論後彙整；架構、故事維持單一 agent。",
-        stages=("prd", "architecture", "stories"),
+        description="PRD 多 agent 討論：SA 主筆 + PM／資安 peer 評論後彙整；架構、UI 設計、故事維持單一 agent。",
+        stages=("prd", "architecture", "ui_design", "stories"),
         agent_bindings={
             "prd": (
                 AgentBinding("seed_prd", "lead"),

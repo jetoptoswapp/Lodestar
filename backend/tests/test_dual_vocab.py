@@ -17,6 +17,8 @@ def test_each_builtin_stage_has_generate_refine_validator(tmp_db):
         ("specify", "refine_prd"),
         ("design", "generate_architecture"),
         ("design", "refine_architecture"),
+        ("design", "generate_ui_design"),
+        ("design", "refine_ui_design"),
         ("deliver", "generate_user_stories"),
         ("deliver", "refine_user_stories"),
     }
@@ -34,7 +36,7 @@ def test_each_builtin_stage_has_generate_refine_validator(tmp_db):
 def test_stage_spec_telemetry_stage_alignment(tmp_db):
     """builtin stage 的 telemetry_stage 必須對齊 generate_operation 那筆 validator key。"""
     reg = L.load_all()
-    for sid in ("prd", "architecture", "stories"):
+    for sid in ("prd", "architecture", "ui_design", "stories"):
         spec = reg.stages[sid]
         key = (spec.telemetry_stage, spec.generate_operation)
         assert key in reg.validators, (
@@ -46,7 +48,7 @@ def test_stage_spec_telemetry_stage_alignment(tmp_db):
 def test_dual_vocab_constants(tmp_db):
     """雙詞彙映射（id ↔ telemetry_stage）固定為 spec §11 規範值，防止 typo 漂移。"""
     reg = L.load_all()
-    expected = {"prd": "specify", "architecture": "design", "stories": "deliver"}
+    expected = {"prd": "specify", "architecture": "design", "ui_design": "design", "stories": "deliver"}
     for sid, expected_tel in expected.items():
         spec = reg.stages[sid]
         assert spec.telemetry_stage == expected_tel, (
@@ -55,11 +57,11 @@ def test_dual_vocab_constants(tmp_db):
 
 
 def test_builtin_agents_seed_loaded(tmp_db):
-    """builtin_agents plugin 應該載入並 seed 三個 lead agent，role 對齊 stage id。"""
+    """builtin_agents plugin 應該載入並 seed 四個 lead agent，role 對齊 stage id。"""
     reg = L.load_all()
     by_role = {a.role: a for a in reg.agents.values()}
-    assert {"prd", "architecture", "stories"} <= set(by_role)
-    for role in ("prd", "architecture", "stories"):
+    assert {"prd", "architecture", "ui_design", "stories"} <= set(by_role)
+    for role in ("prd", "architecture", "ui_design", "stories"):
         agent = by_role[role]
         assert agent.enabled is True
         # lead 的 system_prompt 留空 → 單流程用 stage 內建 default persona（見 *_stage.py）；
@@ -68,11 +70,11 @@ def test_builtin_agents_seed_loaded(tmp_db):
         assert agent.model_choice == "claude-cli"
 
 
-def test_default_workflow_is_three_stage(tmp_db):
-    """default workflow 必須是 (prd, architecture, stories)。"""
+def test_default_workflow_is_four_stage(tmp_db):
+    """default workflow 必須是 (prd, architecture, ui_design, stories)。"""
     reg = L.load_all()
     wf = reg.workflows["default"]
-    assert wf.stages == ("prd", "architecture", "stories")
+    assert wf.stages == ("prd", "architecture", "ui_design", "stories")
 
 
 def test_default_agent_role_resolves_unique_lead(tmp_db):
@@ -84,7 +86,8 @@ def test_default_agent_role_resolves_unique_lead(tmp_db):
     """
     from agent_resolver import resolve_lead_agent
     reg = L.load_all()
-    expected_lead = {"prd": "seed_prd", "architecture": "seed_architect", "stories": "seed_pm"}
+    expected_lead = {"prd": "seed_prd", "architecture": "seed_architect",
+                     "ui_design": "seed_ui_designer", "stories": "seed_pm"}
     for sid, agent_id in expected_lead.items():
         spec = reg.stages[sid]
         lead = resolve_lead_agent(reg, sid, default_agent_role=spec.default_agent_role)

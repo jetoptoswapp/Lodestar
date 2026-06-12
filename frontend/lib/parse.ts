@@ -102,6 +102,45 @@ export function parseArchitecture(md: string): ArchParsed {
 }
 
 // ============================================================
+//  UI Design：sections（理念 / tokens）+ screens（## Screen: + ```html 原型）
+// ============================================================
+export type UiScreen = { name: string; description: string; html: string | null };
+
+export type UiDesignParsed = {
+  title: string | null;
+  sections: { id: string; heading: string; body: string }[]; // 非 Screen 的 H2（Design Direction / Tokens）
+  screens: UiScreen[];
+  raw: string;
+};
+
+const UI_TITLE_RE = /^#\s+(.+?)\s*$/m;
+const SCREEN_NAME_RE = /^Screen\s*[:：]\s*(.+)$/i;            // 套在 H2 heading 文字上
+const HTML_FENCE_RE = /```\s*html\s*\n([\s\S]*?)```/i;        // 每個 Screen 章節內取第一個
+const HTML_FENCE_ALL_RE = /```\s*html\s*\n[\s\S]*?```/gi;
+
+export function parseUiDesign(md: string): UiDesignParsed {
+  const title = UI_TITLE_RE.exec(md)?.[1].trim() ?? null;
+  const sections: { id: string; heading: string; body: string }[] = [];
+  const screens: UiScreen[] = [];
+
+  for (const sec of sectionizeByH2(md)) {
+    const nameMatch = SCREEN_NAME_RE.exec(sec.heading);
+    if (nameMatch) {
+      // Screen 章節：抽 html 原型（缺 fence → html: null，preview 顯示空狀態不 crash）
+      const htmlMatch = HTML_FENCE_RE.exec(sec.body);
+      screens.push({
+        name: nameMatch[1].trim(),
+        description: sec.body.replace(HTML_FENCE_ALL_RE, "").trim(),
+        html: htmlMatch ? htmlMatch[1].trim() : null,
+      });
+    } else {
+      sections.push(sec);   // 理念 / tokens 等，保留 css fence 供文件 view 顯示
+    }
+  }
+  return { title, sections, screens, raw: md };
+}
+
+// ============================================================
 //  Stories：title / milestones / epics / stories with body fields
 // ============================================================
 export type StoryAC = { code: string | null; text: string };

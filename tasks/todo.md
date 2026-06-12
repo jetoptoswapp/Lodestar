@@ -1,4 +1,40 @@
-# RCA PoC todo
+# UI Designer Agent + ui_design stage ✅
+
+計畫：`~/.claude/plans/atomic-dreaming-catmull.md`
+目標：新增 ui_design stage（depends_on=prd，與 architecture 平行）+ UI Designer agent（frontend-design 設計原則 persona），產出每畫面自包含 HTML 的設計稿；stories 接 UI 上游（strip HTML）。
+
+## Backend
+- [x] ui_design_stage.py（StageSpec + 3 handlers + warn-only validator ×5 + 繁中 persona）
+- [x] prompts：ui_design_system / ui_design_chat / ui_design_refine / ui_design_amendment_prefix（sentinel [UI_READY]）
+- [x] _shared.py：strip_html_prototypes helper
+- [x] stories_stage.py：depends_on=("architecture","ui_design")、_upstream 三元組、UI_DESIGN_BRIEF
+- [x] stories prompts：三檔加 {{UI_DESIGN_BRIEF}} + UI alignment HARD RULE
+- [x] register.py：register stage + validators + default/requirements_panel workflow 改四 stage
+- [x] builtin_agents/register.py：seed_ui_designer（system_prompt 空 = stage default persona）+ 兩個 plugin.toml contributes
+- [x] project_summary.py：_PRE_IMPL_STAGES 加 ui_design + operation-aware 歸戶（design 共用問題）
+- [x] docs publish：app.py 撈 ui_design（選配不擋 400）、docs_publisher loop docs dict、DocsPublishModal 文案
+
+## Frontend
+- [x] lib/parse.ts：parseUiDesign（sections + screens，缺 html → null 容錯）
+- [x] page.tsx：state/refresh/handlers/StageHeader/UiDesignWorkspace（document/preview/code 三 view + 畫面 tabs + sandboxed iframe）/Stories gating（archReady && uiReady）
+
+## 測試
+- [x] 既有測試連鎖：test_dual_vocab / test_plugin_distribution / test_workflow_engine / test_api
+- [x] 新檔 test_ui_design_stage.py（10 案）+ test_docs_publisher 加 UI-Design 案例
+- [x] pytest backend 全綠：**361 passed**（原 349 + 新 12，零回歸）；前端 `tsc --noEmit` 乾淨
+
+## Review
+**驗證**：
+- pytest 361 passed；tsc 乾淨。
+- 隔離後端（8725 + 暫存 DB）API 煙囪測：`/api/stages` ui_design item（depends_on=[prd]、downstream=[stories]、design/palette）✓；default workflow 四 stage ✓；新 thread statuses 四筆 draft ✓；無 PRD generate → 400 missing_prd ✓；有 PRD+架構缺 UI → stories 400 missing_ui_design ✓。
+- 隔離前端（/tmp 副本 + next dev --webpack + rewrites 代理，已清理）瀏覽器實測：stepper 03 UI Design（狀態徽章正確）、iframe sandbox="allow-scripts" 正常渲染原型（含 Google Fonts/CSS 動效）、畫面 tabs 切換、document/preview/code 三 view、Stories 顯示 depends_on architecture + ui_design 且上游齊才 enabled。console 零錯誤。
+- **注意**：使用者執行中的後端（8723）是舊 code，需重啟 start.sh 才會載入新 stage（嘗試代為重啟被權限擋下，留給使用者）。
+
+**已知行為**：舊 default thread 重跑 stories 會 400「'ui_design' 必須先完成」（同缺 PRD 跑架構的語意；補生成 UI 設計即可）。
+
+---
+
+# RCA PoC todo（已完成，存檔）
 
 計畫全文：`~/.claude/plans/ai-rca-memoized-bengio.md`
 做法：與既有需求工程領域**並存**的 `rca_domain` plugin；核心引擎零修改承載模式 1/2/3。

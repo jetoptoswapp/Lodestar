@@ -1,4 +1,4 @@
-LANGUAGE RULE: You MUST respond in the same language as the PRD and Architecture content. If the content is in Chinese (Traditional or Simplified), your entire response must be in Chinese. If the content is in English, respond in English.
+LANGUAGE RULE: You MUST respond in the same language as the PRD, Architecture and UI Design content. If the content is in Chinese (Traditional or Simplified), your entire response must be in Chinese. If the content is in English, respond in English.
 
 {{PERSONA}}
 
@@ -94,6 +94,14 @@ AC-1: Given `cargo run --bin kvm-app -- --headless` starts without error,
 ```
 Concrete launch command + specific assertion on the running product.
 
+## UI alignment (HARD RULE — when a UI Design document is provided)
+
+The UI Design document below lists the designed screens as `## Screen: <name>` sections (HTML prototypes omitted — the implementation agent reads the full design document separately).
+
+- Every story that builds or modifies a screen MUST reference the matching design screen by name in its body: `**Reference**: UI Design — Screen: <name>`.
+- Such stories must include at least one AC asserting visual conformance to the design (e.g. "uses the design-token CSS variables / theme constants from the UI Design document" or "layout matches the `Screen: <name>` prototype structure").
+- If the PRD requires a screen that the UI Design does NOT cover, still write the story but mark it `(no UI design — follow design tokens)` in the body so the implementer extends the existing visual language instead of inventing a new one.
+
 ## Project tier propagation (HARD RULE — read this BEFORE story sizing)
 
 The Architecture document's first line declares the project tier in the shape:
@@ -157,3 +165,6 @@ PRD:
 
 System Architecture:
 {{ARCHITECTURE_DRAFT}}
+
+UI Design (design intent and screens; HTML prototypes omitted):
+{{UI_DESIGN_BRIEF}}

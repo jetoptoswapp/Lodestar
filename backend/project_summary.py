@@ -17,8 +17,9 @@ from async_runtime import impl_usage
 from persistence.dal import connect
 
 # harness_runs.stage（specify/design/deliver）→ workflow stage_id
+# 注意：design 由 architecture 與 ui_design 共用，靠 operation suffix 區分（見 _stage_section）。
 _HARNESS_TO_STAGE = {"specify": "prd", "design": "architecture", "deliver": "stories"}
-_PRE_IMPL_STAGES = ("prd", "architecture", "stories")
+_PRE_IMPL_STAGES = ("prd", "architecture", "ui_design", "stories")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 
 
@@ -35,7 +36,11 @@ def _stage_section(conn, thread_id: str) -> list[dict]:
     for r in conn.execute(
             "SELECT stage, operation, status, started_at, ended_at FROM harness_runs WHERE thread_id = ?",
             (thread_id,)).fetchall():
-        sid = _HARNESS_TO_STAGE.get(r["stage"], r["stage"])
+        op = r["operation"] or ""
+        if op.endswith("_ui_design"):
+            sid = "ui_design"          # telemetry 與 architecture 共用 "design"，以 operation 區分
+        else:
+            sid = _HARNESS_TO_STAGE.get(r["stage"], r["stage"])
         runs.setdefault(sid, []).append(dict(r))
 
     out = []

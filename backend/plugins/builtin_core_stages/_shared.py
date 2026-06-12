@@ -177,3 +177,22 @@ def render_skills_block(skills: tuple) -> str:
     if len(parts) == 1:          # 全部 skill body 為空 → 視同無 skill
         return ""
     return "\n\n".join(parts) + "\n\n"
+
+
+# ============================================================
+#  UI design 摘要（餵下游 stories 用：去掉 ```html 原型、留畫面名稱與描述）
+# ============================================================
+_HTML_FENCE_BLOCK = re.compile(r"```\s*html\s*\n[\s\S]*?\n```", re.IGNORECASE)
+
+
+def strip_html_prototypes(md: str) -> str:
+    """把 ui_design 設計稿的 ```html fence 整塊換成占位行。
+
+    HTML 原型每畫面可達數百行，餵 stories prompt 只需要設計理念、tokens、
+    `## Screen:` 名稱與描述；原型本體 strip 掉避免 prompt 爆量。
+    """
+    if not md or not md.strip():
+        return ""
+    return _HTML_FENCE_BLOCK.sub(
+        "[HTML prototype omitted — see the UI Design document]", md,
+    )

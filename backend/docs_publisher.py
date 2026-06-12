@@ -63,7 +63,8 @@ def _write(path: Path, content: str) -> None:
 def publish_docs(thread_id: str, target: str, repo: str, creds: dict, docs: dict[str, str]) -> dict:
     """依 target 把文件發到對應 Wiki。
 
-    docs：{"PRD": <markdown>, "Architecture": <markdown>}。
+    docs：{頁名: <markdown>}，如 {"PRD": ..., "Architecture": ..., "UI-Design": ...}；
+    每個 key 寫成 wiki 一頁（{key}.md），Home 自動列出連結。
     回 {"ok": bool, "url": str, "note": str}。失敗 raise DocsPublishError（訊息不含 token）。
     """
     token = (creds.get("token") or "").strip()
@@ -105,12 +106,12 @@ def _publish_wiki(thread_id: str, remote: str, docs: dict[str, str], *,
         _git(dest, ["remote", "add", "origin", remote])
 
     # wiki 連結用「頁名」（無 .md）；Home/home 為 landing page
-    _write(dest / "PRD.md", docs.get("PRD", ""))
-    _write(dest / "Architecture.md", docs.get("Architecture", ""))
-    _write(dest / home_name,
-           "# 專案文件\n\n由 Lodestar 自動發佈。\n\n- [PRD](PRD)\n- [Architecture](Architecture)\n")
+    for name, content in docs.items():
+        _write(dest / f"{name}.md", content or "")
+    links = "\n".join(f"- [{name}]({name})" for name in docs)
+    _write(dest / home_name, f"# 專案文件\n\n由 Lodestar 自動發佈。\n\n{links}\n")
 
-    _commit_all(dest, "docs: 更新 PRD / Architecture（Lodestar）")
+    _commit_all(dest, "docs: 更新專案文件（Lodestar）")
     branch = (_git(dest, ["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout or "master").strip()
     push = subprocess.run(["git", "-C", str(dest), "push", remote, f"HEAD:{branch}"],
                           capture_output=True, text=True, timeout=120)

@@ -68,6 +68,17 @@ def register(host: PluginHost) -> None:
         enabled=True,
     ))
     host.register_agent(AgentSpec(
+        agent_id="seed_ui_designer",
+        name="UI Designer Agent",
+        role="ui_design",
+        system_prompt="",
+        model_choice="claude-cli",
+        skills=(),
+        tools=(),
+        max_iterations=1,
+        enabled=True,
+    ))
+    host.register_agent(AgentSpec(
         agent_id="seed_pm",
         name="PM Agent (Stories)",
         role="stories",

@@ -69,6 +69,19 @@ def test_github_wiki_happy(tmp_db, monkeypatch):
     assert "T" not in out["url"] or "token" not in out["url"]
 
 
+def test_github_wiki_includes_ui_design_page(tmp_db, monkeypatch):
+    """docs 含 UI-Design key → 多寫一頁 UI-Design.md，Home 列出連結（既有兩頁不變）。"""
+    run, _ = _fake_git()
+    monkeypatch.setattr(docs_publisher.subprocess, "run", run)
+    docs = dict(_DOCS, **{"UI-Design": "# UI Design\n\n## Screen: Home"})
+    out = docs_publisher.publish_docs("t1b", "github", "owner/repo", {"token": "T"}, docs)
+    assert out["ok"] is True
+    dest = repo_workspace.project_dir("t1b") / "wiki"
+    assert (dest / "UI-Design.md").read_text(encoding="utf-8") == docs["UI-Design"]
+    home = (dest / "Home.md").read_text(encoding="utf-8")
+    assert "[PRD](PRD)" in home and "[UI-Design](UI-Design)" in home
+
+
 def test_github_wiki_bootstraps_empty_wiki(tmp_db, monkeypatch):
     """wiki 從未建頁（clone 失敗）→ init 後仍能 push 成功。"""
     run, calls = _fake_git(clone_ok=False)

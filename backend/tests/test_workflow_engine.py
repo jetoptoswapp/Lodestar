@@ -194,29 +194,32 @@ def test_dispatch_blocks_when_upstream_missing(tmp_db):
 
 
 def test_dispatch_downstream_reset_chain(tmp_db):
-    """改 PRD → 已 approved 的 architecture / stories 都 reset 為 needs_revision。"""
+    """改 PRD → 已 approved 的 architecture / ui_design / stories 都 reset 為 needs_revision。"""
     import plugin_loader as L
     from persistence import dal
 
     reg = L.load_all()
     dal.create_project("t1", "test")
-    # 先讓 PRD / Arch / Stories 都 approved
+    # 先讓 PRD / Arch / UI / Stories 都 approved
     dal.upsert_artifact("t1", "prd", _FAKE_PRD)
     dal.set_stage_status("t1", "prd", "approved")
     dal.upsert_artifact("t1", "architecture", _FAKE_ARCH)
     dal.set_stage_status("t1", "architecture", "approved")
+    dal.upsert_artifact("t1", "ui_design", "# Fake — UI Design\n\n## Screen: Home\nfake")
+    dal.set_stage_status("t1", "ui_design", "approved")
     dal.upsert_artifact("t1", "stories", _FAKE_STORIES)
     dal.set_stage_status("t1", "stories", "approved")
 
-    # 改 PRD（refine）→ architecture / stories 應自動降為 needs_revision
+    # 改 PRD（refine）→ architecture / ui_design / stories 應自動降為 needs_revision
     _install_mock_adapter(reg, _FAKE_PRD.replace("Fake PRD", "Edited PRD"))
     engine = WorkflowEngine(reg)
     out = engine.dispatch(
         thread_id="t1", stage_id="prd", op="refine",
         instruction="加一條 NFR",
     )
-    assert set(out["downstream_reset"]) == {"architecture", "stories"}
+    assert set(out["downstream_reset"]) == {"architecture", "ui_design", "stories"}
     assert dal.get_stage_status("t1", "architecture") == "needs_revision"
+    assert dal.get_stage_status("t1", "ui_design") == "needs_revision"
     assert dal.get_stage_status("t1", "stories") == "needs_revision"
     # PRD 本身原本 approved → refine 後 status 保留 approved（spec §11：approved 不自動降 draft）
     assert dal.get_stage_status("t1", "prd") == "approved"

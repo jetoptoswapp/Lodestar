@@ -1,6 +1,6 @@
 "use client";
 
-// DocsPublishModal —— 把 PRD + Architecture 發到 Wiki（不進 code）。
+// DocsPublishModal —— 把 PRD + Architecture + UI 設計（若已生成）發到 Wiki（不進 code）。
 //   github → /wiki；gitlab → /-/wikis。兩者都 push {repo}.wiki.git，介面直接 render
 //   markdown，push 完即時可看（免 build / pipeline）。
 // 流程：開啟時讀專案 delivery_target 決定文案 → 按「發佈」POST /api/docs/{thread}/publish →
@@ -89,8 +89,9 @@ export function DocsPublishModal({
           {step === "confirm" && (
             <>
               <p className="font-[family-name:var(--font-sans)] text-[13px] leading-[1.7] text-[#cdd4df]">
-                把 <span className="text-[var(--polaris)]">PRD</span> 與
-                <span className="text-[var(--polaris)]"> Architecture</span> 發佈到 {dest}
+                把 <span className="text-[var(--polaris)]">PRD</span>、
+                <span className="text-[var(--polaris)]">Architecture</span> 與
+                <span className="text-[var(--polaris)]"> UI 設計</span>（若已生成）發佈到 {dest}
                 （不進 code）。可重複發佈，會覆寫先前內容。
               </p>
               {target && (

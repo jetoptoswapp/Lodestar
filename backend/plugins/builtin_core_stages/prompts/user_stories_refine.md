@@ -59,6 +59,9 @@ PRD:
 Architecture:
 {{ARCHITECTURE_DRAFT}}
 
+UI Design (design intent and screens; HTML prototypes omitted):
+{{UI_DESIGN_BRIEF}}
+
 Current User Stories:
 {{USER_STORIES_DRAFT}}
 
