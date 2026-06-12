@@ -24,6 +24,28 @@ Key shape constraints, each enforced by a parser regex you cannot see:
 
 Story body fields keep their existing format (As a / I want / so that / **Acceptance Criteria** / **Reference** / **Requirement IDs** / **Senior RD Estimate** / **Depends on**) — those are loose-text fields, not heading-parsed.
 
+## Epic organisation (HARD RULE — determines whether the product ships or just compiles)
+
+**Epics must be organised around user capabilities, not technical components.**
+
+- ✅ `## Epic 3: 使用者可以在 app 裡看到同網段的電腦` — user capability
+- ❌ `## Epic 3: mDNS Discovery 完成` — technical component
+
+Every Epic must contain exactly one **vertical story** as its final story. A vertical story's AC is only satisfiable by running the product — not by calling a library function in isolation. This story stitches together all the prerequisite work in the Epic and delivers the user-observable outcome.
+
+Stories within an Epic that build libraries, infrastructure, or internal modules before the product is ready to run them must be prefixed with `[prereq]` in the title:
+
+- `### Story 3.1 — [prereq] mDNS discovery library`
+- `### Story 3.2 — [prereq] Manual IP fallback`
+- `### Story 3.3 — 使用者開啟 app 後，同網段的裝置出現在清單裡`  ← vertical, no prefix
+
+**Vertical story AC rules:**
+1. At least one AC must specify the exact launch command or test harness used to start the product (e.g. `cargo run --bin myapp -- --headless`, `python -m myservice`, `./gradlew connectedAndroidTest`). An AC that only calls a library function directly does NOT count.
+2. Stub implementations are allowed — a vertical story may use an in-process fake or loopback fixture to satisfy its AC — as long as the product binary actually starts and the code path is exercised through the real entry point, not bypassed by a unit test.
+3. Do NOT write `Given the app is running` without specifying HOW to start it. The agent uses the launch command to write an executable test; an abstract precondition produces a unit test that bypasses the runtime.
+
+**Why this rule exists:** Autonomous agents implement stories in isolation. If no story requires the product to start, no agent will ever wire the libraries into the runtime — and the product ships as a collection of well-tested, disconnected components.
+
 ## Output Format Requirements:
 - Group stories under clearly labeled Epics (e.g., ## Epic 1: User Authentication)
 - Each story must follow the format: **As a [role], I want [goal] so that [benefit]**
@@ -48,6 +70,29 @@ Emit one early "project scaffold" story whose acceptance criteria make the proje
 - One consistent import / module-resolution convention across the repo.
 - No package is named after a standard-library module (Python: `secrets`/`types`/`json`/…).
 - If a `Dockerfile` is in scope, it COPYs every top-level module the app imports and the image starts (passes its healthcheck).
+
+### Vertical story checklist
+
+Use this checklist when writing the final (vertical) story of each Epic:
+
+- [ ] Story title has no `[prereq]` prefix
+- [ ] At least one AC specifies a concrete launch command (e.g. `cargo run --bin X`, `python -m Y`, `./gradlew connectedAndroidTest`)
+- [ ] That AC's `Then` clause describes something a user or operator can observe in the running product (UI change, log line, API response, file on disk) — not a library return value
+- [ ] If the full end-to-end path is not yet buildable, the AC explicitly states the stub or fixture used (e.g. "uses an in-process loopback peer") so the agent knows to wire a fake, not bypass the runtime
+
+**Example of a bad vertical AC (agent will bypass the runtime):**
+```
+AC-1: Given the app is running, When a peer registers, Then it appears in the device list.
+```
+Too vague — agent writes a unit test calling `upsert_device()` directly.
+
+**Example of a good vertical AC (agent must start the binary):**
+```
+AC-1: Given `cargo run --bin kvm-app -- --headless` starts without error,
+      When an in-process DiscoveryService registers a fake peer,
+      Then HeadlessRunner.run_frame() produces a UI tree containing the peer's display name.
+```
+Concrete launch command + specific assertion on the running product.
 
 ## Project tier propagation (HARD RULE — read this BEFORE story sizing)
 
