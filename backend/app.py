@@ -861,6 +861,53 @@ async def get_project_summary(thread_id: str):
     return await asyncio.to_thread(project_summary.project_summary, thread_id)
 
 
+@app.get("/api/projects/{thread_id}/issues")
+async def list_project_issues(thread_id: str):
+    """列既有 repo 的 open issue（修改既有專案：匯入 issue 當任務來源）。回 [{number, title}]。
+    需專案已設既有 repo（delivery_target + repo）且該 integration 有 token。"""
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    reg = _registry()
+    from delivery_repo import DeliveryRepoError, resolve_project_repo
+    try:
+        target, repo = await asyncio.to_thread(resolve_project_repo, reg, thread_id, create=False)
+    except DeliveryRepoError as exc:
+        raise HTTPException(400, detail=error_detail("delivery_not_configured", str(exc)))
+    creds = keystore.get_credentials(target)
+    if not creds.get("token"):
+        raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
+    issues = await asyncio.to_thread(_batch_issue_lister(target, creds, repo))
+    return {"issues": [{"number": n, "title": t} for n, t in issues]}
+
+
+@app.get("/api/projects/{thread_id}/issues/{number}")
+async def get_project_issue(thread_id: str, number: int):
+    """讀單一既有 issue 的 {number, title, body, url}（供 change_request 討論起點 / story）。"""
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    reg = _registry()
+    from delivery_repo import DeliveryRepoError, resolve_project_repo
+    try:
+        target, repo = await asyncio.to_thread(resolve_project_repo, reg, thread_id, create=False)
+    except DeliveryRepoError as exc:
+        raise HTTPException(400, detail=error_detail("delivery_not_configured", str(exc)))
+    creds = keystore.get_credentials(target)
+    token = creds.get("token", "")
+    if not token:
+        raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
+    try:
+        if target == "gitlab":
+            from async_runtime.gitlab_mr import get_issue_detail as gl_get
+            base = (creds.get("base_url") or "https://gitlab.com").rstrip("/")
+            detail = await asyncio.to_thread(gl_get, base, token, repo, number)
+        else:
+            from async_runtime.github_pr import get_issue_detail as gh_get
+            detail = await asyncio.to_thread(gh_get, repo, token, number)
+    except RuntimeError as exc:
+        raise HTTPException(404, detail=error_detail("issue_not_found", str(exc)))
+    return detail
+
+
 @app.patch("/api/projects/{thread_id}", response_model=ProjectResponse)
 async def update_project(thread_id: str, req: UpdateProjectRequest):
     """改 name 與/或 delivery repo 設定（皆 optional；只更新有帶的部分）。"""
@@ -1191,14 +1238,10 @@ def _delivery_opener(target: str, creds: dict, thread_id: str):
 
 
 def _delivery_clone_url(target: str, creds: dict, repo: str) -> str:
-    """依 delivery target 組含 token 的 clone url（token 缺 → ""）。"""
-    token = creds.get("token", "")
-    if not token:
-        return ""
-    if target == "gitlab":
-        host = (creds.get("base_url") or "https://gitlab.com").rstrip("/").split("://")[-1]
-        return f"https://oauth2:{token}@{host}/{repo}.git"
-    return f"https://x-access-token:{token}@github.com/{repo}.git"
+    """依 delivery target 組含 token 的 clone url（token 缺 → ""）。
+    實作已下沉到 delivery_repo.clone_url（sync/async 兩端共用）；本處轉呼維持既有呼叫面。"""
+    from delivery_repo import clone_url
+    return clone_url(target, creds, repo)
 
 
 def _batch_opener_builder(target: str, creds: dict, thread_id: str):

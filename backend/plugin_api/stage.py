@@ -50,6 +50,9 @@ class StageContext:
     # host dispatch 解析的「該 stage lead agent」（單流程的 persona / model 來源）。
     # collab 路徑會刻意設 None（lead 合成用 stage 的 default persona，見 collab_coordinator）。
     agent: Optional["AgentSpec"] = None
+    # host 備好的既有 repo clone 絕對路徑（唯讀輸入；stage 宣告 requires=("workspace",) 時非空）。
+    # handler 不碰 FS/git，只把它寫進 prompt 告訴 model 去 Read/Grep/Glob。語意同附件 path-passing。
+    workspace_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,7 @@ class StageSpec:
     refine_operation: str = ""      # 預設 f"refine_{id}"
     chat_operation: str = ""        # 預設 f"chat_{id}"
     depends_on: tuple[str, ...] = ()        # 上游 stage_id；downstream 由 host 反推
+    requires: tuple[str, ...] = ()  # 宣告需要的 host 資源（如 "workspace"=既有 repo clone）；core 讀此決定備料，不認 stage 名
     artifact_key: str = ""          # 預設等於 id（host 用它存/取 stage_artifacts）
     prompt_keys: tuple[str, ...] = ()       # 用到的 prompt 資產檔名（見附錄 D）
     default_agent_role: str = ""    # 預設綁的 agent role（可被 workflow 覆寫）

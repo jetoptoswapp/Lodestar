@@ -18,10 +18,12 @@ _log = logging.getLogger("plugin_api.runner")
 @dataclass(frozen=True)
 class ModelAdapter:
     model_choice: str
-    # invoke(prompt, *, allowed_tools=()) -> str
+    # invoke(prompt, *, allowed_tools=(), workspace_dir="") -> str
     #   allowed_tools：agent 宣告允許的工具名 tuple（如 ("Read", "Bash")）。
-    #   相容契約：新 adapter 應接受 keyword-only allowed_tools 並給預設值；舊 adapter 只收
-    #   (prompt) 仍合法 —— HarnessRunner 偵測簽章後決定是否帶 allowed_tools（見 _invoke_adapter）。
+    #   workspace_dir：既有 repo clone 絕對路徑（讀碼 stage 用）；非空時 adapter 應把它
+    #     --add-dir 給 model 並補上 Read/Grep/Glob，讓 model 直接讀既有 codebase。
+    #   相容契約：新 adapter 應接受 keyword-only allowed_tools / workspace_dir 並給預設值；
+    #     舊 adapter 只收 (prompt) 仍合法 —— HarnessRunner 偵測簽章後逐 kwarg 決定是否帶（見 _invoke_adapter）。
     invoke: Callable[..., str]
     is_available: Callable[[], bool]
     description: str

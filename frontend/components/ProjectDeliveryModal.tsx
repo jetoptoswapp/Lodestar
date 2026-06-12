@@ -9,8 +9,12 @@ import { useEffect, useState } from "react";
 
 type Mode = "new" | "existing";
 
+// workflow 選項（建新時可選）；只需 id/label。modify_existing 需要既有 repo。
+type WorkflowOption = { id: string; label: string };
+const MODIFY_EXISTING_ID = "modify_existing";
+
 export function ProjectDeliveryModal({
-  open, thread, apiBase, onClose, onSaved, onOpenIntegrations,
+  open, thread, apiBase, onClose, onSaved, onOpenIntegrations, workflows = [],
 }: {
   open: boolean;
   thread: string | null;              // null = 建新
@@ -18,9 +22,11 @@ export function ProjectDeliveryModal({
   onClose: () => void;
   onSaved: (threadId: string) => void;
   onOpenIntegrations?: () => void;
+  workflows?: WorkflowOption[];        // 建新時的 workflow 選單（空 → 不顯示，沿用後端 default）
 }) {
   const isNew = thread === null;
   const [name, setName] = useState("");
+  const [workflowId, setWorkflowId] = useState("default");
   const [target, setTarget] = useState("");          // "" / github / gitlab
   const [repoMode, setRepoMode] = useState<Mode>("new");
   const [repoFullName, setRepoFullName] = useState("");
@@ -30,12 +36,14 @@ export function ProjectDeliveryModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const modifyExisting = workflowId === MODIFY_EXISTING_ID;
+
   useEffect(() => {
     if (!open) return;
     setError(null);
     setBusy(false);
     if (isNew) {
-      setName("新需求"); setTarget(""); setRepoMode("new");
+      setName("新需求"); setWorkflowId("default"); setTarget(""); setRepoMode("new");
       setRepoFullName(""); setRepoOwner(""); setRepoVisibility("private");
     } else {
       fetch(`${apiBase}/api/projects/${thread}`)
@@ -49,6 +57,16 @@ export function ProjectDeliveryModal({
         .catch((e) => setError(`讀取專案失敗：${e.message}`));
     }
   }, [open, thread, apiBase, isNew]);
+
+  // modify_existing 需要既有 repo：選它時自動把 repo 模式切到 existing、target 預設 github
+  //（在 select onChange 處理，避免 set-state-in-effect）。
+  const onPickWorkflow = (id: string) => {
+    setWorkflowId(id);
+    if (id === MODIFY_EXISTING_ID) {
+      setRepoMode("existing");
+      setTarget((t) => t || "github");
+    }
+  };
 
   useEffect(() => {
     if (!open || !target) { setTokenSet(null); return; }
@@ -71,6 +89,10 @@ export function ProjectDeliveryModal({
 
   const submit = async () => {
     if (!name.trim()) { setError("專案名稱不可為空"); return; }
+    if (isNew && modifyExisting && !(target && repoMode === "existing" && repoFullName.trim())) {
+      setError("「修改既有專案」需指定既有 repo（target + owner/repo）");
+      return;
+    }
     setBusy(true); setError(null);
     const delivery = target
       ? { delivery_target: target, repo_mode: repoMode, repo_full_name: repoFullName.trim(),
@@ -81,7 +103,7 @@ export function ProjectDeliveryModal({
       if (isNew) {
         const r = await fetch(`${apiBase}/api/projects`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name.trim(), ...delivery }),
+          body: JSON.stringify({ name: name.trim(), workflow_id: workflowId, ...delivery }),
         });
         if (!r.ok) throw new Error((await r.json())?.detail?.message ?? r.statusText);
         tid = (await r.json()).thread_id;
@@ -127,6 +149,22 @@ export function ProjectDeliveryModal({
             <label className={lbl}>專案名稱</label>
             <input className={fc} value={name} onChange={(e) => setName(e.target.value)} autoFocus spellCheck={false} />
           </div>
+
+          {isNew && workflows.length > 0 && (
+            <div>
+              <label className={lbl}>Workflow（流程）</label>
+              <select className={fc} value={workflowId} onChange={(e) => onPickWorkflow(e.target.value)}>
+                {workflows.map((w) => (
+                  <option key={w.id} value={w.id}>{w.label}（{w.id}）</option>
+                ))}
+              </select>
+              {modifyExisting && (
+                <p className="mt-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase leading-[1.6] tracking-[0.16em] text-[var(--ink-muted)]">
+                  ⓘ 修改既有專案：clone 既有 repo → AI 讀碼 → 談變更/解 bug → implement 開 PR。下方請指定既有 repo。
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <label className={lbl}>Delivery target（交付到哪）</label>

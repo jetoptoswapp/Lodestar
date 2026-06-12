@@ -80,11 +80,11 @@ def test_claude_tool_flags_no_uploads(tmp_path, monkeypatch):
 
 def test_invoke_adapter_backward_compat():
     """相容偵測：舊式只收 prompt 的 adapter + 非空 allowed_tools → 不報錯、走只傳 prompt。"""
-    from harness_runner import _invoke_accepts_allowed_tools as accepts, _invoke_adapter
+    from harness_runner import _invoke_accepts as accepts, _invoke_adapter
 
-    assert accepts(lambda p, *, allowed_tools=(): p) is True
-    assert accepts(lambda p, **kw: p) is True
-    assert accepts(lambda p: p) is False
+    assert accepts(lambda p, *, allowed_tools=(): p, "allowed_tools") is True
+    assert accepts(lambda p, **kw: p, "allowed_tools") is True
+    assert accepts(lambda p: p, "allowed_tools") is False
 
     old_calls = []
     old = ModelAdapter(model_choice="old", invoke=lambda p: (old_calls.append(p) or "ok"),
@@ -105,6 +105,36 @@ def test_invoke_adapter_backward_compat():
     seen.clear()
     _invoke_adapter(new, "hi", ())                          # 空 → 走只傳 prompt（用預設）
     assert seen["t"] == ()
+
+
+def test_invoke_adapter_workspace_dir():
+    """workspace_dir 透傳：adapter 接受才帶；不接受則靜默降級（不爆）。"""
+    from harness_runner import _invoke_accepts as accepts, _invoke_adapter
+
+    assert accepts(lambda p, *, workspace_dir="": p, "workspace_dir") is True
+    assert accepts(lambda p, *, allowed_tools=(): p, "workspace_dir") is False
+
+    seen = {}
+    def _ws_invoke(p, *, allowed_tools=(), workspace_dir=""):
+        seen["t"] = allowed_tools
+        seen["w"] = workspace_dir
+        return "ok"
+    ws = ModelAdapter(model_choice="ws", invoke=_ws_invoke, is_available=lambda: True,
+                      description="", max_context_tokens=1, prompt_budget_tokens=1,
+                      response_budget_tokens=1)
+    _invoke_adapter(ws, "hi", ("Read",), workspace_dir="/tmp/repo")
+    assert seen["t"] == ("Read",) and seen["w"] == "/tmp/repo"
+
+    # 舊式 adapter（只收 allowed_tools）+ 非空 workspace_dir → 不帶 workspace_dir、不爆
+    seen.clear()
+    def _tools_only(p, *, allowed_tools=()):
+        seen["t"] = allowed_tools
+        return "ok"
+    legacy = ModelAdapter(model_choice="legacy", invoke=_tools_only, is_available=lambda: True,
+                          description="", max_context_tokens=1, prompt_budget_tokens=1,
+                          response_budget_tokens=1)
+    assert _invoke_adapter(legacy, "hi", ("Read",), workspace_dir="/tmp/repo") == "ok"
+    assert seen["t"] == ("Read",)
 
 
 def test_collab_agent_tools_flow(tmp_db):

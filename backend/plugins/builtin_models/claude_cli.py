@@ -33,23 +33,36 @@ TIMEOUT_SECONDS = 900
 _UPLOADS_ENV = "LODESTAR_UPLOADS_DIR"
 
 
-def _tool_flags(allowed_tools: tuple[str, ...]) -> list[str]:
+# 讀碼 stage 在 workspace 存在時隱含補的唯讀工具（讓 model 能探索既有 codebase）。
+_WORKSPACE_TOOLS = ("Read", "Grep", "Glob")
+
+
+def _tool_flags(allowed_tools: tuple[str, ...], workspace_dir: str = "") -> list[str]:
     """組工具相關 flags。
 
-    - effective = allowed_tools（agent 宣告）∪ 附件隱含的 Read（uploads dir 存在時）。
+    - effective = allowed_tools（agent 宣告）∪ 附件隱含的 Read（uploads dir 存在時）
+      ∪ workspace 隱含的 Read/Grep/Glob（workspace_dir 存在時）。
     - effective 為空 → 回 []（純文字模式，不帶 --allowedTools）。
-    - 非空 → --allowedTools <逗號串>；需讀附件（uploads 存在且含 Read）才加 --add-dir + acceptEdits。
+    - 非空 → --allowedTools <逗號串>；uploads / workspace 各自存在時 --add-dir 該目錄。
 
-    附件回歸守門：即使 agent.tools=()，只要 uploads dir 存在就補 Read，否則 prompt 內
-    「用 Read 讀附件」的指令會因 model 沒有 Read 能力而失效。
+    回歸守門：即使 agent.tools=()，只要 uploads / workspace 存在就補對應工具，否則 prompt 內
+    「用 Read 讀附件 / codebase」的指令會因 model 沒有該能力而失效。
+    workspace（既有 repo）是唯讀讀碼，不主動寫；acceptEdits 只在讀附件路徑沿用既有行為。
     """
     uploads = os.environ.get(_UPLOADS_ENV)
     uploads_path = Path(uploads) if uploads else None
     uploads_ok = bool(uploads_path and uploads_path.exists())
 
+    ws_path = Path(workspace_dir) if workspace_dir else None
+    ws_ok = bool(ws_path and ws_path.exists())
+
     tools: list[str] = list(allowed_tools)
     if uploads_ok and "Read" not in tools:
         tools.append("Read")
+    if ws_ok:
+        for t in _WORKSPACE_TOOLS:
+            if t not in tools:
+                tools.append(t)
 
     if not tools:
         return []
@@ -57,7 +70,10 @@ def _tool_flags(allowed_tools: tuple[str, ...]) -> list[str]:
     flags = ["--allowedTools", ",".join(tools)]
     if uploads_ok and "Read" in tools:
         flags += ["--add-dir", str(uploads_path)]
-    flags += ["--permission-mode", "acceptEdits"]
+    if ws_ok:
+        flags += ["--add-dir", str(ws_path)]
+    if uploads_ok and "Read" in tools:
+        flags += ["--permission-mode", "acceptEdits"]
     return flags
 
 
@@ -73,21 +89,22 @@ _INLINE_DIRECTIVE = (
 )
 
 
-def _build_cmd(allowed_tools: tuple[str, ...] = ()) -> list[str]:
+def _build_cmd(allowed_tools: tuple[str, ...] = (), workspace_dir: str = "") -> list[str]:
     return [
         "claude", "-p",
         "--output-format", "text",
         "--no-session-persistence",
         "--append-system-prompt", _INLINE_DIRECTIVE,
-        *_tool_flags(allowed_tools),
+        *_tool_flags(allowed_tools, workspace_dir),
         "--disallowedTools", *_NO_DELEGATE_TOOLS,   # 置於末端：variadic 不誤吞後續 flag
     ]
 
 
-def _invoke(prompt: str, *, allowed_tools: tuple[str, ...] = ()) -> str:
+def _invoke(prompt: str, *, allowed_tools: tuple[str, ...] = (), workspace_dir: str = "") -> str:
     """同步呼叫 claude CLI。回 stdout 字串；non-zero exit → RuntimeError。
-    allowed_tools：agent 宣告的工具（如 Read / Bash）；附件隱含的 Read 由 _tool_flags 自動補。"""
-    cmd = _build_cmd(allowed_tools)
+    allowed_tools：agent 宣告的工具（如 Read / Bash）；附件隱含的 Read 由 _tool_flags 自動補。
+    workspace_dir：既有 repo clone 絕對路徑（讀碼 stage 用），非空時 --add-dir + 補 Read/Grep/Glob。"""
+    cmd = _build_cmd(allowed_tools, workspace_dir)
     try:
         proc = subprocess.run(
             cmd,

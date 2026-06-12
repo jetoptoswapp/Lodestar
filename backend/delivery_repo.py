@@ -64,3 +64,16 @@ def resolve_project_repo(registry, thread_id: str, *, create: bool = True) -> tu
     created_full = integ.create_repo(creds, name, visibility, owner)
     dal.set_project_repo_created(thread_id, created_full)
     return target, created_full
+
+
+def clone_url(target: str, creds: dict, repo: str) -> str:
+    """依 delivery target 組含 token 的 clone url（token 缺 → ""）。
+
+    sync 生成端（workflow_engine 讀碼 stage）與 async 實作端共用，故放 host 層。"""
+    token = creds.get("token", "")
+    if not token:
+        return ""
+    if target == "gitlab":
+        host = (creds.get("base_url") or "https://gitlab.com").rstrip("/").split("://")[-1]
+        return f"https://oauth2:{token}@{host}/{repo}.git"
+    return f"https://x-access-token:{token}@github.com/{repo}.git"

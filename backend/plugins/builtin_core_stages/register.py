@@ -9,15 +9,17 @@ from plugin_api import PluginHost
 from plugin_api.workflow import AgentBinding, WorkflowSpec
 
 from .architecture_stage import ARCHITECTURE_STAGE, VALIDATORS as ARCH_VALIDATORS
+from .change_request_stage import CHANGE_REQUEST_STAGE
 from .prd_stage import PRD_STAGE, VALIDATORS as PRD_VALIDATORS
 from .stories_stage import STORIES_STAGE, VALIDATORS as STORIES_VALIDATORS
 
 
 def register(host: PluginHost) -> None:
-    # 1. stages —— 三個 builtin stage
+    # 1. stages —— 三個 builtin stage + change_request（修改既有專案）
     host.register_stage(PRD_STAGE)
     host.register_stage(ARCHITECTURE_STAGE)
     host.register_stage(STORIES_STAGE)
+    host.register_stage(CHANGE_REQUEST_STAGE)
 
     # 2. validators —— 雙詞彙 (telemetry_stage, operation) 對應 registry
     for vlist in (PRD_VALIDATORS, ARCH_VALIDATORS, STORIES_VALIDATORS):
@@ -49,5 +51,18 @@ def register(host: PluginHost) -> None:
             ),
         },
         collab_mode={"prd": "discussion"},
+        source_plugin="builtin_core_stages",
+    ))
+
+    # 5. modify_existing —— 修改既有專案：讀既有 repo → 談變更/解 bug → 產出實作 brief。
+    #    單 stage（change_request, requires=workspace）；brief 直接當 single implement 的 story 開 PR。
+    host.register_workflow(WorkflowSpec(
+        id="modify_existing",
+        label="修改既有專案",
+        description="既有 repo → AI 讀碼 → 談變更/解 bug → 產出實作 brief → implement 開 PR",
+        stages=("change_request",),
+        agent_bindings={
+            "change_request": (AgentBinding("change_planner", "lead"),),
+        },
         source_plugin="builtin_core_stages",
     ))

@@ -73,6 +73,27 @@ def list_open_issues(base: str, token: str, repo: str, *, max_pages: int = 5) ->
     return out
 
 
+def get_issue_detail(base: str, token: str, repo: str, iid: int) -> dict:
+    """讀單一 GitLab issue 的 {number, title, body, url}（修改既有專案：匯入 issue 當任務來源）。
+    失敗 → raise RuntimeError（訊息不含 token）。number 用 iid（與 list_open_issues 一致）。"""
+    pid = urllib.parse.quote(repo, safe="")
+    url = f"{base}/api/v4/projects/{pid}/issues/{iid}"
+    req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            it = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"讀取 issue #{iid} 失敗（HTTP {exc.code}）") from None
+    except Exception:                            # noqa: BLE001
+        raise RuntimeError(f"讀取 issue #{iid} 失敗") from None
+    return {
+        "number": it.get("iid"),
+        "title": it.get("title") or "",
+        "body": it.get("description") or "",
+        "url": it.get("web_url") or "",
+    }
+
+
 def add_issue_note(base: str, token: str, repo: str, issue_iid: int, body: str) -> None:
     """在 GitLab issue 上留 note。失敗只吞掉、不上拋。"""
     pid = urllib.parse.quote(repo, safe="")

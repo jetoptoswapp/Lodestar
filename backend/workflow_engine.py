@@ -64,6 +64,15 @@ class OperationNotSupportedError(WorkflowError):
         super().__init__(f"stage '{stage_id}' 不支援 op '{op}'")
 
 
+class WorkspaceNotConfiguredError(WorkflowError):
+    """stage 宣告 requires=("workspace",) 但專案未設既有 repo / 缺 token，無法 clone 既有 codebase。"""
+    category = "workspace_not_configured"
+
+    def __init__(self, stage_id: str, reason: str) -> None:
+        super().__init__(f"stage '{stage_id}' 需要既有 repo 但無法取得：{reason}")
+        self.stage_id = stage_id
+
+
 # ============================================================
 #  Pure helpers（測試友善）
 # ============================================================
@@ -180,6 +189,32 @@ class WorkflowEngine:
         未來從 app_settings 讀 per-stage / 全域 judge model 開關以啟用語義驗證。"""
         return ""
 
+    def _prepare_workspace(self, thread_id: str, stage) -> str:
+        """stage 宣告 requires=("workspace",) → clone 既有 repo，回 clone 絕對路徑（host owns I/O）。
+
+        未宣告 → 回 ""（行為不變）。專案未設既有 repo / 缺 token → WorkspaceNotConfiguredError（4xx）。
+        clone 為「一專案一份」、冪等（已存在則 fetch 沿用），與 implement 端共用同一目錄。
+        core 只認 requires tuple、不認 stage 名（鐵則①）。"""
+        if "workspace" not in getattr(stage, "requires", ()):
+            return ""
+        import keystore
+        import repo_workspace
+        from delivery_repo import DeliveryRepoError, clone_url, resolve_project_repo
+        try:
+            target, repo_full = resolve_project_repo(self._reg, thread_id, create=False)
+        except DeliveryRepoError as exc:
+            raise WorkspaceNotConfiguredError(stage.id, str(exc)) from exc
+        creds = keystore.get_credentials(target)
+        url = clone_url(target, creds, repo_full)
+        if not url:
+            raise WorkspaceNotConfiguredError(
+                stage.id, f"integration '{target}' 尚無 token（先到 INTEGRATIONS 設定）")
+        try:
+            clone_path = repo_workspace.prepare_project_clone(thread_id, url)
+        except Exception as exc:  # noqa: BLE001 - clone 失敗（網路 / 權限）轉 4xx，不回顯 token url
+            raise WorkspaceNotConfiguredError(stage.id, "git clone 既有 repo 失敗") from exc
+        return str(clone_path)
+
     # ------- dispatch -------
     def dispatch(
         self, *, thread_id: str, stage_id: str, op: str,
@@ -252,6 +287,9 @@ class WorkflowEngine:
                 log.warning("stage '%s' lead '%s' 指定 model '%s' 未註冊，沿用 '%s'",
                             stage_id, lead_agent.agent_id, lead_agent.model_choice, model_choice)
 
+        # 5b. workspace（既有 repo clone）：stage 宣告 requires=("workspace",) 才備（host owns I/O）。
+        workspace_dir = self._prepare_workspace(thread_id, stage)
+
         # 6. StageContext + HarnessRunner
         ctx = StageContext(
             thread_id=thread_id,
@@ -264,10 +302,11 @@ class WorkflowEngine:
             focus_section=focus_section,
             metadata={"attachments": attachments},
             agent=lead_agent,
+            workspace_dir=workspace_dir,
         )
         runner = HarnessRunner(self._reg, thread_id, stage_id, eff_model,
                                judge_model_choice=self._judge_model_choice(),
-                               agent=lead_agent)
+                               agent=lead_agent, workspace_dir=workspace_dir)
 
         # 5. 派發 handler
         new_artifact = current

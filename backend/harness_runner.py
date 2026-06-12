@@ -54,11 +54,15 @@ class HarnessRunner:
         model_choice: str = "claude-cli",
         judge_model_choice: str = "",
         agent: Optional[AgentSpec] = None,
+        workspace_dir: str = "",
     ) -> None:
         self._reg = registry
         self.thread_id = thread_id
         self.stage_id = stage_id
         self.model_choice = model_choice
+        # 既有 repo clone 絕對路徑（host 在 dispatch 時依 stage.requires 備好）；非空 → 透傳給
+        # adapter，讓 model 能 --add-dir 讀既有 codebase。空 → 行為不變。
+        self.workspace_dir = workspace_dir
         # 當前 stage 的 lead agent（engine / collab 注入）；供 max_iterations 與 allowed_tools
         # 解析。None → fallback get_agent_for_stage（依 stage_id 反查，向後相容）。
         self.agent = agent
@@ -95,7 +99,8 @@ class HarnessRunner:
             outcomes: list[HarnessValidationOutcome] = []
 
             try:
-                last_output = _invoke_adapter(adapter, prompt_now, allowed_tools)
+                last_output = _invoke_adapter(adapter, prompt_now, allowed_tools,
+                                              workspace_dir=self.workspace_dir)
             except RuntimeError as exc:
                 error_code = ERROR_MODEL_UNKNOWN
                 error_message = str(exc)
@@ -302,29 +307,33 @@ class HarnessRunner:
 
 
 # ============ module-level helpers ============
-@lru_cache(maxsize=64)
-def _invoke_accepts_allowed_tools(fn) -> bool:
-    """偵測 adapter.invoke 是否接受 allowed_tools 關鍵字參數（含收 **kwargs）。
-    無法內省的 callable → 保守當舊介面（只收 prompt）。cache key = fn 物件（adapter 註冊後固定）。
+@lru_cache(maxsize=128)
+def _invoke_accepts(fn, param: str) -> bool:
+    """偵測 adapter.invoke 是否接受某個關鍵字參數（含收 **kwargs）。
+    無法內省的 callable → 保守當不接受（退回舊介面）。cache key = (fn, param)（adapter 註冊後固定）。
 
     用 inspect.signature 而非 try/except TypeError：後者會把 adapter 內部真正的 TypeError
-    誤判為「不接受 allowed_tools」而靜默降級、吞掉真錯誤。
+    誤判為「不接受該參數」而靜默降級、吞掉真錯誤。
     """
     try:
         params = inspect.signature(fn).parameters
     except (ValueError, TypeError):
         return False
-    if "allowed_tools" in params:
+    if param in params:
         return True
     return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
-def _invoke_adapter(adapter, prompt: str, allowed_tools: tuple) -> str:
-    """統一 adapter.invoke 呼叫：新 adapter（接受 allowed_tools）帶工具；舊 adapter 只傳 prompt。
-    allowed_tools 為空 → 一律走只傳 prompt 的舊路徑（與既有行為完全一致、零風險）。"""
-    if allowed_tools and _invoke_accepts_allowed_tools(adapter.invoke):
-        return adapter.invoke(prompt, allowed_tools=allowed_tools)
-    return adapter.invoke(prompt)
+def _invoke_adapter(adapter, prompt: str, allowed_tools: tuple,
+                    workspace_dir: str = "") -> str:
+    """統一 adapter.invoke 呼叫：逐 kwarg 偵測 adapter 是否支援，支援才帶（舊 adapter 自動降級）。
+    allowed_tools / workspace_dir 皆空且 adapter 不需要時 → 走只傳 prompt 的舊路徑（零風險）。"""
+    kwargs: dict = {}
+    if allowed_tools and _invoke_accepts(adapter.invoke, "allowed_tools"):
+        kwargs["allowed_tools"] = allowed_tools
+    if workspace_dir and _invoke_accepts(adapter.invoke, "workspace_dir"):
+        kwargs["workspace_dir"] = workspace_dir
+    return adapter.invoke(prompt, **kwargs)
 
 
 def _json_dumps_safe(obj) -> str:

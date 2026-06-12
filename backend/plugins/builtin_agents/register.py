@@ -78,6 +78,20 @@ def register(host: PluginHost) -> None:
         max_iterations=1,
         enabled=True,
     ))
+    # change_request lead（修改既有專案 workflow）：讀既有 codebase → 產出實作 brief。
+    # tools 顯式宣告 Read/Grep/Glob（adapter 在 workspace 存在時亦會自動補，此處讓意圖明確）。
+    # system_prompt 留空 → 用 change_request stage 內建 default persona。
+    host.register_agent(AgentSpec(
+        agent_id="change_planner",
+        name="Change Planner",
+        role="change_request",
+        system_prompt="",
+        model_choice="claude-cli",
+        skills=(),
+        tools=("Read", "Grep", "Glob"),
+        max_iterations=1,
+        enabled=True,
+    ))
     # PRD 討論 panel 的 peer agents（與 seed_prd lead 互補；requirements_panel workflow 綁定）。
     # role 用 "prd_peer" 而非 "prd"：避免污染「role==stage_id 唯一 lead」的解析（見 agent_resolver）。
     host.register_agent(AgentSpec(

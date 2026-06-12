@@ -87,6 +87,28 @@ def list_open_issue_numbers(repo: str, token: str, *, max_pages: int = 5) -> lis
     return [n for n, _ in list_open_issues(repo, token, max_pages=max_pages)]
 
 
+def get_issue_detail(repo: str, token: str, number: int) -> dict:
+    """讀單一 issue 的 {number, title, body, url}（修改既有專案：匯入 issue 當任務來源）。
+    失敗 / 該編號是 PR → raise RuntimeError（訊息不含 token）。"""
+    url = f"https://api.github.com/repos/{repo}/issues/{number}"
+    req = urllib.request.Request(url, headers=_gh_headers(token), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            it = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"讀取 issue #{number} 失敗（HTTP {exc.code}）") from None
+    except Exception:                            # noqa: BLE001
+        raise RuntimeError(f"讀取 issue #{number} 失敗") from None
+    if "pull_request" in it:
+        raise RuntimeError(f"#{number} 是 pull request，不是 issue")
+    return {
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "body": it.get("body") or "",
+        "url": it.get("html_url") or "",
+    }
+
+
 def list_closed_issues(repo: str, token: str, *, max_pages: int = 5) -> list[tuple[int, str]]:
     """列 repo 的 closed issue (number, title)（排除 PR）。給 batch 冪等重跑：issue 已關 = 已交付 → 跳過。
     任何失敗回 []（不因列舉失敗而誤判：寧可重做也不要漏做）。"""

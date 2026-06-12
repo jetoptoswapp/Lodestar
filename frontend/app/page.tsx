@@ -283,6 +283,13 @@ export default function Page() {
   const [storiesStatus, setStoriesStatus] = useState<string>("draft");
   const [storiesBusy, setStoriesBusy] = useState<StageBusy>(false);
   const [storiesDelivery, setStoriesDelivery] = useState<DeliveryStatus | null>(null);
+  // ===== 修改既有專案：change_request 真實 state =====
+  const [crArtifact, setCrArtifact] = useState<string>("");
+  const [crStatus, setCrStatus] = useState<string>("draft");
+  const [crBusy, setCrBusy] = useState<StageBusy>(false);
+  const [crImplementing, setCrImplementing] = useState(false);
+  // issue picker（匯入既有 issue 當討論起點）
+  const [issuePicker, setIssuePicker] = useState<{ open: boolean; loading: boolean; issues: { number: number; title: string }[]; error: string | null }>({ open: false, loading: false, issues: [], error: null });
   // ===== M2 baseline：真實 thread list + plugin count + model list + modal state =====
   const [threadList, setThreadList] = useState<Project[]>([]);
   const [pluginCount, setPluginCount] = useState<number | null>(null);
@@ -324,6 +331,10 @@ export default function Page() {
     setStoriesStatus("draft");
     setStoriesBusy(false);
     setStoriesDelivery(null);
+    setCrArtifact("");
+    setCrStatus("draft");
+    setCrBusy(false);
+    setCrImplementing(false);
   }, []);
 
   // 切換 active thread —— 同時寫 localStorage、清衍生狀態、回到 workspace / PRD
@@ -685,12 +696,25 @@ export default function Page() {
     }
   }, []);
 
+  // 修改既有專案：拿 change_request state
+  const refreshChangeRequest = useCallback(async (tid: string) => {
+    try {
+      const s = await apiFetch<{ artifact: string; status: string }>(`/api/stage/change_request/${tid}`);
+      setCrArtifact(s.artifact || "");
+      setCrStatus(s.status);
+    } catch (e) {
+      // 不致命：非 modify_existing 專案無此 stage state（404）→ silent
+      console.warn("讀取 change_request 失敗：", (e as Error).message);
+    }
+  }, []);
+
   useEffect(() => {
     if (!thread) return;
     refreshPrd(thread);
     refreshArchitecture(thread);
     refreshStories(thread);
-  }, [thread, refreshPrd, refreshArchitecture, refreshStories]);
+    refreshChangeRequest(thread);
+  }, [thread, refreshPrd, refreshArchitecture, refreshStories, refreshChangeRequest]);
 
   // M3：切 thread workflow（hoisted 到 refreshXxx 之後避免 hoisting issue）
   const onChangeProjectWorkflow = useCallback(async (workflowId: string | null) => {
@@ -786,6 +810,69 @@ export default function Page() {
       setBusy(false);
     }
   }, [thread, busy, modelChoice, refreshArchitecture, refreshStories]);
+
+  // ===== 修改既有專案：change_request handlers =====
+  const onGenerateChangeRequest = useCallback(async () => {
+    if (!thread || crBusy) return;
+    setErr(null);
+    setCrBusy("generate");
+    try {
+      const data = await apiFetch<{ artifact: string }>("/api/stage/change_request/generate", {
+        method: "POST",
+        body: JSON.stringify({ thread_id: thread, model_choice: modelChoice }),
+      });
+      setCrArtifact(data.artifact || "");
+      setCrStatus("draft");
+    } catch (e) {
+      setErr(`生成變更 brief 失敗：${(e as Error).message}`);
+    } finally {
+      setCrBusy(false);
+    }
+  }, [thread, crBusy, modelChoice]);
+
+  // 用 brief 當 story 觸發 single implement（一個任務一個 PR）
+  const onImplementChangeRequest = useCallback(async () => {
+    if (!thread || crImplementing || !crArtifact.trim()) return;
+    setErr(null);
+    setCrImplementing(true);
+    try {
+      await startImplement({ thread_id: thread, runner: "claude-cli", story: crArtifact });
+      setNav("workspace");
+      setSelected("implement");
+    } catch (e) {
+      setErr(`啟動 implement 失敗：${(e as Error).message}`);
+    } finally {
+      setCrImplementing(false);
+    }
+  }, [thread, crImplementing, crArtifact]);
+
+  // 匯入既有 issue：列出 → 選一個 → 把 title+body 當討論起點（送進 change_request chat）
+  const openIssuePicker = useCallback(async () => {
+    if (!thread) return;
+    setIssuePicker({ open: true, loading: true, issues: [], error: null });
+    try {
+      const r = await apiFetch<{ issues: { number: number; title: string }[] }>(`/api/projects/${thread}/issues`);
+      setIssuePicker({ open: true, loading: false, issues: r.issues, error: null });
+    } catch (e) {
+      setIssuePicker({ open: true, loading: false, issues: [], error: (e as Error).message });
+    }
+  }, [thread]);
+
+  const onPickIssue = useCallback(async (number: number) => {
+    if (!thread) return;
+    setIssuePicker((p) => ({ ...p, open: false }));
+    setErr(null);
+    try {
+      const d = await apiFetch<{ number: number; title: string; body: string; url: string }>(`/api/projects/${thread}/issues/${number}`);
+      const seed = `匯入 issue #${d.number}：${d.title}\n\n${d.body || "(no description)"}`;
+      // 經 change_request chat 把 issue 當討論起點（後端會把它記進對話並讀碼回應）
+      await stageChat("change_request", thread, modelChoice, seed);
+      setSelected("change_request");
+      refreshChangeRequest(thread);
+    } catch (e) {
+      setErr(`匯入 issue 失敗：${(e as Error).message}`);
+    }
+  }, [thread, modelChoice, refreshChangeRequest]);
 
   // ===== M2.3：Architecture / Stories handlers（與 PRD 對稱）=====
   const onGenerateArch = useCallback(async () => {
@@ -1055,6 +1142,20 @@ export default function Page() {
                       onSetError={(m) => setErr(m)}
                     />
                   )}
+                  {selected === "change_request" && (
+                    <ChangeRequestWorkspace
+                      thread={thread}
+                      artifact={crArtifact}
+                      status={crStatus}
+                      busy={crBusy}
+                      implementing={crImplementing}
+                      modelChoice={modelChoice}
+                      onGenerate={onGenerateChangeRequest}
+                      onImplement={onImplementChangeRequest}
+                      onImportIssue={openIssuePicker}
+                      onChatArtifact={setCrArtifact}
+                    />
+                  )}
                 </div>
               </>
               )}
@@ -1165,10 +1266,46 @@ export default function Page() {
         open={projectModal.open}
         thread={projectModal.thread}
         apiBase={API_BASE}
+        workflows={workflowList.map((w) => ({ id: w.id, label: w.label }))}
         onClose={() => setProjectModal({ open: false, thread: null })}
         onSaved={(tid) => { void refreshThreadList(); switchThread(tid); }}
         onOpenIntegrations={() => { setProjectModal({ open: false, thread: null }); setIntegrationsOpen(true); }}
       />
+
+      {/* 修改既有專案：issue 選擇器（列既有 issue → 挑一個當討論起點）*/}
+      {issuePicker.open && (
+        <div className="rise-1 fixed inset-0 z-50 grid place-items-center bg-[var(--bg)]/72 px-4 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setIssuePicker((p) => ({ ...p, open: false })); }}
+          role="dialog" aria-modal="true">
+          <div className="shadow-anvil paper-texture relative w-full max-w-lg border border-[var(--paper-edge)] bg-[var(--paper)]">
+            <div className="flex items-start justify-between border-b border-[var(--rule)] px-6 py-4">
+              <div>
+                <h2 className="font-[family-name:var(--font-display)] text-[18px] font-semibold text-[#e6ecf5]">匯入既有 issue</h2>
+                <p className="mt-1.5 font-[family-name:var(--font-mono)] text-[10.5px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">GET /api/projects/{thread}/issues</p>
+              </div>
+              <button onClick={() => setIssuePicker((p) => ({ ...p, open: false }))} aria-label="close" className="grid h-7 w-7 place-items-center text-[var(--ink-muted)] transition hover:text-[#cdd4df]">×</button>
+            </div>
+            <div className="max-h-[58vh] overflow-y-auto px-6 py-5">
+              {issuePicker.loading && <p className="font-[family-name:var(--font-mono)] text-[12px] text-[var(--ink-muted)]">讀取中…</p>}
+              {issuePicker.error && <div className="border border-[#f47171]/40 bg-[#f47171]/10 px-3 py-2 font-[family-name:var(--font-mono)] text-[11px] text-[#f47171]">{issuePicker.error}</div>}
+              {!issuePicker.loading && !issuePicker.error && issuePicker.issues.length === 0 && (
+                <p className="font-[family-name:var(--font-mono)] text-[12px] text-[var(--ink-muted)]">沒有 open issue。</p>
+              )}
+              <ul className="space-y-1.5">
+                {issuePicker.issues.map((it) => (
+                  <li key={it.number}>
+                    <button onClick={() => onPickIssue(it.number)}
+                      className="flex w-full items-baseline gap-3 border border-[var(--rule-dark)] bg-[var(--bg)] px-3 py-2 text-left transition hover:border-[var(--polaris)] hover:bg-[var(--bg-elev)]">
+                      <span className="font-[family-name:var(--font-mono)] text-[11px] text-[var(--polaris)]">#{it.number}</span>
+                      <span className="font-[family-name:var(--font-sans)] text-[13px] text-[#cdd4df]">{it.title}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* M3：Agent editor modal（new / edit user agent）*/}
       <AgentEditorModal
@@ -1863,6 +2000,74 @@ function PrdWorkspace({
       {/* key=thread：切 thread 時整個 chat remount，重置 msgs/busy + 所有 QuestionnaireCard 的 sent/answers
           （否則 index-based key 會讓舊卡片的 sent=true 殘留，新 thread 的選項變 disabled 無法選） */}
       <ChatPanel key={thread ?? "none"} thread={thread} stageId="prd" stageLabel="SA Discovery"
+        modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
+    </div>
+  );
+}
+
+// ============================== 修改既有專案：change_request workspace ==============================
+function ChangeRequestWorkspace({
+  thread, artifact, status, busy, implementing, modelChoice,
+  onGenerate, onImplement, onImportIssue, onChatArtifact,
+}: {
+  thread: string | null;
+  artifact: string;
+  status: string;
+  busy: false | "generate" | "refine";
+  implementing: boolean;
+  modelChoice: string;
+  onGenerate: () => void;
+  onImplement: () => void;
+  onImportIssue: () => void;
+  onChatArtifact: (content: string) => void;
+}) {
+  const hasContent = artifact.trim().length > 0;
+  return (
+    <div className="flex min-h-0 flex-1">
+      <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
+        <ArtifactBar artifact="change_request" stage="specify" op="generate_change_request" right={
+          <>
+            {hasContent && <DraftPill />}
+            <IconBtn onClick={onImportIssue} title="匯入既有 issue 當討論起點" small>⇲</IconBtn>
+          </>
+        } />
+        <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {hasContent ? (
+              <PrdArtifactView artifact={artifact} />
+            ) : (
+              <div className="grid h-full place-items-center px-10 text-center">
+                <div className="max-w-md">
+                  <p className="font-[family-name:var(--font-display)] text-[15px] text-[#cdd4df]">尚未產生變更 brief</p>
+                  <p className="mt-2 font-[family-name:var(--font-sans)] text-[13px] leading-[1.7] text-[var(--ink-muted)]">
+                    在右側對話描述要加的功能或要解的 bug，AI 會先 clone 既有 repo、讀 codebase 再回應；
+                    或從既有 issue 匯入。談清楚後按「生成 brief」，再「Implement」開一個 PR。
+                  </p>
+                  <div className="mt-5 flex items-center justify-center gap-2">
+                    <ToolBtn onClick={onImportIssue} disabled={!thread}>匯入 issue</ToolBtn>
+                    <ToolBtn primary onClick={onGenerate} disabled={!thread || !!busy}>
+                      {busy === "generate" ? "Generating…" : "生成 brief"}
+                    </ToolBtn>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </article>
+        <BottomMeta
+          left={hasContent ? <>{artifact.length} chars · {status}</> : <>empty · awaiting brief</>}
+          right={<>thread <code className="text-[#cdd4df]">{thread ?? "(bootstrapping…)"}</code> · reads existing repo</>}
+        />
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <ToolBtn onClick={onGenerate} disabled={!thread || !!busy}>
+            {busy === "generate" ? "Generating…" : hasContent ? "重新生成" : "生成 brief"}
+          </ToolBtn>
+          <ToolBtn primary onClick={onImplement} disabled={!thread || !hasContent || implementing}>
+            {implementing ? "啟動中…" : "Implement → PR"}
+          </ToolBtn>
+        </div>
+      </section>
+      <ChatPanel key={thread ?? "none"} thread={thread} stageId="change_request" stageLabel="Change Discussion"
         modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
     </div>
   );

@@ -86,6 +86,28 @@ def format_attachments(attachments: list) -> str:
 
 
 # ============================================================
+#  Workspace block（既有 repo path-passing；讀碼 stage 用）
+# ============================================================
+def format_workspace(workspace_dir: str) -> str:
+    """把 ctx.workspace_dir 渲染成 prompt block，指示 model 先讀既有 codebase 再回答。
+
+    workspace_dir 空（非讀碼 stage / 未設 repo）→ 回 ""（no-op）。
+    非空 → path + Read/Grep/Glob 探索指令（claude-cli adapter 已 --add-dir 此目錄 + 補唯讀工具）。
+    """
+    if not workspace_dir:
+        return ""
+    return (
+        "--- Existing codebase ---\n"
+        f"The existing repository is checked out at: {workspace_dir}\n"
+        "EXPLORE it NOW with the Read / Grep / Glob tools BEFORE answering: read the README, "
+        "map the project structure, and locate the files/areas the requested change or bug touches.\n"
+        "Ground every statement in the ACTUAL code you read — reference real file paths and symbols, "
+        "never invent structure that isn't there.\n"
+        "--- End of codebase ---"
+    )
+
+
+# ============================================================
 #  Chat content-block 解析 —— [CONTENT_START]...[CONTENT_END]
 # ============================================================
 _CONTENT_BLOCK_RE = re.compile(
