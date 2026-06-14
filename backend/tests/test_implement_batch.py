@@ -238,6 +238,50 @@ def test_start_batch_all_skipped_raises(tmp_db, monkeypatch):
             skip_keys={"1.10", "1.2", "2.1"})
 
 
+# ---- 前段截斷防線（症狀：implement 默默從 Story 5.3 開始）-----------------
+
+# 開頭被截斷：少了標題 + Epic 1–5，從 Story 5.3 起（仿 RedmineCopy 實際症狀）
+_TRUNCATED_MD = """(up to 10,000 rows), When submitted, Then the API returns 202.
+**Senior RD Estimate** - 2
+
+## Epic 6: 通知
+### Story 5.3 — 使用者可以記錄工時並匯出 CSV
+**Acceptance Criteria**
+- a
+**Senior RD Estimate** - 2
+
+### Story 6.1 — [prereq] NotificationAdapter
+**Acceptance Criteria**
+- a
+**Senior RD Estimate** - 1
+"""
+
+
+def test_detect_truncated_stories():
+    from delivery_parser import detect_truncated_stories
+    # 完整 backlog（STORIES_MD：# 標題 + Epic 1 + Story 1.x）→ None
+    assert detect_truncated_stories(STORIES_MD) is None
+    # 空 / 無 story → None（交給別的檢核）
+    assert detect_truncated_stories("") is None
+    assert detect_truncated_stories("隨便寫沒有 story") is None
+    # 開頭非標題 → 偵測到截斷
+    assert detect_truncated_stories(_TRUNCATED_MD) is not None
+    # 有標題但 Epic 從 3 開始 → 偵測到跳號
+    gap = "# X — User Stories\n\n## Epic 3: y\n### Story 3.1 — z\n**Senior RD Estimate** - 1\n"
+    assert detect_truncated_stories(gap) is not None
+
+
+def test_start_batch_refuses_truncated_stories(tmp_db, monkeypatch):
+    """前段截斷的 stories → BatchError（不默默拿半套 backlog 從 Story 5.3 開工）。"""
+    dal.create_project("t3", "demo")
+    monkeypatch.setattr(batch.task_registry, "spawn", lambda coro, **k: coro.close())
+    with pytest.raises(batch.BatchError) as ei:
+        batch.start_batch(
+            thread_id="t3", story_artifact=_TRUNCATED_MD,
+            runner_factory=lambda: object(), runner_choice="mock")
+    assert "截斷" in str(ei.value)
+
+
 def test_closes_regex_parses_keywords():
     """list_active_pr_issue_numbers 用的 Closes/Fixes/Resolves 關鍵字解析。"""
     from async_runtime.github_pr import _CLOSES_RE

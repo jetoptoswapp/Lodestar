@@ -373,6 +373,16 @@ class DocsPublishResponse(BaseModel):
     note: str               # 使用提示
 
 
+class SpecSyncResponse(BaseModel):
+    """把 PRD/架構/UI 設計 + CLAUDE.md 規則 commit 進 code repo（給實作 agent 讀）。"""
+    ok: bool
+    target: str             # github / gitlab
+    repo: str               # owner/repo 或 group/project
+    url: str                # repo 網址
+    note: str               # 使用提示
+    files: list[str]        # 實際寫入/更新的檔（CLAUDE.md / .lodestar/*.md）
+
+
 # ---- Runners（async runner 清單，M5）----
 class RunnerInfo(BaseModel):
     choice: str

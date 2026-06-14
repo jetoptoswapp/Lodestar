@@ -22,7 +22,7 @@ from typing import Callable, Optional
 
 from plugin_api import AgentRunner, DeliveryItem, ToolHook
 from async_runtime import impl_dal, orchestrator, task_registry
-from delivery_parser import parse_stories_to_delivery_items
+from delivery_parser import detect_truncated_stories, parse_stories_to_delivery_items
 
 _log = logging.getLogger("async_runtime.batch")
 
@@ -105,6 +105,12 @@ def start_batch(
     runner_factory：每個 session 開新 runner 實例（cancel 以 session_id 找 _ACTIVE_RUNNERS）。
     skip_keys：冪等重跑——已完成（issue 已關）或進行中（已有 open PR）的 story 編號集，跳過不重做。
     """
+    # 擋掉「前段被截斷」的 stories（症狀：implement 默默從 Story 5.3 開始，缺 1.1–5.2）。
+    # 完整 backlog 一定從 Story 1.1 起；首段遺失代表後段 story 失去其依賴前提，不可實作。
+    truncated = detect_truncated_stories(story_artifact)
+    if truncated:
+        raise BatchError(f"{truncated}。請回 Stories 階段重新生成完整內容後再實作。")
+
     items = parse_stories_to_delivery_items(story_artifact)
     if not items:
         raise BatchError("stories 解析不出任何 story，無法實作")

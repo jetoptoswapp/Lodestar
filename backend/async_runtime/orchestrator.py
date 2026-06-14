@@ -160,6 +160,10 @@ def build_impl_prompt(story: str, attempt: int, prev_output: str = "") -> str:
         "You are an implementation agent. Implement the following user story in the "
         "working directory, then open a pull request. Never push to protected branches "
         "(main/master/release/production).\n\n"
+        "If this repo was scaffolded by Lodestar, the root `CLAUDE.md` holds the project rules "
+        "and memory, and the full specs live in `.lodestar/` (PRD.md, ARCHITECTURE.md, and "
+        "UI-DESIGN.md when present). Read `CLAUDE.md` first; for any screen/UI, match the design "
+        "tokens and layout in `.lodestar/UI-DESIGN.md`. Implement ONLY the story below.\n\n"
         f"--- STORY ---\n{story.strip() or '(no story provided)'}\n--- END STORY ---\n"
     )
     if attempt > 1 and prev_output:

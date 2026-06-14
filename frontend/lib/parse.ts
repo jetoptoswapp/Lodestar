@@ -294,6 +294,29 @@ function capture(text: string, re: RegExp): string | null {
 }
 
 // ============================================================
+//  Stories 前段截斷偵測（與後端 delivery_parser.detect_truncated_stories 對齊）
+// ============================================================
+// 完整 backlog 一定以 `# … — User Stories` 起手、首個故事為 Story 1.1。開頭非標題、
+// 或最小 Epic/Story 編號 > 1 → 前段（標題 + 前面 Epic/Story）疑似生成時被截斷。
+export function detectTruncatedStories(md: string): string | null {
+  if (!md || !md.trim()) return null;
+  const stories = [...md.matchAll(/^###\s+Story\s+(\d+)\.\d+\s+[—–-]/gim)].map((m) => parseInt(m[1], 10));
+  if (stories.length === 0) return null;
+  const firstLine = md.split(/\r?\n/).find((ln) => ln.trim()) ?? "";
+  if (!firstLine.trimStart().startsWith("#")) {
+    return "stories 文件開頭被截斷（未以標題起手），缺少前段 Epic／Story";
+  }
+  const epicNums = [...md.matchAll(/^##\s+Epic\s+(\d+)\s*[:：]/gim)].map((m) => parseInt(m[1], 10));
+  if (epicNums.length && Math.min(...epicNums) > 1) {
+    return `stories 缺少前面的 Epic（最小 Epic 為 ${Math.min(...epicNums)}，應從 Epic 1 開始），前段疑似被截斷`;
+  }
+  if (Math.min(...stories) > 1) {
+    return `stories 缺少 Epic 1 的故事（最小故事為 Story ${Math.min(...stories)}.x），前段疑似被截斷`;
+  }
+  return null;
+}
+
+// ============================================================
 //  Shared：把 markdown 用 H2 切分（用於 PRD / Arch sections）
 // ============================================================
 function sectionizeByH2(md: string): { id: string; heading: string; body: string }[] {

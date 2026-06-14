@@ -46,6 +46,7 @@ from api_models import (  # noqa: E402
     DeliveryPublishRequest,
     DeliveryPublishResponse,
     DocsPublishResponse,
+    SpecSyncResponse,
     ModelAdapterListResponse,
     ModelAdapterResponse,
     PluginListResponse,
@@ -1178,6 +1179,61 @@ async def docs_publish(thread_id: str):
     return DocsPublishResponse(
         ok=bool(result.get("ok")), target=target, repo=repo,
         url=result.get("url", ""), note=result.get("note", ""),
+    )
+
+
+@app.post("/api/specs/{thread_id}/sync", response_model=SpecSyncResponse)
+async def specs_sync(thread_id: str):
+    """把 PRD + 架構（+ UI 設計，若有）+ CLAUDE.md 規則 commit 進 code repo 根目錄。
+
+    給自動實作 agent 讀：implement batch clone 該 repo 時，CLAUDE.md / .lodestar/* 就在工作目錄，
+    claude-cli 自動讀 CLAUDE.md。與「發佈文件到 Wiki」並存（wiki 給人看、code repo 給 agent 讀）。
+    手動觸發、可重發（CLAUDE.md 用 managed block 併入、不蓋既有內容）。
+    """
+    if dal.get_project(thread_id) is None:
+        raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
+    proj = dal.get_project(thread_id)
+    prd = dal.get_artifact(thread_id, "prd") or ""
+    arch = dal.get_artifact(thread_id, "architecture") or ""
+    ui = dal.get_artifact(thread_id, "ui_design") or ""
+    if not prd.strip() or not arch.strip():
+        raise HTTPException(400, detail=error_detail("specs_not_ready", "PRD / 架構尚未生成，無法同步規格"))
+
+    from delivery_repo import DeliveryRepoError, clone_url, resolve_project_repo
+    try:
+        target, repo = await asyncio.to_thread(resolve_project_repo, _registry(), thread_id, create=True)
+    except DeliveryRepoError as exc:
+        raise HTTPException(400, detail=error_detail("delivery_repo_unresolved", str(exc)))
+    if target not in ("github", "gitlab"):
+        raise HTTPException(400, detail=error_detail(
+            "spec_sync_target_unsupported", f"規格同步僅支援 github / gitlab，不支援 '{target}'"))
+
+    creds = keystore.get_credentials(target)
+    remote = clone_url(target, creds, repo)
+    web_url = (f"https://github.com/{repo}" if target == "github"
+               else f"{(creds.get('base_url') or 'https://gitlab.com').rstrip('/')}/{repo}")
+
+    import spec_sync
+    files = {".lodestar/PRD.md": prd, ".lodestar/ARCHITECTURE.md": arch}
+    if ui.strip():
+        files[".lodestar/UI-DESIGN.md"] = ui
+    block = spec_sync.build_claude_md_block(
+        (proj.get("name") or repo).strip(), has_ui=bool(ui.strip()))
+    try:
+        result = await asyncio.to_thread(
+            spec_sync.sync_specs, thread_id, remote, files,
+            web_url=web_url, claude_md_block=block)
+    except spec_sync.SpecSyncError as exc:
+        dal.append_event(thread_id, "stories", event_type="specs_sync_failed",
+                         detail=json.dumps({"target": target, "repo": repo}))
+        raise HTTPException(502, detail=error_detail("specs_sync_failed", str(exc)))
+
+    dal.append_event(thread_id, "stories", event_type="specs_synced",
+                     detail=json.dumps({"target": target, "repo": repo, "files": result.get("files", [])}))
+    return SpecSyncResponse(
+        ok=bool(result.get("ok")), target=target, repo=repo,
+        url=result.get("url", ""), note=result.get("note", ""),
+        files=result.get("files", []),
     )
 
 

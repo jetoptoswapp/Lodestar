@@ -65,6 +65,41 @@ def test_claude_tool_flags_attachment_read(tmp_path, monkeypatch):
     assert joined.split(",").count("Read") == 1
 
 
+def test_parse_stream_json_joins_all_turns():
+    """大型輸出跨多個 assistant 輪次 → 串接全部 text（修前段截斷的核心）。
+
+    `--output-format text` 只回最後一輪會丟前段（標題 + 前面 Epic）；stream-json 逐輪接回。"""
+    import json as _json
+    from plugins.builtin_models.claude_cli import _parse_stream_json
+
+    def asst(text):
+        return _json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+
+    lines = [
+        _json.dumps({"type": "system", "subtype": "init"}),
+        asst("# Proj — User Stories\n\n## Epic 1: 基礎\n### Story 1.1 — scaffold\n"),
+        # tool_use block 不取文字；user/tool_result 略過
+        _json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {}}]}}),
+        _json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "content": "x"}]}}),
+        asst("## Epic 2: 進階\n### Story 2.1 — feature\n"),
+        _json.dumps({"type": "result", "subtype": "success", "result": "## Epic 2: 進階\n### Story 2.1 — feature\n"}),
+    ]
+    out = _parse_stream_json("\n".join(lines))
+    # 兩輪 assistant text 都在（不是只剩最後一輪 / result 的尾段）
+    assert out.startswith("# Proj — User Stories")        # 前段標題保留
+    assert "## Epic 1: 基礎" in out and "### Story 1.1" in out
+    assert "## Epic 2: 進階" in out and "### Story 2.1" in out
+    assert "tool_use" not in out and "Read" not in out    # tool block 不混入
+
+
+def test_parse_stream_json_robust_to_noise():
+    """非 JSON 行 / 無 assistant → 不爆、回空字串。"""
+    from plugins.builtin_models.claude_cli import _parse_stream_json
+    assert _parse_stream_json("") == ""
+    assert _parse_stream_json("not json\n{bad\n") == ""
+
+
 def test_claude_tool_flags_no_uploads(tmp_path, monkeypatch):
     """無 uploads dir：無 tools → 純文字（空 flags）；有 agent tools → 帶工具但不補 Read、不加 --add-dir。"""
     from plugins.builtin_models import claude_cli as cc

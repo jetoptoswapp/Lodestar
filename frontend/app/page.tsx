@@ -15,6 +15,7 @@ import { PublishModal } from "@/components/PublishModal";
 import { IntegrationsModal } from "@/components/IntegrationsModal";
 import { ProjectDeliveryModal } from "@/components/ProjectDeliveryModal";
 import { DocsPublishModal } from "@/components/DocsPublishModal";
+import { SpecSyncModal } from "@/components/SpecSyncModal";
 import RcaWorkspace from "@/components/RcaWorkspace";
 import {
   type Agent,
@@ -66,6 +67,7 @@ import {
 } from "@/lib/api";
 import {
   countStoriesAndEstimate,
+  detectTruncatedStories,
   parseArchitecture,
   parseStories,
   parseUiDesign,
@@ -309,6 +311,7 @@ export default function Page() {
   // M2.5：Publish modal 開啟旗標（獨立 state，因為它是 multi-step internal state machine）
   const [publishOpen, setPublishOpen] = useState(false);
   const [docsPublishOpen, setDocsPublishOpen] = useState(false);
+  const [specSyncOpen, setSpecSyncOpen] = useState(false);
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
   const [projectModal, setProjectModal] = useState<{ open: boolean; thread: string | null }>({ open: false, thread: null });
   // M3：workflows / agents 真實 list（給 /workflows, /agents 頁面與 thread switcher 共用）
@@ -1198,6 +1201,7 @@ export default function Page() {
                       onApprove={onApproveStories}
                       onPublish={() => setPublishOpen(true)}
                       onPublishDocs={() => setDocsPublishOpen(true)}
+                      onSyncSpecs={() => setSpecSyncOpen(true)}
                     />
                   )}
                   {selected === "implement"    && (
@@ -1323,6 +1327,12 @@ export default function Page() {
         thread={thread}
         apiBase={API_BASE}
         onClose={() => setDocsPublishOpen(false)}
+      />
+      <SpecSyncModal
+        open={specSyncOpen}
+        thread={thread}
+        apiBase={API_BASE}
+        onClose={() => setSpecSyncOpen(false)}
       />
       <IntegrationsModal
         open={integrationsOpen}
@@ -3077,7 +3087,7 @@ function UiDesignDocument({ parsed }: { parsed: ReturnType<typeof parseUiDesign>
 // M2.3 wire 真實 API：接 /api/stage/stories/{thread}；empty state 顯示「架構未生成」提示。
 function StoriesWorkspace({
   thread, artifact, status, busy, delivery, archReady, uiReady,
-  onGenerate, onRefine, onApprove, onPublish, onPublishDocs,
+  onGenerate, onRefine, onApprove, onPublish, onPublishDocs, onSyncSpecs,
 }: {
   thread: string | null;
   artifact: string;
@@ -3091,9 +3101,11 @@ function StoriesWorkspace({
   onApprove: () => void;
   onPublish: () => void;
   onPublishDocs: () => void;
+  onSyncSpecs: () => void;
 }) {
   const upstreamReady = archReady && uiReady;   // stories depends_on (architecture, ui_design)
   const parsed = useMemo(() => parseStories(artifact || ""), [artifact]);
+  const truncationWarning = useMemo(() => detectTruncatedStories(artifact || ""), [artifact]);
   const counts = useMemo(() => countStoriesAndEstimate(parsed.raw), [parsed.raw]);
   const allStories = useMemo(() => parsed.epics.flatMap((e) => e.stories.map((s) => ({ epicNum: e.num, story: s }))), [parsed.epics]);
   const initialPick = allStories[0]?.story.num ?? null;
@@ -3144,6 +3156,13 @@ function StoriesWorkspace({
               發佈文件…
             </button>
             <button
+              onClick={onSyncSpecs}
+              title="把規格（PRD/架構/UI 設計）+ CLAUDE.md 規矩 commit 進 code repo，給自動實作 agent 讀"
+              className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]"
+            >
+              同步規格到 repo…
+            </button>
+            <button
               onClick={onPublish}
               disabled={!hasContent}
               className="border border-[var(--rule-dark)] bg-[var(--bg-elev)] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[#cdd4df] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -3186,6 +3205,29 @@ function StoriesWorkspace({
               </div>
             )}
           </div>
+          {parsed.epics.length === 0 && (
+            // 有內容但解析不到任何 Epic/Story（模型沒照 `## Epic N:` / `### Story N.M —` 契約，
+            // 或生成被截斷）→ 不要讓畫面看起來空白：顯示原始 markdown + 提示，讓使用者看得到內容並知道要重生。
+            <div className="mb-7">
+              <div className="mb-4 flex items-start gap-2 border-l-2 border-[#f59e0b] bg-[#f59e0b]/8 px-4 py-3 font-[family-name:var(--font-sans)] text-[12.5px] leading-[1.7] text-[#f59e0b]">
+                <span>⚠</span>
+                <span>
+                  這份內容沒有可解析的 <code className="text-[#f59e0b]">## Epic N:</code> /{" "}
+                  <code className="text-[#f59e0b]">### Story N.M —</code> 結構（模型未照格式，或生成被截斷），
+                  因此下方故事卡片與交付清單無法產生。請按「重新生成」修正格式後再交付。以下為原始輸出：
+                </span>
+              </div>
+              <MarkdownBlock text={parsed.raw} />
+            </div>
+          )}
+          {parsed.epics.length > 0 && truncationWarning && (
+            // 能解析出 Epic/Story，但前段被截斷（如從 Epic 6 / Story 5.3 開始）→ 警告：
+            // 直接實作會拿到半套 backlog（後端 batch 也會擋）。
+            <div className="mb-6 flex items-start gap-2 border-l-2 border-[#f59e0b] bg-[#f59e0b]/8 px-4 py-3 font-[family-name:var(--font-sans)] text-[12.5px] leading-[1.7] text-[#f59e0b]">
+              <span>⚠</span>
+              <span>{truncationWarning}。直接實作會從中段的 story 開始（拿到半套 backlog），請按「重新生成」取得完整 stories 後再交付／實作。</span>
+            </div>
+          )}
           {parsed.epics.map((epic) => {
             const epicHours = epic.stories.reduce((acc, s) => acc + (parseFloat(s.estimate ?? "0") || 0), 0);
             const isOpen = openEpics.has(epic.num);

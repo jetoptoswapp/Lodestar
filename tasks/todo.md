@@ -1,3 +1,44 @@
+# 第三階段：生成截斷根因修復（claude-cli stream-json）✅
+
+## 根因（用 RedmineCopy 真實 prompt 重現確認）
+- 大型輸出（完整 stories >50k 字）→ 模型回應超過單輪 max output tokens → claude-cli 自動續寫成**多個 assistant 輪次**（實測 4 輪）。
+- `--output-format text` 只回**最後一輪** → 前段（標題 + Epic 1-4 + Story 1.1-4.5）遺失、尾段完整。症狀：stories 變空 / implement 從 Story 5.3 開始。
+- 對照實驗：受控 49k 英文（單輪）不截斷；真實 42k prompt（text + tools / text 無 tools）都截斷；**stream-json 串接 4 輪 → 完整（標題 + Epic 1-10 + Story 1.1）**。
+
+## 修法
+- [x] `claude_cli.py`：`_build_cmd` 改 `--output-format stream-json --verbose`；新增 `_parse_stream_json` 串接所有 assistant 輪次的 text block（跳過 tool_use/result）；`_invoke` 改回串接結果。
+- [x] 單元測試 `test_agent_tools.py`：`_parse_stream_json` 多輪串接 + noise 容錯（不需真模型）。
+- [x] 全套 376 passed（2 failed 仍為使用者 stories WIP）。
+- [x] end-to-end live 確認：更新後 `_invoke` 跑真實 RedmineCopy prompt → 完整文件（開頭含標題 + Epic 1-9 + Story 1.1）✅
+- 防線保留：detect_truncated_stories（後端 batch + 前端橫幅）作為 belt-and-suspenders。
+
+---
+
+# 第二階段：Stories 空白容錯 + 規格同步到 code repo ✅
+
+計畫：`~/.claude/plans/atomic-dreaming-catmull.md`（第二階段）
+
+## 問題 1：Stories 變空（RedmineCopy）
+- [x] 診斷：artifact 仍在（4717 字）但 claude-cli 吐壞輸出（開頭截斷、用 `### Task` 非 `## Epic`/`### Story`）；其他同類專案正常 → 一次性生成異常。真 bug 是前端缺容錯。
+- [x] 修：StoriesWorkspace `hasContent && epics.length===0` → 顯示琥珀警告 + 原始 markdown（不再空白）
+- [x] 驗證：tsc 乾淨 + 隔離環境（複製真實 DB）截圖確認 FR-42/Cross-Cutting Tasks 都顯示
+
+## 問題 2：規格同步到 code repo（給實作 agent 讀）
+- [x] 後端 `spec_sync.py`：clone code repo → 寫 `.lodestar/{PRD,ARCHITECTURE,UI-DESIGN}.md` + 根 `CLAUDE.md`（managed block 不蓋既有）→ commit → push default branch；SpecSyncError 不洩 token
+- [x] 端點 `POST /api/specs/{tid}/sync`（比照 docs_publish；缺 prd/arch → 400 specs_not_ready）
+- [x] `build_impl_prompt` 加指引：先讀根 CLAUDE.md、UI 對齊 `.lodestar/UI-DESIGN.md`
+- [x] `api_models.SpecSyncResponse`
+- [x] 前端 `SpecSyncModal.tsx`（clone DocsPublishModal）+ Stories「同步規格到 repo…」按鈕 + 接線
+- [x] 測試 `test_spec_sync.py` 13 案（managed block / fake git / 端點 / build_impl_prompt）全過
+- [x] 驗證：隔離後端煙囪測（無 repo→400、無 prd→400）；前端截圖確認按鈕+modal+無 target 警告
+
+## 狀態
+- 本階段測試全綠；全套 `pytest backend` = **372 passed, 2 failed**。
+- **2 個 failed 是使用者自己未 commit 的 stories WIP**（`_check_vertical_stories` validator vs 舊 test sample 缺 launch 指令），**與本階段無關**（phase 2 未碰 stories）。
+- 尚未 commit（等使用者指示）。commit 時只加本階段檔案，不掃進使用者的 stories WIP。
+
+---
+
 # UI Designer Agent + ui_design stage ✅
 
 計畫：`~/.claude/plans/atomic-dreaming-catmull.md`

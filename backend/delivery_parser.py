@@ -42,6 +42,40 @@ _REQ_LINE_RE = re.compile(
 )
 
 
+def detect_truncated_stories(artifact: str) -> str | None:
+    """偵測 stories 文件「前段被截斷」（生成時 claude-cli 大輸出遺失開頭）。
+
+    完整文件依契約一定以 `# <專案> — User Stories` 起手、首個故事為 Story 1.1（bootstrap）。
+    若開頭不是 markdown 標題、或最小 epic 編號 > 1、或最小 story 編號的 epic > 1，
+    代表開頭整段（標題 + 前面的 Epic/Story）不見了 → 回問題描述；否則回 None。
+
+    用途：擋掉「默默拿半套 backlog 去實作」（症狀：implement 從 Story 5.3 開始）。
+    """
+    if not artifact or not artifact.strip():
+        return None  # 空 artifact 由各自的「未生成」檢核處理，不在此誤報
+
+    stories = _STORY_RE.findall(artifact)
+    if not stories:
+        return None  # 完全沒有 story heading 另由 has_story validator / 前端容錯處理
+
+    # 1) 開頭應是 markdown 標題；截斷版會從句子中間開始（如 "(up to 10,000 rows)…"）
+    first_line = next((ln for ln in artifact.splitlines() if ln.strip()), "")
+    if not first_line.lstrip().startswith("#"):
+        return (f"stories 文件開頭被截斷（未以標題起手，第一個故事是 Story {stories[0][0]}）"
+                "，缺少前段 Epic/Story")
+
+    # 2) 最小 epic / story 編號應為 1；跳號代表前面整段遺失
+    epics = [int(m.group(1)) for m in _EPIC_RE.finditer(artifact)]
+    if epics and min(epics) > 1:
+        return f"stories 缺少前面的 Epic（最小 Epic 為 {min(epics)}，應從 Epic 1 開始），前段疑似被截斷"
+
+    story_epics = [int(num.split(".")[0]) for num, _title in stories]
+    if story_epics and min(story_epics) > 1:
+        return f"stories 缺少 Epic 1 的故事（最小故事為 Story {min(story_epics)}.x），前段疑似被截斷"
+
+    return None
+
+
 def parse_stories_to_delivery_items(
     artifact: str,
     *,
