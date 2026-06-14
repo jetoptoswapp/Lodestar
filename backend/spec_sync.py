@@ -76,12 +76,13 @@ def merge_managed_block(existing: str, block_body: str) -> str:
 def sync_specs(
     thread_id: str, remote: str, files: dict[str, str], *,
     web_url: str, commit_message: str = "docs: 同步 Lodestar 規格到 repo",
-    claude_md_block: str = "",
+    claude_md_block: str = "", readme: str = "",
 ) -> dict:
-    """clone code repo → 寫規格檔（+ CLAUDE.md managed block）→ commit → push default branch。
+    """clone code repo → 寫規格檔（+ CLAUDE.md managed block + README）→ commit → push default branch。
 
     files：{相對路徑: 內容}，如 {".lodestar/PRD.md": ...}。
     claude_md_block：非空 → 寫/併入根 CLAUDE.md 的 managed block（既有內容保留）。
+    readme：非空且 repo 尚無 README.md → 寫一份依專案產生的 starter（不覆寫既有 README）。
     回 {"ok", "url", "note", "files": [...]}。失敗 raise SpecSyncError（訊息不含 token）。
     """
     if not remote:
@@ -104,6 +105,12 @@ def sync_specs(
         existing = claude_path.read_text(encoding="utf-8") if claude_path.exists() else ""
         _write(claude_path, merge_managed_block(existing, claude_md_block))
         written.append("CLAUDE.md")
+
+    # README：依專案產生 starter；只在 repo 尚無 README 時寫（不覆寫使用者既有 README）。
+    # 實作 agent 之後會依 .lodestar/PRD.md 把它充實成正式 README（見 CLAUDE.md 規矩）。
+    if readme and not (dest / "README.md").exists():
+        _write(dest / "README.md", readme)
+        written.append("README.md")
 
     _git(dest, ["add", "-A"])
     if _git(dest, ["diff", "--cached", "--quiet"], check=False).returncode == 0:
@@ -156,5 +163,46 @@ def build_claude_md_block(project_name: str, *, has_ui: bool) -> str:
         f"{ui_line}"
         "- 遵循 repo 既有的程式風格、命名與目錄慣例；不要引入無關的重構。\n"
         "- 驗收條件（AC）要能跑得過；新增功能要附對應測試。\n"
+        "- 維護根目錄 `README.md`：依 `.lodestar/PRD.md` 寫出本專案的用途、主要功能、技術棧、"
+        "安裝與啟動方式。README 必須反映實際專案內容，不可留樣板或佔位字。\n"
         "- 絕不直接 push 到保護分支（main / master / release / production）——一律開 PR / MR。\n"
+    )
+
+
+def _prd_overview(prd: str, limit: int = 400) -> str:
+    """從 PRD 抽一段簡短概述給 README starter：取第一段非標題、非清單的內文。"""
+    if not prd or not prd.strip():
+        return ""
+    para: list[str] = []
+    for raw in prd.splitlines():
+        ln = raw.strip()
+        if not ln:
+            if para:
+                break          # 收完第一段就停
+            continue
+        if ln.startswith(("#", "-", "*", ">", "|", "```")):
+            if para:
+                break
+            continue           # 跳過開頭的標題 / 清單，找第一段散文
+        para.append(ln)
+    text = " ".join(para).strip()
+    return (text[:limit].rstrip() + "…") if len(text) > limit else text
+
+
+def build_readme_starter(project_name: str, prd: str) -> str:
+    """依專案產生 README starter（repo 尚無 README 時寫入）。
+
+    內容照專案：專案名 + 從 PRD 抽出的概述 + 指向 .lodestar/ 規格；並標明實作 agent 會充實它。"""
+    overview = _prd_overview(prd)
+    overview_block = (overview + "\n\n") if overview else ""
+    return (
+        f"# {project_name}\n"
+        "\n"
+        f"{overview_block}"
+        "> 本專案由 **Lodestar** 規劃與實作。完整規格見 `.lodestar/`："
+        "`PRD.md`（需求）、`ARCHITECTURE.md`（架構）、`UI-DESIGN.md`（UI 設計，若有）。\n"
+        "\n"
+        "## 開發\n"
+        "本 README 由實作 agent 依 `.lodestar/PRD.md` 持續充實——用途、功能、技術棧、安裝與啟動方式"
+        "請以實際專案內容為準。\n"
     )

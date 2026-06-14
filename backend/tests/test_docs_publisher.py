@@ -82,13 +82,25 @@ def test_github_wiki_includes_ui_design_page(tmp_db, monkeypatch):
     assert "[PRD](PRD)" in home and "[UI-Design](UI-Design)" in home
 
 
-def test_github_wiki_bootstraps_empty_wiki(tmp_db, monkeypatch):
-    """wiki 從未建頁（clone 失敗）→ init 後仍能 push 成功。"""
+def test_github_wiki_uninitialized_clear_error(tmp_db, monkeypatch):
+    """GitHub wiki 未建第一頁（clone 失敗）→ 不做無用 init+push，直接回精準指引（含建頁連結）。"""
     run, calls = _fake_git(clone_ok=False)
     monkeypatch.setattr(docs_publisher.subprocess, "run", run)
-    out = docs_publisher.publish_docs("t2", "github", "owner/repo", {"token": "T"}, _DOCS)
+    with pytest.raises(docs_publisher.DocsPublishError) as ei:
+        docs_publisher.publish_docs("t2", "github", "owner/repo", {"token": "T"}, _DOCS)
+    msg = str(ei.value)
+    assert "Create the first page" in msg
+    assert "https://github.com/owner/repo/wiki" in msg                # 附建頁連結
+    assert not any(len(c) > 3 and c[3] == "init" for c in calls)      # 不做無用 init bootstrap
+
+
+def test_gitlab_wiki_bootstraps_empty_wiki(tmp_db, monkeypatch):
+    """GitLab wiki 從未建頁（clone 失敗）→ init 後 push 即可建立（can_bootstrap=True）。"""
+    run, calls = _fake_git(clone_ok=False)
+    monkeypatch.setattr(docs_publisher.subprocess, "run", run)
+    out = docs_publisher.publish_docs("t2g", "gitlab", "grp/proj", {"token": "T"}, _DOCS)
     assert out["ok"] is True
-    assert any(len(c) > 3 and c[3] == "init" for c in calls)         # 走了 init bootstrap
+    assert any(len(c) > 3 and c[3] == "init" for c in calls)         # GitLab 走 init bootstrap
 
 
 def test_github_wiki_push_fail_friendly(tmp_db, monkeypatch):

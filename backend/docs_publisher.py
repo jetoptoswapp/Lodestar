@@ -78,7 +78,8 @@ def publish_docs(thread_id: str, target: str, repo: str, creds: dict, docs: dict
         return _publish_wiki(
             thread_id, remote, docs, home_name="Home.md",
             web_url=f"https://github.com/{repo}/wiki",
-            settings_hint="Settings → Features → Wikis")
+            settings_hint="Settings → Features → Wikis",
+            can_bootstrap=False)   # GitHub wiki 須先在網頁建第一頁，push 無法憑空建
     if target == "gitlab":
         host = (creds.get("base_url") or "https://gitlab.com").rstrip("/")
         netloc = host.split("://")[-1]
@@ -86,7 +87,8 @@ def publish_docs(thread_id: str, target: str, repo: str, creds: dict, docs: dict
         return _publish_wiki(
             thread_id, remote, docs, home_name="home.md",
             web_url=f"{host}/{repo}/-/wikis/home",
-            settings_hint="Settings → General → Visibility → Wiki")
+            settings_hint="Settings → General → Visibility → Wiki",
+            can_bootstrap=True)    # GitLab：push 即可建立 wiki repo
     raise DocsPublishError(f"文件發佈僅支援 github / gitlab（Wiki），不支援 '{target}'")
 
 
@@ -94,13 +96,26 @@ def publish_docs(thread_id: str, target: str, repo: str, creds: dict, docs: dict
 #  Wiki（github / gitlab 共用：兩者都是 {repo}.wiki.git）
 # ============================================================
 def _publish_wiki(thread_id: str, remote: str, docs: dict[str, str], *,
-                  home_name: str, web_url: str, settings_hint: str) -> dict:
-    """clone wiki（空 wiki 則 init bootstrap）→ 寫頁 → push。push 完即時可在介面直接看。"""
+                  home_name: str, web_url: str, settings_hint: str,
+                  can_bootstrap: bool = True) -> dict:
+    """clone wiki → 寫頁 → push。push 完即時可在介面直接看。
+
+    can_bootstrap：clone 失敗（wiki git repo 不存在）時可否用 init+push 憑空建立。
+      - GitLab=True：push 即可建立 wiki repo。
+      - GitHub=False：GitHub 的 .wiki.git 必須先在網頁建第一頁才存在，push 無法憑空建
+        （症狀：remote: Repository not found）→ 直接回精準錯誤，不做無用的 init+push。
+    """
     dest = _fresh_dir(thread_id, "wiki")
     clone = subprocess.run(["git", "clone", remote, str(dest)],
                            capture_output=True, text=True, timeout=120)
     if clone.returncode != 0:
-        # wiki 從未建過任何頁（git repo 尚未初始化）→ 自己 init 一個再 push 來 bootstrap
+        if not can_bootstrap:
+            # GitHub wiki 尚未初始化：給可直接照做的指引（不回顯 stderr / token）。
+            raise DocsPublishError(
+                f"GitHub Wiki 尚未建立，無法發佈。請先到 {web_url} 點「Create the first page」"
+                f"手動建一頁（隨意內容，之後會被覆寫）；若連 Wiki 分頁都沒有，先到 {settings_hint} "
+                "開啟 Wikis。建好第一頁後再回來發佈即可。")
+        # GitLab：wiki 從未建頁（git repo 尚未初始化）→ 自己 init 一個再 push 來 bootstrap
         dest.mkdir(parents=True, exist_ok=True)
         _git(dest, ["init", "-b", "master"])
         _git(dest, ["remote", "add", "origin", remote])

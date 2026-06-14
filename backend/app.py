@@ -1217,12 +1217,13 @@ async def specs_sync(thread_id: str):
     files = {".lodestar/PRD.md": prd, ".lodestar/ARCHITECTURE.md": arch}
     if ui.strip():
         files[".lodestar/UI-DESIGN.md"] = ui
-    block = spec_sync.build_claude_md_block(
-        (proj.get("name") or repo).strip(), has_ui=bool(ui.strip()))
+    project_name = (proj.get("name") or repo).strip()
+    block = spec_sync.build_claude_md_block(project_name, has_ui=bool(ui.strip()))
+    readme = spec_sync.build_readme_starter(project_name, prd)
     try:
         result = await asyncio.to_thread(
             spec_sync.sync_specs, thread_id, remote, files,
-            web_url=web_url, claude_md_block=block)
+            web_url=web_url, claude_md_block=block, readme=readme)
     except spec_sync.SpecSyncError as exc:
         dal.append_event(thread_id, "stories", event_type="specs_sync_failed",
                          detail=json.dumps({"target": target, "repo": repo}))

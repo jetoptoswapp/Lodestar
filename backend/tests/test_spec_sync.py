@@ -144,8 +144,51 @@ def test_build_claude_md_block_content():
     assert ".lodestar/PRD.md" in block and ".lodestar/ARCHITECTURE.md" in block
     assert ".lodestar/UI-DESIGN.md" in block        # has_ui=True 才有
     assert "只實作被指派" in block                    # 規矩
+    assert "README.md" in block                      # 要求維護 README
     block_no_ui = spec_sync.build_claude_md_block("P", has_ui=False)
     assert "UI-DESIGN.md" not in block_no_ui
+
+
+# ============================================================
+#  README starter（照專案寫）
+# ============================================================
+def test_build_readme_starter_uses_project_and_prd():
+    prd = "# 訂便當 App — PRD\n\n這是一個給辦公室同仁團購便當的系統，支援瀏覽菜單與下單。\n\n## FR\n- FR-1 ..."
+    readme = spec_sync.build_readme_starter("訂便當 App", prd)
+    assert readme.startswith("# 訂便當 App")           # 專案名
+    assert "團購便當" in readme                          # PRD 概述被抽進來
+    assert ".lodestar/PRD.md" in readme                 # 指向規格
+    # PRD 為空 → 仍產出（只是沒概述段）
+    bare = spec_sync.build_readme_starter("X", "")
+    assert bare.startswith("# X") and ".lodestar/" in bare
+
+
+def test_sync_writes_readme_only_when_absent(tmp_db, monkeypatch):
+    run, _ = _fake_git()
+    monkeypatch.setattr(spec_sync.subprocess, "run", run)
+    out = spec_sync.sync_specs("t7", _REMOTE, _FILES, web_url="x",
+                               claude_md_block=_BLOCK, readme="# Proj\n\n概述\n")
+    assert "README.md" in out["files"]
+    readme = (repo_workspace.project_dir("t7") / "spec_sync" / "README.md").read_text(encoding="utf-8")
+    assert "概述" in readme
+
+
+def test_sync_does_not_clobber_existing_readme(tmp_db, monkeypatch):
+    run, _ = _fake_git(seed_claude=None)
+    # clone 後預先放一個使用者既有 README
+    def run_with_readme(cmd, **k):
+        r = run(cmd, **k)
+        if cmd[:2] == ["git", "clone"]:
+            (repo_workspace.project_dir("t8") / "spec_sync" / "README.md").write_text(
+                "# 使用者既有 README\n別動我\n", encoding="utf-8")
+        return r
+    monkeypatch.setattr(spec_sync.subprocess, "run", run_with_readme)
+    out = spec_sync.sync_specs("t8", _REMOTE, _FILES, web_url="x",
+                               claude_md_block=_BLOCK, readme="# Lodestar starter\n")
+    readme = (repo_workspace.project_dir("t8") / "spec_sync" / "README.md").read_text(encoding="utf-8")
+    assert "別動我" in readme                            # 既有 README 不被覆寫
+    assert "Lodestar starter" not in readme
+    assert "README.md" not in out["files"]               # 沒寫 → 不列入
 
 
 # ============================================================
