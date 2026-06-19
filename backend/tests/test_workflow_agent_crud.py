@@ -79,12 +79,46 @@ def test_create_workflow_then_list(tmp_db):
         assert "default" in ids   # builtin 仍在
 
 
-def test_create_workflow_rejects_builtin_id(tmp_db):
+def test_reorder_workflows_persists_including_builtin(tmp_db):
+    """整批重排序（含 builtin id）會被持久化：重新 GET 仍是新順序。"""
     with TestClient(appmod.app) as c:
-        bad = {**_SAMPLE_WORKFLOW, "id": "default"}
-        r = c.post("/api/workflows", json=bad)
+        c.post("/api/workflows", json={**_SAMPLE_WORKFLOW, "id": "a-flow"})
+        c.post("/api/workflows", json={**_SAMPLE_WORKFLOW, "id": "b-flow"})
+        before = [w["id"] for w in c.get("/api/workflows").json()["workflows"]]
+        assert "a-flow" in before and "b-flow" in before and "default" in before
+
+        target = list(reversed(before))   # 連 builtin "default" 一起換位
+        r = c.post("/api/workflows/reorder", json={"order": target})
+        assert r.status_code == 200, r.json()
+        assert [w["id"] for w in r.json()["workflows"]] == target
+
+        after = [w["id"] for w in c.get("/api/workflows").json()["workflows"]]
+        assert after == target        # 持久化：另一次請求仍照新順序
+
+
+def test_new_workflow_appends_after_ordered(tmp_db):
+    """重排序後新增的 workflow 不在 order 表 → 依預設順序殿後（不破壞既有排序）。"""
+    with TestClient(appmod.app) as c:
+        c.post("/api/workflows", json={**_SAMPLE_WORKFLOW, "id": "a-flow"})
+        ids = [w["id"] for w in c.get("/api/workflows").json()["workflows"]]
+        c.post("/api/workflows/reorder", json={"order": list(reversed(ids))})
+
+        c.post("/api/workflows", json={**_SAMPLE_WORKFLOW, "id": "z-new"})
+        after = [w["id"] for w in c.get("/api/workflows").json()["workflows"]]
+        assert after[:-1] == list(reversed(ids))   # 既有順序不變
+        assert after[-1] == "z-new"                # 新的排最後
+
+
+def test_builtin_workflow_seeded_and_editable(tmp_db):
+    """builtin 啟動時 seed 進 DB → 可編輯：POST 同 id 因已存在被擋（改用 PUT）；PUT 可編輯 builtin。"""
+    with TestClient(appmod.app) as c:
+        # POST 既有 id（default 已 seed）→ 409 workflow_exists（不再是「is_builtin」；改用 PUT）
+        r = c.post("/api/workflows", json={**_SAMPLE_WORKFLOW, "id": "default"})
         assert r.status_code == 409
-        assert r.json()["detail"]["category"] == "workflow_is_builtin"
+        assert r.json()["detail"]["category"] == "workflow_exists"
+        # PUT 編輯 builtin → 成功（seed 進 DB 後 builtin 變可編輯起點）
+        r2 = c.put("/api/workflows/default", json={**_SAMPLE_WORKFLOW, "id": "default"})
+        assert r2.status_code == 200
 
 
 def test_create_workflow_rejects_unknown_stage(tmp_db):
@@ -177,11 +211,15 @@ def test_delete_workflow(tmp_db):
         assert all(w["id"] != "my-flow" for w in listing["workflows"])
 
 
-def test_delete_builtin_workflow_rejected(tmp_db):
+def test_delete_builtin_workflow_reverts_to_default(tmp_db):
+    """刪 seed 進 DB 的 builtin → 成功（移除 DB 客製、回退 in-memory fallback＝重置回預設），不再被擋。"""
     with TestClient(appmod.app) as c:
         r = c.delete("/api/workflows/default")
-        assert r.status_code == 409
-        assert r.json()["detail"]["category"] == "workflow_is_builtin"
+        assert r.status_code == 200
+        assert r.json()["deleted"] == "default"
+        # default 仍可解析（in-memory builtin fallback 現身於清單）
+        ids = [w["id"] for w in c.get("/api/workflows").json()["workflows"]]
+        assert "default" in ids
 
 
 # ============================================================

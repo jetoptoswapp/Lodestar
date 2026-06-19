@@ -38,12 +38,13 @@ def test_orphaned_session_recovery(tmp_db):
     sid = impl_dal.create_session(thread_id="t", title="x", target_repo="", runner="mock")
     impl_dal.update_session(sid, status="running")
     rid = impl_dal.create_run(session_id=sid, attempt=1, runner="mock")  # status=running
-    n = impl_dal.fail_orphaned_running()
+    n = impl_dal.interrupt_orphaned_running()
     assert n >= 1
-    assert impl_dal.get_session(sid)["status"] == "failed"
+    # 行程被打斷 → interrupted（非 failed；使用者可重跑接續）
+    assert impl_dal.get_session(sid)["status"] == "interrupted"
     # 孤兒 run 也要被收掉（不留 running 殭屍）
     run = impl_dal.get_run(rid)
-    assert run["status"] == "failed" and run["ended_at"] is not None
+    assert run["status"] == "interrupted" and run["ended_at"] is not None
 
 
 def test_prepare_worktree_no_base_returns_plain_dir(tmp_db):

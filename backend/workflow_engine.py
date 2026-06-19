@@ -114,6 +114,39 @@ def downstream_of(stage_id: str, deps: dict[str, list[str]]) -> list[str]:
     return out
 
 
+def _spec_to_stage_rows(workflow: WorkflowSpec, stage_registry: dict[str, Any]) -> list[dict]:
+    """WorkflowSpec → workflow_definitions.stages_json 的 list（_user_workflow_to_spec 的反向）。
+    depends_on 用 compute_dependencies 取（builtin spec 多半不設 edges_override，靠 StageSpec.depends_on）。"""
+    deps = compute_dependencies(workflow, stage_registry)
+    rows: list[dict] = []
+    for sid in workflow.stages:
+        bindings = workflow.agent_bindings.get(sid, ())
+        rows.append({
+            "stage_id": sid,
+            "depends_on": list(deps.get(sid, [])),
+            "agent_bindings": [{"agent_id": b.agent_id, "role": b.role} for b in bindings],
+            "collab_mode": workflow.collab_mode.get(sid, "single"),
+        })
+    return rows
+
+
+def seed_builtin_workflows(registry) -> int:
+    """把 in-memory builtin workflow 冪等 seed 進 workflow_definitions DB，讓預設 workflow 跟自訂的一樣
+    可在 /workflows 編輯。已存在同 id 則跳過（永不蓋使用者編輯）；in-memory 仍留作 fallback。回 seed 筆數。
+    在 plugin 載入後呼叫（builtin WorkflowSpec 此時才在 registry 內）。"""
+    seeded = 0
+    for wf_id, spec in registry.workflows.items():
+        if dal.get_workflow_definition(wf_id) is not None:
+            continue
+        dal.upsert_workflow_definition(
+            wf_id=wf_id, label=spec.label, description=spec.description,
+            stages=_spec_to_stage_rows(spec, registry.stages),
+            source_plugin=spec.source_plugin or "builtin",
+        )
+        seeded += 1
+    return seeded
+
+
 # ============================================================
 #  Engine
 # ============================================================
@@ -125,13 +158,12 @@ class WorkflowEngine:
 
     # ------- workflow resolution -------
     def active_workflow_for(self, thread_id: str) -> WorkflowSpec:
-        """thread 綁的 workflow → builtin in-memory → user-defined（DB）→ default → lazy。
+        """thread 綁的 workflow → DB（含 seed 的 builtin，可編輯）→ in-memory builtin fallback → default → lazy。
 
-        M3：user-defined workflow（DB workflow_definitions 表）也納入解析鏈。
-        順序：
-          1. project.workflow_id 對應 builtin registry
-          2. project.workflow_id 對應 DB user workflow → 即時轉成 WorkflowSpec
-          3. 'default' builtin
+        順序（builtin 已於啟動 seed 進 DB，故 DB 優先讓編輯生效）：
+          1. project.workflow_id 對應 DB workflow_definitions → 即時轉成 WorkflowSpec
+          2. project.workflow_id 對應 in-memory builtin（DB row 被刪時的 fallback）
+          3. 'default'（DB 優先，再 in-memory）
           4. lazy 全 stage（M0 fallback）
         """
         from plugin_api.workflow import AgentBinding
@@ -140,12 +172,16 @@ class WorkflowEngine:
         wf_id = project["workflow_id"] if project else None
 
         if wf_id:
-            if wf_id in self._reg.workflows:
-                return self._reg.workflows[wf_id]
+            # DB 優先（builtin 已 seed 進 DB → 編輯生效）；in-memory 僅作 fallback（DB row 被刪時）。
             user_wf = dal.get_workflow_definition(wf_id)
             if user_wf is not None:
                 return self._user_workflow_to_spec(user_wf)
+            if wf_id in self._reg.workflows:
+                return self._reg.workflows[wf_id]
 
+        default_wf = dal.get_workflow_definition("default")
+        if default_wf is not None:
+            return self._user_workflow_to_spec(default_wf)
         if "default" in self._reg.workflows:
             return self._reg.workflows["default"]
 
@@ -195,7 +231,13 @@ class WorkflowEngine:
         未宣告 → 回 ""（行為不變）。專案未設既有 repo / 缺 token → WorkspaceNotConfiguredError（4xx）。
         clone 為「一專案一份」、冪等（已存在則 fetch 沿用），與 implement 端共用同一目錄。
         core 只認 requires tuple、不認 stage 名（鐵則①）。"""
-        if "workspace" not in getattr(stage, "requires", ()):
+        requires = getattr(stage, "requires", ())
+        # build_verify 等需要「implement 的成果」：直接給 implement 寫碼的快照/clone（local 與 remote
+        # 都寫 project_clone_dir）。與唯讀讀碼的 "workspace"（local 模式回原始路徑）區分。
+        if "impl_workspace" in requires:
+            import repo_workspace
+            return str(repo_workspace.project_clone_dir(thread_id))
+        if "workspace" not in requires:
             return ""
         import keystore
         import repo_workspace
@@ -204,6 +246,13 @@ class WorkflowEngine:
             target, repo_full = resolve_project_repo(self._reg, thread_id, create=False)
         except DeliveryRepoError as exc:
             raise WorkspaceNotConfiguredError(stage.id, str(exc)) from exc
+        if target == "local":
+            # 本機模式：sync 讀碼直接唯讀讀本機原始路徑（不快照 → 與 async 不共用目錄、無競態，永遠看到最新 WIP）。
+            # repo_full 此時是 resolve_project_repo 回傳的本機絕對路徑。
+            from pathlib import Path as _Path
+            if not _Path(repo_full).is_dir():
+                raise WorkspaceNotConfiguredError(stage.id, f"local_path 不是資料夾或不存在: {repo_full}")
+            return repo_full
         creds = keystore.get_credentials(target)
         url = clone_url(target, creds, repo_full)
         if not url:
@@ -291,6 +340,13 @@ class WorkflowEngine:
         workspace_dir = self._prepare_workspace(thread_id, stage)
 
         # 6. StageContext + HarnessRunner
+        md: dict = {"attachments": attachments}
+        # impl_workspace 類 stage（build_verify）需要專案 build 設定 → host 注入 ctx.metadata
+        # （plugin 不得讀 DB；host owns I/O）。
+        if "impl_workspace" in getattr(stage, "requires", ()):
+            proj = dal.get_project(thread_id) or {}
+            md["build_command"] = proj.get("build_command", "")
+            md["build_env_script"] = proj.get("build_env_script", "")
         ctx = StageContext(
             thread_id=thread_id,
             stage_id=stage_id,
@@ -300,7 +356,7 @@ class WorkflowEngine:
             current_artifact=current,
             conversation=conv,
             focus_section=focus_section,
-            metadata={"attachments": attachments},
+            metadata=md,
             agent=lead_agent,
             workspace_dir=workspace_dir,
         )

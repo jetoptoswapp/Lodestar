@@ -84,21 +84,27 @@ class CreateProjectRequest(BaseModel):
     name: str
     workflow_id: Optional[str] = None   # None → lazy default
     # delivery repo（可選；建專案時設，亦可事後 PATCH）
-    delivery_target: str = ""           # github / gitlab / ''
-    repo_mode: str = ""                 # new / existing / ''
+    delivery_target: str = ""           # github / gitlab / local / ''
+    repo_mode: str = ""                 # new / existing / local / ''
     repo_full_name: str = ""            # 既有：owner/repo
     repo_owner: str = ""                # 開新的 org/group（空=個人）
     repo_visibility: str = "private"    # public / private / internal
+    local_path: str = ""                # repo_mode=local：本機資料夾絕對路徑
+    build_command: str = ""             # build_verify stage 的編譯指令
+    build_env_script: str = ""          # build 前 source 的 env script
 
 
 class UpdateProjectRequest(BaseModel):
-    """PATCH /api/projects/{tid} —— 改 name 與/或 delivery repo 設定（皆 optional）。"""
+    """PATCH /api/projects/{tid} —— 改 name 與/或 delivery repo / build 設定（皆 optional）。"""
     name: Optional[str] = None
     delivery_target: Optional[str] = None
     repo_mode: Optional[str] = None
     repo_full_name: Optional[str] = None
     repo_owner: Optional[str] = None
     repo_visibility: Optional[str] = None
+    local_path: Optional[str] = None
+    build_command: Optional[str] = None
+    build_env_script: Optional[str] = None
 
 
 class ProjectResponse(BaseModel):
@@ -112,6 +118,9 @@ class ProjectResponse(BaseModel):
     repo_owner: str = ""
     repo_visibility: str = "private"
     repo_created: bool = False
+    local_path: str = ""
+    build_command: str = ""
+    build_env_script: str = ""
 
 
 class ProjectListResponse(BaseModel):
@@ -276,6 +285,10 @@ class WorkflowListResponse(BaseModel):
     workflows: list[WorkflowResponse]
 
 
+class WorkflowReorderRequest(BaseModel):
+    order: list[str]                 # workflow id 的目標順序（含 builtin + user）
+
+
 class SkillResponse(BaseModel):
     skill_id: str
     name: str
@@ -430,12 +443,13 @@ class ImplementSessionResponse(BaseModel):
     title: str
     target_repo: str
     runner: str
-    status: str                     # pending/running/succeeded/failed/cancelled
+    status: str                     # pending/running/succeeded/failed/cancelled/interrupted
     pr_url: str = ""
     error_message: str = ""
     batch_id: Optional[int] = None
     issue_number: Optional[int] = None
     story_key: str = ""
+    retry_of: Optional[int] = None  # 接續的前次 session（中斷/失敗後重跑）
     created_at: Optional[float] = None
     updated_at: Optional[float] = None
     runs: list[ImplementRunInfo] = []

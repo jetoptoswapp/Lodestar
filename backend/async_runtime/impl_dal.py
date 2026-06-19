@@ -29,13 +29,13 @@ def create_session(*, thread_id: str, title: str, target_repo: str,
                    runner: str, stage: str = "implement",
                    batch_id: Optional[int] = None,
                    issue_number: Optional[int] = None,
-                   story_key: str = "") -> int:
+                   story_key: str = "", retry_of: Optional[int] = None) -> int:
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO impl_sessions "
-            "(thread_id, stage, title, target_repo, runner, status, batch_id, issue_number, story_key) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-            (thread_id, stage, title, target_repo, runner, batch_id, issue_number, story_key),
+            "(thread_id, stage, title, target_repo, runner, status, batch_id, issue_number, story_key, retry_of) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+            (thread_id, stage, title, target_repo, runner, batch_id, issue_number, story_key, retry_of),
         )
         return int(cur.lastrowid)
 
@@ -55,27 +55,45 @@ def update_session(session_id: int, *, status: Optional[str] = None,
         conn.execute(f"UPDATE impl_sessions SET {', '.join(sets)} WHERE session_id = ?", params)
 
 
-def fail_orphaned_running() -> int:
+def interrupt_orphaned_running() -> int:
     """啟動恢復：把孤兒 session/batch/run（running/pending —— 進程重啟後 asyncio task 已隨之消失）
-    標為 failed。awaiting_approval 不動（worktree 仍在磁碟、可由使用者 approve）。回受影響 session 筆數。
+    標為 `interrupted`（行程被打斷，**非任務失敗**——與真正 failed 區分；任務可由使用者重跑接續，
+    見 find_retry_target / retry_of）。awaiting_approval 不動（worktree 仍在磁碟、可 approve）。
+    回受影響 session 筆數。
 
     同時收掉 impl_runs 的孤兒 running 列：重啟後沒有任何 run 真的在執行，殘留的 running 會在每次
-    重啟越積越多（曾累積到 24h+），讓查詢 / Flight Log 誤判「還在跑」。一律標 failed 並補 ended_at。"""
+    重啟越積越多，讓查詢 / Flight Log 誤判「還在跑」。標 interrupted 並補 ended_at；這些 run 的
+    區間不計入 active time（見 project_summary._run_intervals 排除 interrupted）。"""
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE impl_sessions SET status='failed', "
+            "UPDATE impl_sessions SET status='interrupted', "
             "error_message='interrupted by server restart', "
             "updated_at=strftime('%s','now') "
             "WHERE status IN ('running', 'pending')")
         conn.execute(
-            "UPDATE impl_batches SET status='failed', "
+            "UPDATE impl_batches SET status='interrupted', "
             "error_message='interrupted by server restart', "
             "updated_at=strftime('%s','now') "
             "WHERE status='running'")
         conn.execute(
-            "UPDATE impl_runs SET status='failed', ended_at=strftime('%s','now') "
+            "UPDATE impl_runs SET status='interrupted', ended_at=strftime('%s','now') "
             "WHERE status='running'")
         return cur.rowcount
+
+
+def find_retry_target(thread_id: str, story_key: str = "") -> Optional[int]:
+    """找「可被這次重跑接續」的前次 session：同 thread + 同 story_key、狀態非 succeeded（即
+    interrupted / failed / cancelled）、且尚未被其他 session 接續（沒有人的 retry_of 指向它）。
+    取最新一筆；無則回 None。用於把重跑串成同一任務的嘗試鏈。"""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT s.session_id FROM impl_sessions s "
+            "WHERE s.thread_id = ? AND s.story_key = ? "
+            "AND s.status NOT IN ('succeeded', 'running', 'pending') "
+            "AND NOT EXISTS (SELECT 1 FROM impl_sessions x WHERE x.retry_of = s.session_id) "
+            "ORDER BY s.session_id DESC LIMIT 1",
+            (thread_id, story_key)).fetchone()
+        return int(row["session_id"]) if row else None
 
 
 def get_session(session_id: int) -> Optional[dict]:

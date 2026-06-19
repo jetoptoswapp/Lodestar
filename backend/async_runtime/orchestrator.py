@@ -24,7 +24,9 @@ from plugin_api import AgentRunner, HookAbort, ToolHook
 from async_runtime import impl_dal, task_registry
 from persistence import dal
 # clone 共用模組（host 層，sync/async 兩端共用；本檔轉呼以維持既有呼叫面）
-from repo_workspace import project_dir, project_clone_dir, prepare_project_clone
+from repo_workspace import (
+    project_dir, project_clone_dir, prepare_project_clone, prepare_local_snapshot,
+)
 
 _log = logging.getLogger("async_runtime.orchestrator")
 
@@ -138,6 +140,37 @@ def prepare_branch_in_clone(clone_path: Path, session_id: int) -> Path:
                 break
     subprocess.run(["git", "-C", str(clone_path), "checkout", "-B", branch, default],
                    check=True, capture_output=True, text=True)
+    return clone_path
+
+
+# 安全的 git 設定：避開使用者本機的 git hooks / GPG 簽章 / 缺 user.identity（在真實 SDK 上常見）。
+_SAFE_GIT_CFG = ["-c", "user.email=lodestar@local", "-c", "user.name=Lodestar",
+                 "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
+
+
+def local_baseline_tag(session_id: int) -> str:
+    """repo_mode=local：baseline commit 的輕量 tag 名（opener 用它算 baseline..HEAD 的乾淨 diff）。"""
+    return f"lodestar-baseline-{session_id}"
+
+
+def prepare_local_branch(clone_path: Path, session_id: int) -> Path:
+    """repo_mode=local 的 branch 準備（**不** reset/clean，保留快照內的 WIP 與未追蹤檔）。
+
+    從快照「當前 HEAD」切 work branch（不 fetch、不碰 origin、不退回上游）→ 把快照現狀（含
+    使用者 WIP）commit 成 baseline 並打 tag，讓之後 agent 的改動能以 baseline..HEAD 算出乾淨 diff。
+    commit 帶 _SAFE_GIT_CFG + --no-verify，避開 hooks / 簽章 / 缺 identity；baseline 失敗只記
+    warning 不中斷（tag 仍指向當前 HEAD，diff 退化為含 WIP，可接受）。"""
+    branch = f"lodestar/impl-{session_id}"
+    git = ["git", "-C", str(clone_path)]
+    subprocess.run(git + ["checkout", "-B", branch], capture_output=True, text=True)  # 從當前 HEAD 切
+    subprocess.run(git + ["add", "-A"], capture_output=True, text=True)
+    commit = subprocess.run(
+        git + _SAFE_GIT_CFG + ["commit", "--no-verify", "-m", f"lodestar baseline (session {session_id})"],
+        capture_output=True, text=True)
+    if commit.returncode != 0:
+        _log.warning("session %s baseline commit skipped: %s",
+                     session_id, (commit.stderr or commit.stdout or "").strip()[:200])
+    subprocess.run(git + ["tag", "-f", local_baseline_tag(session_id)], capture_output=True, text=True)
     return clone_path
 
 
@@ -534,6 +567,8 @@ def start_session(
     mode: str = "single",
     auto_approve: bool = True,
     clone_url: str = "",
+    local_path: str = "",
+    retry_of: Optional[int] = None,
     persona_for: Optional[PersonaProvider] = None,
     runner_for: Optional[RunnerProvider] = None,
 ) -> int:
@@ -550,12 +585,17 @@ def start_session(
         raise impl_dal.ImplActiveError(thread_id)
     session_id = impl_dal.create_session(
         thread_id=thread_id, title=title or "(implementation)",
-        target_repo=target_repo, runner=runner_choice,
+        target_repo=target_repo, runner=runner_choice, retry_of=retry_of,
     )
     base_repo = os.environ.get("LODESTAR_IMPL_BASE_REPO", "")
 
     async def _supervised() -> dict:
-        if clone_url:
+        if local_path:
+            # repo_mode=local：複製本機 working tree 快照 → 在快照上切 branch（不 reset/clean，保留 WIP）
+            def cwd_provider() -> Path:
+                cwd = prepare_local_snapshot(thread_id, local_path)
+                return prepare_local_branch(cwd, session_id)
+        elif clone_url:
             # 專案共用 clone（一個專案一個目錄）→ 為本 session 切乾淨 branch
             def cwd_provider() -> Path:
                 cwd = prepare_project_clone(thread_id, clone_url)

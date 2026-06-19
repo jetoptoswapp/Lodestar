@@ -46,6 +46,7 @@ import {
   fetchPlugins,
   fetchStages,
   fetchWorkflows,
+  reorderWorkflows,
   setProjectWorkflow,
   togglePlugin,
   updateAgent,
@@ -1227,6 +1228,17 @@ export default function Page() {
                       onChatArtifact={setCrArtifact}
                     />
                   )}
+                  {/* 泛用 fallback：可編輯 workflow 加進來的任何非內建 stage（如 build_verify）
+                      ——自己抓 /api/stage/{id}/{thread} 並用 markdown 顯示，免為每個新 stage 寫死面板。 */}
+                  {!["prd", "architecture", "ui_design", "stories", "implement", "change_request"].includes(selected) && (
+                    <GenericStageWorkspace
+                      key={selected}
+                      thread={thread}
+                      stageId={selected}
+                      modelChoice={modelChoice}
+                      onSetError={setErr}
+                    />
+                  )}
                 </div>
               </>
               )}
@@ -2149,6 +2161,80 @@ function ChangeRequestWorkspace({
       <ChatPanel key={thread ?? "none"} thread={thread} stageId="change_request" stageLabel="Change Discussion"
         modelChoice={modelChoice} onArtifactUpdated={onChatArtifact} />
     </div>
+  );
+}
+
+// 泛用 stage 面板：給可編輯 workflow 加進來、前端沒寫死的 stage（如 build_verify）用。
+// 自包含：自己抓 /api/stage/{id}/{thread} 的 artifact + status，用 MarkdownBlock 顯示，附「執行」鈕。
+function GenericStageWorkspace({
+  thread, stageId, modelChoice, onSetError,
+}: {
+  thread: string | null;
+  stageId: string;
+  modelChoice: string;
+  onSetError: (m: string) => void;
+}) {
+  const [artifact, setArtifact] = useState("");
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    if (!thread) return;
+    try {
+      const s = await apiFetch<{ artifact: string; status: string }>(`/api/stage/${stageId}/${thread}`);
+      setArtifact(s.artifact || "");
+      setStatus(s.status || "");
+    } catch (e) {
+      onSetError(`讀取 ${stageId} 失敗：${(e as Error).message}`);
+    }
+  }, [thread, stageId, onSetError]);
+  useEffect(() => { load(); }, [load]);
+  const onGen = async () => {
+    if (!thread) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/api/stage/${stageId}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: thread, model_choice: modelChoice }),
+      });
+      await load();
+    } catch (e) {
+      onSetError(`執行 ${stageId} 失敗：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const hasContent = artifact.trim().length > 0;
+  return (
+    <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="font-[family-name:var(--font-mono)] text-[10.5px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
+          ARTIFACT · {stageId}{status ? ` · ${status}` : ""}
+        </div>
+        <ToolBtn onClick={onGen} disabled={!thread || busy}>
+          {busy ? "執行中…" : hasContent ? "重新執行" : "執行"}
+        </ToolBtn>
+      </div>
+      <article className="shadow-anvil paper-texture relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
+        <div className="min-h-0 flex-1 overflow-y-auto px-10 py-6">
+          {hasContent ? (
+            <MarkdownBlock text={artifact} />
+          ) : (
+            <div className="grid h-full place-items-center text-center">
+              <div className="max-w-md">
+                <p className="font-[family-name:var(--font-display)] text-[15px] text-[#cdd4df]">{stageId} 尚無結果</p>
+                <p className="mt-2 font-[family-name:var(--font-sans)] text-[13px] leading-[1.7] text-[var(--ink-muted)]">
+                  按「執行」跑這個 stage。build_verify 會在 implement 的快照上跑 build 指令、回報編譯成功/失敗。
+                </p>
+                <div className="mt-5">
+                  <ToolBtn primary onClick={onGen} disabled={!thread || busy}>{busy ? "執行中…" : "執行"}</ToolBtn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </article>
+    </section>
   );
 }
 
@@ -3490,6 +3576,16 @@ function ImplLockedNotice() {
 }
 
 function ImplPrBanner({ url }: { url: string }) {
+  // repo_mode=local 的交付描述（"local: branch @ path"）不是 URL → 顯示為文字，diff 在 log。
+  if (url.startsWith("local:")) {
+    return (
+      <div className="flex items-center gap-3 border-b border-[color-mix(in_oklab,var(--approved)_40%,transparent)] bg-[color-mix(in_oklab,var(--approved)_10%,transparent)] px-6 py-3">
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--approved)]">本機交付</span>
+        <code className="truncate text-[12px] text-[#cdd4df]">{url.replace(/^local:\s*/, "")}</code>
+        <span className="ml-auto whitespace-nowrap font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">diff 見 log ↓</span>
+      </div>
+    );
+  }
   return (
     <a href={url} target="_blank" rel="noreferrer"
       className="flex items-center gap-3 border-b border-[color-mix(in_oklab,var(--approved)_40%,transparent)] bg-[color-mix(in_oklab,var(--approved)_10%,transparent)] px-6 py-3 transition hover:bg-[color-mix(in_oklab,var(--approved)_18%,transparent)]">
@@ -4265,6 +4361,25 @@ function WorkflowsView({
   const [draft, setDraft] = useState<WorkflowDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [newModalOpen, setNewModalOpen] = useState(false);   // 缺口1：取代 window.prompt
+  const [reordering, setReordering] = useState(false);       // 排序中：暫禁 ▲▼ 避免連點競態
+
+  // 重排序：把整份清單（含 builtin）的 id 互換相鄰兩格後整批存回，再 refresh 讓三處共用清單同步。
+  const moveWorkflow = async (idx: number, dir: -1 | 1) => {
+    const j = idx + dir;
+    if (j < 0 || j >= workflows.length || reordering) return;
+    const ids = workflows.map((w) => w.id);
+    [ids[idx], ids[j]] = [ids[j], ids[idx]];
+    setReordering(true);
+    onSetError(null);
+    try {
+      await reorderWorkflows(ids);
+      await onRefresh();
+    } catch (e) {
+      onSetError(`排序儲存失敗：${(e as Error).message}`);
+    } finally {
+      setReordering(false);
+    }
+  };
 
   // 切到 user workflow → 建立 draft 副本（builtin 只 view）
   const picked = workflows.find((w) => w.id === pickedId) ?? workflows[0];
@@ -4434,11 +4549,12 @@ function WorkflowsView({
               無 workflow（loading…）
             </div>
           )}
-          {workflows.map((w) => {
+          {workflows.map((w, i) => {
             const active = w.id === pickedId;
             return (
-              <button key={w.id} onClick={() => setPickedId(w.id)}
-                className={`flex flex-col items-stretch border p-4 text-left transition ${
+              <div key={w.id} className="flex items-stretch gap-1.5">
+              <button onClick={() => setPickedId(w.id)}
+                className={`flex min-w-0 flex-1 flex-col items-stretch border p-4 text-left transition ${
                   active ? "border-[var(--polaris)] bg-[color-mix(in_oklab,var(--polaris)_6%,transparent)]" : "border-[var(--rule-dark)] bg-[var(--bg-elev)]/40 hover:border-[#4a5468]"
                 }`}>
                 <div className="mb-1 flex items-center justify-between">
@@ -4448,10 +4564,10 @@ function WorkflowsView({
                 <div className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-[#e6ecf5]">{w.label}</div>
                 {w.description && <div className="mt-1 text-[12px] text-[#97a0b3]">{w.description}</div>}
                 <div className="mt-3 flex flex-wrap items-center gap-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                  {w.stages.map((s, i) => (
+                  {w.stages.map((s, si) => (
                     <span key={s.stage_id} className="flex items-center gap-1.5">
                       <span className="border border-[var(--paper-edge)] bg-[var(--bg)] px-1.5 py-0.5 text-[#cdd4df]">{s.stage_id}</span>
-                      {i < w.stages.length - 1 && <span className="text-[var(--ink-muted)]">→</span>}
+                      {si < w.stages.length - 1 && <span className="text-[var(--ink-muted)]">→</span>}
                     </span>
                   ))}
                 </div>
@@ -4460,6 +4576,20 @@ function WorkflowsView({
                   <span>{w.stages.length} stages</span>
                 </div>
               </button>
+              {/* 重排序：▲▼，整批存回後端持久化 */}
+              <div className="flex shrink-0 flex-col justify-center gap-1">
+                {([[-1, "▲", "上移", i === 0], [1, "▼", "下移", i === workflows.length - 1]] as const).map(
+                  ([dir, glyph, title, atEdge]) => (
+                    <button key={title} title={title} aria-label={`${w.label} ${title}`}
+                      disabled={atEdge || reordering}
+                      onClick={() => moveWorkflow(i, dir)}
+                      className="flex h-7 w-7 items-center justify-center border border-[var(--rule-dark)] bg-[var(--bg-elev)] text-[11px] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)] disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:border-[var(--rule-dark)] disabled:hover:text-[var(--ink-muted)]">
+                      {glyph}
+                    </button>
+                  ),
+                )}
+              </div>
+              </div>
             );
           })}
         </div>
@@ -5032,10 +5162,12 @@ function SkillCard({ skill, onEdit, onDelete }: {
 
 // ---------- Flight Log（專案總結：階段時間軸 + story 表 + 花費）----------
 type FLRole = { role: string; attempt: number; status: string; seconds: number | null };
+type FLAttempt = { session_id: number; status: string; pr_url: string; created_at: number | null };
 type FLStory = {
   story_key: string; title: string; session_id: number; batch_id: number | null;
   status: string; pr_url: string; error_message: string; duration_sec: number | null;
   attempts: number; batch_runs: number; roles: FLRole[]; cost_usd: number; total_tokens: number;
+  interrupted_count: number; failed_count: number; attempts_history: FLAttempt[];
 };
 type FLStage = {
   stage_id: string; status: string | null; first_at: number | null; last_at: number | null;
@@ -5048,7 +5180,8 @@ type ProjectSummary = {
   implement: { batches: FLBatch[]; stories: FLStory[]; total_runs: number };
   usage: { cost_usd: number; total_tokens: number; output_tokens: number; cache_read_tokens: number };
   totals: {
-    span_sec: number | null; stories_total: number; stories_with_mr: number; stories_failed: number;
+    active_sec: number | null; span_sec: number | null; stories_total: number; stories_with_mr: number; stories_failed: number;
+    stories_interrupted: number; stories_recovered: number;
     agent_runs: number; cost_usd: number; total_tokens: number; first_activity: number | null; last_activity: number | null;
   };
 };
@@ -5057,7 +5190,7 @@ const flColor = (s: string | null): string =>
   s === "succeeded" || s === "approved" ? "var(--approved)"
     : s === "failed" ? "#e06c75"
       : s === "running" || s === "pending" ? "var(--polaris)"
-        : s === "orphaned" ? "#d9a441"
+        : s === "orphaned" || s === "interrupted" ? "#d9a441"
           : "var(--ink-muted)";
 
 const flDur = (sec: number | null): string => {
@@ -5103,7 +5236,7 @@ function FlightLogView({ thread }: { thread: string | null }) {
   const hasOrphan = stories.some((s) => s.roles.some((r) => r.status === "orphaned"));
 
   const cards: { label: string; value: string; sub?: string }[] = t ? [
-    { label: "TOTAL SPAN", value: flDur(t.span_sec) },
+    { label: "ACTIVE TIME", value: flDur(t.active_sec), sub: t.span_sec != null ? `跨 ${flDur(t.span_sec)}` : undefined },
     { label: "STORIES", value: `${t.stories_with_mr}/${t.stories_total}`, sub: "開出 MR" },
     { label: "COST", value: `$${t.cost_usd.toFixed(2)}`, sub: "implement 側" },
     { label: "TOKENS", value: flTok(t.total_tokens), sub: `${flTok(data!.usage.cache_read_tokens)} cache-read` },
@@ -5141,9 +5274,11 @@ function FlightLogView({ thread }: { thread: string | null }) {
             </div>
 
             {/* 健康警示 */}
-            {(t!.stories_failed > 0 || hasOrphan) && (
+            {(t!.stories_failed > 0 || t!.stories_interrupted > 0 || t!.stories_recovered > 0 || hasOrphan) && (
               <div className="mt-4 border-l-2 border-[#d9a441] bg-[#d9a441]/5 px-4 py-2.5 font-[family-name:var(--font-mono)] text-[11px] tracking-[0.04em] text-[#d9b35e]">
-                ⚠ {t!.stories_failed > 0 && <span>{t!.stories_failed} 個 story 仍失敗。</span>}
+                ⚠ {t!.stories_failed > 0 && <span>{t!.stories_failed} 個任務仍失敗。</span>}
+                {t!.stories_interrupted > 0 && <span> {t!.stories_interrupted} 個任務曾中斷、尚未完成（可重跑接續）。</span>}
+                {t!.stories_recovered > 0 && <span> {t!.stories_recovered} 個任務曾中斷/失敗，但重跑後已完成 ✓。</span>}
                 {hasOrphan && <span> 偵測到孤兒 run（session 已終局但 run 沒收尾＝重啟殘留）。</span>}
               </div>
             )}
@@ -5176,7 +5311,15 @@ function FlightLogView({ thread }: { thread: string | null }) {
                 return (
                   <div key={s.session_id} className="grid grid-cols-[64px_1fr_96px_72px_64px_1fr_72px_40px] items-center gap-2 border-b border-[var(--rule-dark)] px-3 py-2 text-[12px] last:border-b-0">
                     <div className="font-[family-name:var(--font-mono)] text-[11px] text-[#cdd4df]">{s.story_key || "—"}</div>
-                    <div className="truncate text-[#aeb6c6]" title={s.title}>{s.title}</div>
+                    <div className="truncate text-[#aeb6c6]" title={s.title}>
+                      {s.title}
+                      {(s.interrupted_count + s.failed_count) > 0 && (
+                        <span className="ml-2 whitespace-nowrap font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.14em] text-[#d9b35e]"
+                          title={s.attempts_history.map((a) => `#${a.session_id}: ${a.status}`).join("  ·  ")}>
+                          曾{s.interrupted_count > 0 ? `中斷${s.interrupted_count}` : ""}{s.failed_count > 0 ? `失敗${s.failed_count}` : ""}次
+                        </span>
+                      )}
+                    </div>
                     <div><FLChip status={s.status} /></div>
                     <div className="text-right font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">{flDur(s.duration_sec)}</div>
                     <div className="text-right font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
@@ -5190,7 +5333,10 @@ function FlightLogView({ thread }: { thread: string | null }) {
                     </div>
                     <div className="text-right font-[family-name:var(--font-mono)] text-[11px] text-[#aeb6c6]">${s.cost_usd.toFixed(2)}</div>
                     <div className="text-center">
-                      {s.pr_url ? <a href={s.pr_url} target="_blank" rel="noreferrer" className="text-[var(--polaris)] hover:text-[var(--polaris-hi)]" title={s.pr_url}>↗</a>
+                      {s.pr_url
+                        ? (s.pr_url.startsWith("local:")
+                            ? <span className="text-[var(--approved)]" title={s.pr_url}>⎇</span>
+                            : <a href={s.pr_url} target="_blank" rel="noreferrer" className="text-[var(--polaris)] hover:text-[var(--polaris-hi)]" title={s.pr_url}>↗</a>)
                         : <span className="text-[var(--ink-muted)]">—</span>}
                     </div>
                   </div>

@@ -76,6 +76,7 @@ from api_models import (  # noqa: E402
     UpdateProjectRequest,
     AgentBindingPayload,
     WorkflowListResponse,
+    WorkflowReorderRequest,
     WorkflowResponse,
     WorkflowStagePayload,
     WorkflowUpsertRequest,
@@ -134,11 +135,18 @@ async def lifespan(app: FastAPI):
     registry = plugin_loader.load_all()
     app.state.registry = registry
     app.state.engine = WorkflowEngine(registry)
-    # 啟動恢復：上次進程留下的孤兒 running/pending impl session（task 已隨進程消失）標 failed
+    # builtin workflow 冪等 seed 進 DB（plugin 已載入，spec 在 registry 內）→ 可在 /workflows 編輯；
+    # in-memory 留作 fallback。已存在同 id 跳過，永不蓋使用者編輯。
+    from workflow_engine import seed_builtin_workflows
+    seeded = seed_builtin_workflows(registry)
+    if seeded:
+        log.info("seeded %d builtin workflow(s) into DB (now editable)", seeded)
+    # 啟動恢復：上次進程留下的孤兒 running/pending impl session（task 已隨進程消失）標 interrupted
+    # （行程被打斷，非任務失敗；使用者可重跑接續，重跑會串成同一任務的嘗試鏈）
     from async_runtime import impl_dal
-    orphaned = impl_dal.fail_orphaned_running()
+    orphaned = impl_dal.interrupt_orphaned_running()
     if orphaned:
-        log.warning("startup recovery: marked %d orphaned impl session(s) as failed", orphaned)
+        log.warning("startup recovery: marked %d orphaned impl session(s) as interrupted", orphaned)
     loaded = [p.manifest.id for p in registry.loaded_plugins if p.loaded]
     log.info("startup complete — plugins loaded: %s", loaded or "(none)")
     log.info("LODESTAR_UPLOADS_DIR=%s", os.environ["LODESTAR_UPLOADS_DIR"])
@@ -419,21 +427,36 @@ def _builtin_workflow_to_response(wf, source_plugin: str) -> WorkflowResponse:
 
 @app.get("/api/workflows", response_model=WorkflowListResponse)
 async def list_workflows():
-    """合併 builtin（in-memory plugin 註冊）+ user-defined（DB）workflows。"""
+    """合併 workflows：DB workflow_definitions（含啟動 seed 的 builtin，皆可編輯）優先；
+    in-memory builtin 僅作 fallback（DB row 被刪時才現身）。"""
     reg = _registry()
     owner = {cid: pid for (pid, ctype, cid) in reg.contributions if ctype == CAP_WORKFLOW}
     out: list[WorkflowResponse] = []
-    for wf_id, wf in reg.workflows.items():
-        out.append(_builtin_workflow_to_response(wf, owner.get(wf_id, "")))
+    db_ids: set[str] = set()
     for d in dal.list_workflow_definitions():
-        if d["id"] in reg.workflows:
-            continue   # builtin 同 id 優先（user 不應覆寫 plugin workflow）
+        db_ids.add(d["id"])
         out.append(WorkflowResponse(
             id=d["id"], label=d["label"], description=d["description"],
-            stages=d["stages"], source="user", source_plugin=None,
+            stages=d["stages"], source="user",                       # DB-backed → 可編輯
+            source_plugin=(d.get("source_plugin") or None),          # 保留來源（builtin_* = seed 自哪個 plugin）
             created_at=d["created_at"],
         ))
+    for wf_id, wf in reg.workflows.items():
+        if wf_id in db_ids:
+            continue   # 已 seed 進 DB → 用 DB 版（可編輯）；此處只補尚未 seed 的 fallback
+        out.append(_builtin_workflow_to_response(wf, owner.get(wf_id, "")))
+    # 套用使用者自訂順序（stable sort：未登記的 id 維持上方預設順序、殿後）
+    order = dal.get_workflow_order()
+    fallback = len(order) + len(out)
+    out.sort(key=lambda w: order.get(w.id, fallback))
     return WorkflowListResponse(workflows=out)
+
+
+@app.post("/api/workflows/reorder", response_model=WorkflowListResponse)
+async def reorder_workflows(req: WorkflowReorderRequest):
+    """整批覆寫 workflow 顯示順序（builtin + user 皆可），持久化後回傳套用後的清單。"""
+    dal.set_workflow_order(req.order)
+    return await list_workflows()
 
 
 @app.post("/api/workflows", response_model=WorkflowResponse, status_code=201)
@@ -451,11 +474,8 @@ async def update_workflow(wf_id: str, req: WorkflowUpsertRequest):
 
 
 def _save_workflow(req: WorkflowUpsertRequest, *, allow_existing: bool) -> WorkflowResponse:
-    """upsert workflow + validate stages."""
+    """upsert workflow + validate stages。builtin 已 seed 進 DB，故可被 PUT 編輯（不再擋 builtin id）。"""
     reg = _registry()
-    # 不允許覆寫 builtin
-    if req.id in reg.workflows:
-        raise HTTPException(409, detail=error_detail("workflow_is_builtin", f"workflow '{req.id}' 是 builtin，不能 user 覆寫"))
     if not allow_existing and dal.get_workflow_definition(req.id) is not None:
         raise HTTPException(409, detail=error_detail("workflow_exists", f"workflow '{req.id}' 已存在；改用 PUT 更新"))
     # 驗證每個 stage 都已註冊
@@ -502,9 +522,8 @@ def _save_workflow(req: WorkflowUpsertRequest, *, allow_existing: bool) -> Workf
 
 @app.delete("/api/workflows/{wf_id}")
 async def delete_workflow(wf_id: str):
-    reg = _registry()
-    if wf_id in reg.workflows:
-        raise HTTPException(409, detail=error_detail("workflow_is_builtin", f"workflow '{wf_id}' 是 builtin，不能刪除"))
+    # 刪 DB row 即可；若是 seed 進去的 builtin，刪後會回退 in-memory fallback（＝重置回預設，
+    # 下次啟動再 seed 回 pristine 版），等於「還原預設」。純 in-memory（無 DB row）→ 404。
     ok = dal.delete_workflow_definition(wf_id)
     if not ok:
         raise HTTPException(404, detail=error_detail("workflow_not_found", f"workflow '{wf_id}' 不存在"))
@@ -833,7 +852,8 @@ async def create_project(req: CreateProjectRequest):
     dal.create_project(thread_id, req.name, req.workflow_id,
                        delivery_target=req.delivery_target, repo_mode=req.repo_mode,
                        repo_full_name=req.repo_full_name, repo_owner=req.repo_owner,
-                       repo_visibility=req.repo_visibility)
+                       repo_visibility=req.repo_visibility, local_path=req.local_path,
+                       build_command=req.build_command, build_env_script=req.build_env_script)
     project = dal.get_project(thread_id)
     if project is None:  # defensive
         raise HTTPException(500, detail=error_detail("project_create_failed", "建立 thread 失敗"))
@@ -916,7 +936,8 @@ async def update_project(thread_id: str, req: UpdateProjectRequest):
     if cur is None:
         raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
     delivery_fields = (req.delivery_target, req.repo_mode, req.repo_full_name,
-                       req.repo_owner, req.repo_visibility)
+                       req.repo_owner, req.repo_visibility, req.local_path,
+                       req.build_command, req.build_env_script)
     if req.name is None and all(f is None for f in delivery_fields):
         raise HTTPException(400, detail=error_detail("invalid_name", "name 不可為空"))
     if req.name is not None:
@@ -931,6 +952,9 @@ async def update_project(thread_id: str, req: UpdateProjectRequest):
             repo_full_name=req.repo_full_name if req.repo_full_name is not None else cur["repo_full_name"],
             repo_owner=req.repo_owner if req.repo_owner is not None else cur["repo_owner"],
             repo_visibility=req.repo_visibility if req.repo_visibility is not None else cur["repo_visibility"],
+            local_path=req.local_path if req.local_path is not None else cur.get("local_path", ""),
+            build_command=req.build_command if req.build_command is not None else cur.get("build_command", ""),
+            build_env_script=req.build_env_script if req.build_env_script is not None else cur.get("build_env_script", ""),
         )
     project = dal.get_project(thread_id)
     if project is None:  # defensive
@@ -1265,7 +1289,7 @@ def _impl_session_response(s: dict) -> ImplementSessionResponse:
         title=s["title"], target_repo=s["target_repo"], runner=s["runner"],
         status=s["status"], pr_url=s["pr_url"], error_message=s["error_message"],
         batch_id=_row_get(s, "batch_id"), issue_number=_row_get(s, "issue_number"),
-        story_key=_row_get(s, "story_key", "") or "",
+        story_key=_row_get(s, "story_key", "") or "", retry_of=_row_get(s, "retry_of"),
         created_at=s["created_at"], updated_at=s["updated_at"],
         runs=[_impl_run_info(r) for r in runs],
     )
@@ -1291,8 +1315,19 @@ def _gitlab_mr_opener(base_url: str, thread_id: str):
         already_opened=lambda sid: (impl_dal.get_session(sid) or {}).get("pr_url", ""))
 
 
+def _local_delivery_opener(thread_id: str):
+    """組 repo_mode=local 的交付 opener（不 push/不開 PR；在快照 work branch commit + 記 baseline..HEAD diff）。
+    工作目錄為專案共用快照 dir；baseline tag 由 orchestrator.prepare_local_branch 打。"""
+    from async_runtime.local_delivery import make_local_delivery_opener
+    return make_local_delivery_opener(
+        workdir_for=lambda _sid: orchestrator.project_clone_dir(thread_id),
+        baseline_tag_for=orchestrator.local_baseline_tag)
+
+
 def _delivery_opener(target: str, creds: dict, thread_id: str):
     """依 delivery target 回對應的 open_pr/open_mr opener（工作目錄以專案為 key）。"""
+    if target == "local":
+        return _local_delivery_opener(thread_id)
     if target == "gitlab":
         return _gitlab_mr_opener((creds.get("base_url") or "https://gitlab.com").rstrip("/"), thread_id)
     return _real_pr_opener(thread_id)
@@ -1470,6 +1505,7 @@ async def implement_start(req: ImplementStartRequest):
     auto_approve = req.auto_approve if req.auto_approve is not None else True
     target_repo = req.target_repo
     clone_url = ""
+    local_path = ""
     open_pr = None
     if is_real:
         from delivery_repo import DeliveryRepoError, resolve_project_repo
@@ -1477,21 +1513,31 @@ async def implement_start(req: ImplementStartRequest):
             target, target_repo = await asyncio.to_thread(resolve_project_repo, reg, req.thread_id)
         except DeliveryRepoError as exc:
             raise HTTPException(400, detail=error_detail("delivery_not_configured", str(exc)))
-        creds = keystore.get_credentials(target)
-        clone_url = _delivery_clone_url(target, creds, target_repo)
-        if not clone_url:
-            raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
-        open_pr = _delivery_opener(target, creds, req.thread_id)
+        if target == "local":
+            # 本機模式：不 clone remote、不開 PR；快照本機路徑 + 本機 branch/diff 交付。
+            # MVP 邊界：僅 single + auto_approve（不走 roles / 審批 gate）。
+            local_path = target_repo            # resolve_project_repo 對 local 回傳本機絕對路徑
+            mode = "single"
+            auto_approve = True
+            open_pr = _local_delivery_opener(req.thread_id)
+        else:
+            creds = keystore.get_credentials(target)
+            clone_url = _delivery_clone_url(target, creds, target_repo)
+            if not clone_url:
+                raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
+            open_pr = _delivery_opener(target, creds, req.thread_id)
     persona_for = _implement_persona_provider(reg, req.thread_id) if mode == "roles" else None
     # per-step runner 只在「真實 runner」時套用；mock = 整條 dry-run，不被 per-step 覆蓋
     runner_for = (_implement_runner_provider(reg, req.thread_id)
                   if (mode == "roles" and req.runner != "mock") else None)
+    # 嘗試串接：若同 thread 有未成功（中斷/失敗）且未被接續的前次 session，串成同一任務的重跑
+    retry_of = impl_dal.find_retry_target(req.thread_id)
     try:
         session_id = orchestrator.start_session(
             thread_id=req.thread_id, story=story, runner=runner, runner_choice=req.runner,
             target_repo=target_repo, title=title, hooks=hooks, mode=mode,
-            open_pr=open_pr, auto_approve=auto_approve, clone_url=clone_url,
-            persona_for=persona_for, runner_for=runner_for,
+            open_pr=open_pr, auto_approve=auto_approve, clone_url=clone_url, local_path=local_path,
+            retry_of=retry_of, persona_for=persona_for, runner_for=runner_for,
         )
     except impl_dal.ImplActiveError:
         raise HTTPException(409, detail=error_detail("impl_in_progress", "此專案已有實作在進行中（共用一份工作目錄），請等它結束或先取消"))
@@ -1658,6 +1704,10 @@ async def implement_approve(session_id: int):
             "not_awaiting_approval", f"session {session_id} 非 awaiting_approval（目前 {s['status']}）"))
     proj = dal.get_project(s["thread_id"]) or {}
     target = (proj.get("delivery_target") or "github").strip()
+    if target == "local":
+        raise HTTPException(400, detail=error_detail(
+            "approval_not_supported_local",
+            "local 模式不支援 PR 審批：實作完成時已直接產出本機 branch + diff"))
     creds = keystore.get_credentials(target)
     if not creds.get("token"):
         raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))

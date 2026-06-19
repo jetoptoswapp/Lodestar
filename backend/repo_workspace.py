@@ -50,3 +50,36 @@ def prepare_project_clone(thread_id: str, remote_url: str) -> Path:
     if proc.returncode != 0:
         raise RuntimeError(f"git clone failed (exit {proc.returncode})")   # 不回顯 stderr（含 token url）
     return dest
+
+
+def prepare_local_snapshot(thread_id: str, local_path: str) -> Path:
+    """repo_mode=local：把本機既有 working tree 複製一份快照到隔離工作目錄。
+
+    - 含未追蹤檔（如 build/ 產物）與已初始化 submodule 內容，並保留 `.git`，以便之後切 branch + 取 diff。
+    - 每次呼叫都以來源為準重新鏡像（rsync --delete），讓每次 implement 都看到當下的本機狀態。
+    - 僅 async 實作端呼叫；sync 讀碼端直接唯讀讀本機路徑、不快照 → 兩端不共用目錄、無競態。
+
+    安全：來源與目的地不得相等、亦不得互為對方的上層目錄；違反則 raise，不執行任何刪除/複製
+    （避免把隔離目錄當來源、或 --delete 反向刪到使用者原始碼）。
+    """
+    src = Path(local_path).expanduser().resolve()
+    dest = project_clone_dir(thread_id)
+    dest_abs = dest.resolve()
+    if not src.is_dir():
+        raise RuntimeError(f"local_path 不是資料夾或不存在: {src}")
+    if src == dest_abs or src in dest_abs.parents or dest_abs in src.parents:
+        raise RuntimeError(f"快照來源與隔離目錄重疊，拒絕執行（src={src} dest={dest_abs}）")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    rsync = shutil.which("rsync")
+    if rsync:
+        proc = subprocess.run([rsync, "-a", "--delete", f"{src}/", f"{dest}/"],
+                              capture_output=True, text=True, timeout=600)
+        if proc.returncode == 0:
+            return dest
+        # rsync 失敗（極少見）→ 落到 cp fallback
+    # fallback：先清乾淨再整份複製（對齊 --delete「以來源為準」語義）
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    shutil.copytree(src, dest, symlinks=True)
+    return dest

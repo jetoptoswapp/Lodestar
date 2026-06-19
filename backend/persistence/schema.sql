@@ -9,12 +9,15 @@ CREATE TABLE IF NOT EXISTS projects (
     workflow_id TEXT,                                   -- NULL → lazy default
     created_at  REAL NOT NULL DEFAULT (strftime('%s','now')),
     -- delivery repo（per-project；lazy 建立。見 tasks/delivery-repo-plan.md）
-    delivery_target TEXT NOT NULL DEFAULT '',           -- github / gitlab / ''
-    repo_mode       TEXT NOT NULL DEFAULT '',           -- new / existing / ''
+    delivery_target TEXT NOT NULL DEFAULT '',           -- github / gitlab / local / ''
+    repo_mode       TEXT NOT NULL DEFAULT '',           -- new / existing / local / ''
     repo_full_name  TEXT NOT NULL DEFAULT '',           -- owner/repo（既有，或開新後回填）
     repo_owner      TEXT NOT NULL DEFAULT '',           -- 開新的 org/group（空=個人帳號）
     repo_visibility TEXT NOT NULL DEFAULT 'private',    -- public / private / internal
-    repo_created    INTEGER NOT NULL DEFAULT 0          -- lazy：repo 是否已建/確認
+    repo_created    INTEGER NOT NULL DEFAULT 0,         -- lazy：repo 是否已建/確認
+    local_path      TEXT NOT NULL DEFAULT '',           -- repo_mode=local：本機資料夾絕對路徑
+    build_command   TEXT NOT NULL DEFAULT '',           -- build_verify stage 跑的編譯指令
+    build_env_script TEXT NOT NULL DEFAULT ''           -- build 前 source 的 env script（toolchain 上 PATH）
 );
 
 -- artifact 正文直接存表（取代 ver2 LangGraph checkpoint blob）
@@ -86,6 +89,13 @@ CREATE TABLE IF NOT EXISTS workflow_definitions (
     stages_json   TEXT NOT NULL DEFAULT '[]',           -- JSON: [{stage_id, depends_on[], agent_id?}]
     source_plugin TEXT NOT NULL DEFAULT '',
     created_at    REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- 使用者自訂的 workflow 顯示順序。以 workflow_id 為鍵 → 同時涵蓋 builtin（記憶體註冊）與
+-- user-defined（workflow_definitions）；沒登記的 id 在清單依預設順序殿後。
+CREATE TABLE IF NOT EXISTS workflow_order (
+    workflow_id TEXT PRIMARY KEY,
+    position    INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS plugin_contributions (
@@ -230,12 +240,13 @@ CREATE TABLE IF NOT EXISTS impl_sessions (
     title        TEXT NOT NULL DEFAULT '',                -- story / 目標標題
     target_repo  TEXT NOT NULL DEFAULT '',                -- owner/repo（mock 階段為示意值）
     runner       TEXT NOT NULL DEFAULT '',                -- runner choice（claude-cli / mock）
-    status       TEXT NOT NULL DEFAULT 'pending',         -- pending/running/succeeded/failed/cancelled
+    status       TEXT NOT NULL DEFAULT 'pending',         -- pending/running/succeeded/failed/cancelled/interrupted
     pr_url       TEXT NOT NULL DEFAULT '',                -- 開 PR 後填（mock 階段為示意 url）
     error_message TEXT NOT NULL DEFAULT '',
     batch_id     INTEGER,                                 -- 屬於哪個 batch（NULL = 舊的單 story session）
     issue_number INTEGER,                                 -- 對應的 GitHub/GitLab issue 編號
     story_key    TEXT NOT NULL DEFAULT '',                -- story 編號 N.M（排序 / 顯示）
+    retry_of     INTEGER,                                 -- 接續的前次 session（中斷/失敗後重跑）；鏈尾=任務現況
     created_at   REAL NOT NULL DEFAULT (strftime('%s','now')),
     updated_at   REAL NOT NULL DEFAULT (strftime('%s','now'))
 );

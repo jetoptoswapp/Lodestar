@@ -20,7 +20,7 @@ from persistence.dal import connect
 # 注意：design 由 architecture 與 ui_design 共用，靠 operation suffix 區分（見 _stage_section）。
 _HARNESS_TO_STAGE = {"specify": "prd", "design": "architecture", "deliver": "stories"}
 _PRE_IMPL_STAGES = ("prd", "architecture", "ui_design", "stories")
-_TERMINAL = ("succeeded", "failed", "cancelled")
+_TERMINAL = ("succeeded", "failed", "cancelled", "interrupted")
 
 
 def _stage_section(conn, thread_id: str) -> list[dict]:
@@ -67,7 +67,7 @@ def _implement_section(conn, thread_id: str) -> dict:
         "SELECT batch_id, status, total, mode, auto_merge, created_at, updated_at "
         "FROM impl_batches WHERE thread_id = ? ORDER BY batch_id", (thread_id,)).fetchall()]
     sessions = [dict(r) for r in conn.execute(
-        "SELECT session_id, batch_id, story_key, title, status, pr_url, created_at, updated_at, error_message "
+        "SELECT session_id, batch_id, story_key, title, status, pr_url, created_at, updated_at, error_message, retry_of "
         "FROM impl_sessions WHERE thread_id = ? ORDER BY session_id", (thread_id,)).fetchall()]
     runs_by_session: dict[int, list] = {}
     for r in conn.execute(
@@ -77,11 +77,21 @@ def _implement_section(conn, thread_id: str) -> dict:
         runs_by_session.setdefault(r["session_id"], []).append(dict(r))
     usage_map = impl_usage.usage_by_session(thread_id)
 
-    # 按 story_key 去重：同一 story 被多個 batch 重跑過，取「最新 session（最大 session_id）」為現況；
-    # 成本/嘗試數跨所有 session 加總（重跑也是花費）。story_key 為空者各自獨立（用 session_id 當鍵）。
+    # 按 story_key 去重：同一 story 被多個 batch 重跑過，取「最新 session」為現況；成本/嘗試數跨所有
+    # session 加總。story_key 為空的單 session 改按 retry_of「嘗試鏈的鏈根」分組，讓「中斷/失敗→重跑」
+    # 串成同一任務（鏈尾 = 任務現況），而不是並排成兩列無關紀錄。
+    _retry = {s["session_id"]: s.get("retry_of") for s in sessions}
+
+    def _chain_root(sid: int) -> int:
+        seen: set = set()
+        while _retry.get(sid) and _retry[sid] not in seen:
+            seen.add(sid)
+            sid = _retry[sid]
+        return sid
+
     by_key: dict[str, list] = {}
     for s in sessions:
-        key = s["story_key"] or f"#sid{s['session_id']}"
+        key = s["story_key"] or f"#sid{_chain_root(s['session_id'])}"
         by_key.setdefault(key, []).append(s)
 
     stories = []
@@ -114,9 +124,17 @@ def _implement_section(conn, thread_id: str) -> dict:
             "error_message": current["error_message"] or "",
             "duration_sec": round(max(ends) - min(starts), 1) if starts and ends else None,
             "attempts": max((x["attempt"] for x in sruns), default=0),     # 現況這次的 RD 重做輪數
-            "batch_runs": len(group),                                      # 被幾個 batch 重跑過
+            "batch_runs": len(group),                                      # 此任務被嘗試幾次（含重跑）
             "roles": roles,
             "cost_usd": cost, "total_tokens": tokens,                      # 跨所有重跑加總
+            # 嘗試串接：同任務各次嘗試的歷程 + 中斷/失敗次數（讓 UI 顯示「曾中斷但最終完成」）
+            "interrupted_count": sum(1 for s in group if s["status"] == "interrupted"),
+            "failed_count": sum(1 for s in group if s["status"] == "failed"),
+            "attempts_history": [
+                {"session_id": s["session_id"], "status": s["status"],
+                 "pr_url": s["pr_url"] or "", "created_at": s["created_at"]}
+                for s in group
+            ],
         })
     stories.sort(key=_story_sort_key)
     total_runs = sum(len(v) for v in runs_by_session.values())   # 所有 session/重試的 run 總數
@@ -138,13 +156,44 @@ def _span(values: list[Optional[float]]) -> tuple[Optional[float], Optional[floa
     return (min(vals), max(vals)) if vals else (None, None)
 
 
+def _run_intervals(conn, thread_id: str) -> list[tuple[float, float]]:
+    """所有 agent 執行的 [起, 訖] 區間（pre-impl harness + implement runs）。"""
+    rows = conn.execute(
+        "SELECT started_at, ended_at FROM harness_runs WHERE thread_id = ? "
+        "UNION ALL "
+        "SELECT r.started_at, r.ended_at FROM impl_runs r "
+        "JOIN impl_sessions s ON r.session_id = s.session_id "
+        "WHERE s.thread_id = ? AND r.status != 'interrupted'",   # 行程被打斷的孤兒 run 不計入實際耗時
+        (thread_id, thread_id)).fetchall()
+    return [(r["started_at"], r["ended_at"]) for r in rows
+            if r["started_at"] and r["ended_at"] and r["ended_at"] > r["started_at"]]
+
+
+def _active_seconds(intervals: list[tuple[float, float]]) -> float:
+    """合併重疊區間後的總時長＝實際消耗時間：排除閒置空檔，平行執行不重複計。"""
+    if not intervals:
+        return 0.0
+    total = 0.0
+    cur_s, cur_e = None, None
+    for s, e in sorted(intervals):
+        if cur_e is None or s > cur_e:
+            if cur_e is not None:
+                total += cur_e - cur_s
+            cur_s, cur_e = s, e
+        else:
+            cur_e = max(cur_e, e)
+    total += cur_e - cur_s
+    return total
+
+
 def project_summary(thread_id: str) -> dict:
     with connect() as conn:
         stages = _stage_section(conn, thread_id)
         implement = _implement_section(conn, thread_id)
+        active_sec = _active_seconds(_run_intervals(conn, thread_id))
     usage = impl_usage.thread_usage(thread_id)
 
-    # 整體跨度：stage 時間軸 + impl batch 起訖
+    # 整體跨度：stage 時間軸 + impl batch 起訖（牆鐘跨度，含閒置；僅作參考）
     impl_times = []
     for b in implement["batches"]:
         impl_times += [b.get("created_at"), b.get("updated_at")]
@@ -159,10 +208,15 @@ def project_summary(thread_id: str) -> dict:
         "totals": {
             "first_activity": first,
             "last_activity": last,
-            "span_sec": round(last - first, 1) if first and last else None,
-            "stories_total": len(stories),                       # 去重後的 unique story 數
+            "active_sec": round(active_sec, 1) if active_sec else None,   # 實際消耗（合併 run 區間）
+            "span_sec": round(last - first, 1) if first and last else None,  # 牆鐘跨度（含閒置）
+
+            "stories_total": len(stories),                       # 去重後的 unique 任務數（嘗試鏈聚合後）
             "stories_with_mr": sum(1 for s in stories if s["pr_url"]),
             "stories_failed": sum(1 for s in stories if s["status"] == "failed"),
+            "stories_interrupted": sum(1 for s in stories if s["status"] == "interrupted"),  # 曾中斷且尚未完成
+            "stories_recovered": sum(1 for s in stories                                       # 中斷/失敗過但最終完成
+                                     if s["status"] == "succeeded" and (s["interrupted_count"] + s["failed_count"]) > 0),
             "agent_runs": sum(s["agent_runs"] for s in stages) + implement["total_runs"],
             "cost_usd": usage["cost_usd"],
             "total_tokens": usage["total_tokens"],

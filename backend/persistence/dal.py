@@ -133,14 +133,17 @@ def delete_integration_secret(target: str) -> bool:
 def create_project(thread_id: str, name: str, workflow_id: Optional[str] = None, *,
                    delivery_target: str = "", repo_mode: str = "",
                    repo_full_name: str = "", repo_owner: str = "",
-                   repo_visibility: str = "private") -> None:
+                   repo_visibility: str = "private", local_path: str = "",
+                   build_command: str = "", build_env_script: str = "") -> None:
     with connect() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO projects (thread_id, name, workflow_id, "
-            "delivery_target, repo_mode, repo_full_name, repo_owner, repo_visibility) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "delivery_target, repo_mode, repo_full_name, repo_owner, repo_visibility, local_path, "
+            "build_command, build_env_script) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (thread_id, name, workflow_id, delivery_target, repo_mode,
-             repo_full_name, repo_owner, repo_visibility),
+             repo_full_name, repo_owner, repo_visibility, local_path,
+             build_command, build_env_script),
         )
 
 
@@ -181,13 +184,16 @@ def update_project_name(thread_id: str, name: str) -> bool:
 
 def update_project_delivery(thread_id: str, *, delivery_target: str, repo_mode: str,
                             repo_full_name: str, repo_owner: str,
-                            repo_visibility: str) -> bool:
-    """設定/更新 project 的 delivery repo。改設定 → 重置 repo_created=0（new mode 需重新 resolve/建）。"""
+                            repo_visibility: str, local_path: str = "",
+                            build_command: str = "", build_env_script: str = "") -> bool:
+    """設定/更新 project 的 delivery repo + build 設定。改設定 → 重置 repo_created=0（new mode 需重新 resolve/建）。"""
     with connect() as conn:
         cur = conn.execute(
             "UPDATE projects SET delivery_target=?, repo_mode=?, repo_full_name=?, "
-            "repo_owner=?, repo_visibility=?, repo_created=0 WHERE thread_id=?",
-            (delivery_target, repo_mode, repo_full_name, repo_owner, repo_visibility, thread_id),
+            "repo_owner=?, repo_visibility=?, local_path=?, build_command=?, build_env_script=?, "
+            "repo_created=0 WHERE thread_id=?",
+            (delivery_target, repo_mode, repo_full_name, repo_owner, repo_visibility,
+             local_path, build_command, build_env_script, thread_id),
         )
         return cur.rowcount > 0
 
@@ -527,6 +533,23 @@ def delete_workflow_definition(wf_id: str) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM workflow_definitions WHERE id = ?", (wf_id,))
         return cur.rowcount > 0
+
+
+def get_workflow_order() -> dict[str, int]:
+    """回傳 {workflow_id: position}（使用者自訂的顯示順序；未登記的不在內）。"""
+    with connect() as conn:
+        rows = conn.execute("SELECT workflow_id, position FROM workflow_order").fetchall()
+    return {r["workflow_id"]: r["position"] for r in rows}
+
+
+def set_workflow_order(ids: list[str]) -> None:
+    """整批覆寫顯示順序：依傳入順序給 position 0..n-1（先清空再寫，保證無殘留）。"""
+    with connect() as conn:
+        conn.execute("DELETE FROM workflow_order")
+        conn.executemany(
+            "INSERT INTO workflow_order (workflow_id, position) VALUES (?, ?)",
+            [(wf_id, i) for i, wf_id in enumerate(ids)],
+        )
 
 
 def list_agents() -> list[dict]:

@@ -127,6 +127,15 @@ export async function deleteWorkflowApi(id: string): Promise<void> {
   await apiCall(`/api/workflows/${id}`, { method: "DELETE" });
 }
 
+// 整批覆寫顯示順序（含 builtin + user），回傳套用後的清單。
+export async function reorderWorkflows(order: string[]): Promise<Workflow[]> {
+  const r = await apiCall<{ workflows: Workflow[] }>("/api/workflows/reorder", {
+    method: "POST",
+    body: JSON.stringify({ order }),
+  });
+  return r.workflows;
+}
+
 // ============================================================
 //  Agents CRUD
 // ============================================================

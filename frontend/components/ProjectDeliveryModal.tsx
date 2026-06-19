@@ -32,9 +32,14 @@ export function ProjectDeliveryModal({
   const [repoFullName, setRepoFullName] = useState("");
   const [repoOwner, setRepoOwner] = useState("");
   const [repoVisibility, setRepoVisibility] = useState("private");
+  const [localPath, setLocalPath] = useState("");    // repo_mode=local：本機資料夾絕對路徑
+  const [buildCommand, setBuildCommand] = useState("");      // build_verify stage 編譯指令
+  const [buildEnvScript, setBuildEnvScript] = useState("");  // build 前 source 的 env script
   const [tokenSet, setTokenSet] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isLocal = target === "local";
 
   const modifyExisting = workflowId === MODIFY_EXISTING_ID;
 
@@ -44,7 +49,8 @@ export function ProjectDeliveryModal({
     setBusy(false);
     if (isNew) {
       setName("新需求"); setWorkflowId("default"); setTarget(""); setRepoMode("new");
-      setRepoFullName(""); setRepoOwner(""); setRepoVisibility("private");
+      setRepoFullName(""); setRepoOwner(""); setRepoVisibility("private"); setLocalPath("");
+      setBuildCommand(""); setBuildEnvScript("");
     } else {
       fetch(`${apiBase}/api/projects/${thread}`)
         .then((r) => r.json())
@@ -53,6 +59,8 @@ export function ProjectDeliveryModal({
           setRepoMode(((p.repo_mode || "new") as Mode));
           setRepoFullName(p.repo_full_name ?? ""); setRepoOwner(p.repo_owner ?? "");
           setRepoVisibility(p.repo_visibility || "private");
+          setLocalPath(p.local_path ?? "");
+          setBuildCommand(p.build_command ?? ""); setBuildEnvScript(p.build_env_script ?? "");
         })
         .catch((e) => setError(`讀取專案失敗：${e.message}`));
     }
@@ -69,7 +77,7 @@ export function ProjectDeliveryModal({
   };
 
   useEffect(() => {
-    if (!open || !target) { setTokenSet(null); return; }
+    if (!open || !target || target === "local") { setTokenSet(null); return; }  // local 無需 token
     let alive = true;
     fetch(`${apiBase}/api/integrations/${target}/credentials`)
       .then((r) => (r.ok ? r.json() : null))
@@ -89,15 +97,20 @@ export function ProjectDeliveryModal({
 
   const submit = async () => {
     if (!name.trim()) { setError("專案名稱不可為空"); return; }
-    if (isNew && modifyExisting && !(target && repoMode === "existing" && repoFullName.trim())) {
-      setError("「修改既有專案」需指定既有 repo（target + owner/repo）");
+    if (isNew && modifyExisting && !(target && (isLocal ? localPath.trim() : repoMode === "existing" && repoFullName.trim()))) {
+      setError("「修改既有專案」需指定既有 repo（owner/repo）或本機資料夾路徑");
       return;
     }
+    if (isLocal && !localPath.trim()) { setError("本機資料夾路徑不可為空"); return; }
+    if (isLocal && !localPath.trim().startsWith("/")) { setError("本機資料夾請填絕對路徑（以 / 開頭）"); return; }
     setBusy(true); setError(null);
-    const delivery = target
-      ? { delivery_target: target, repo_mode: repoMode, repo_full_name: repoFullName.trim(),
-          repo_owner: repoOwner.trim(), repo_visibility: repoVisibility }
-      : { delivery_target: "" };
+    const buildCfg = { build_command: buildCommand.trim(), build_env_script: buildEnvScript.trim() };
+    const delivery = !target
+      ? { delivery_target: "" }
+      : isLocal
+      ? { delivery_target: "local", repo_mode: "local", local_path: localPath.trim(), ...buildCfg }
+      : { delivery_target: target, repo_mode: repoMode, repo_full_name: repoFullName.trim(),
+          repo_owner: repoOwner.trim(), repo_visibility: repoVisibility, ...buildCfg };
     try {
       let tid = thread;
       if (isNew) {
@@ -172,10 +185,11 @@ export function ProjectDeliveryModal({
               <option value="">（先不設，之後再設）</option>
               <option value="github">github</option>
               <option value="gitlab">gitlab</option>
+              <option value="local">local（本機資料夾）</option>
             </select>
           </div>
 
-          {target && (
+          {target && !isLocal && (
             <>
               {tokenSet === false && (
                 <div className="flex items-center justify-between gap-2 border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 font-[family-name:var(--font-mono)] text-[11px] text-[#f59e0b]">
@@ -211,6 +225,30 @@ export function ProjectDeliveryModal({
                 ⓘ 開新 repo 採 lazy：在你要交付（發 issue／自動實作開 PR）時才真正建立。token 於 ⚙ INTEGRATIONS 設定。
               </p>
             </>
+          )}
+
+          {isLocal && (
+            <div>
+              <label className={lbl}>本機資料夾路徑（絕對路徑）</label>
+              <input className={fc} value={localPath} onChange={(e) => setLocalPath(e.target.value)}
+                placeholder="/Users/you/project" spellCheck={false} />
+              <p className="mt-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase leading-[1.6] tracking-[0.16em] text-[var(--ink-muted)]">
+                ⓘ 指向本機既有資料夾。談變更時 AI 唯讀讀取此資料夾（看得到未 commit 的 WIP）；實作時複製一份快照動工、產出 branch + diff，不開 PR、原始資料夾不受影響。
+              </p>
+            </div>
+          )}
+
+          {target && (
+            <div className="space-y-2 border-t border-[var(--rule-dark)] pt-3">
+              <label className={lbl}>Build 驗證（build_verify stage 用 · 選填）</label>
+              <input className={fc} value={buildCommand} onChange={(e) => setBuildCommand(e.target.value)}
+                placeholder="cmake --build . --target flash_nn" spellCheck={false} />
+              <input className={fc} value={buildEnvScript} onChange={(e) => setBuildEnvScript(e.target.value)}
+                placeholder="（選填）build 前 source 的 env script，如 /path/to/sdk/env.sh" spellCheck={false} />
+              <p className="font-[family-name:var(--font-mono)] text-[10px] uppercase leading-[1.6] tracking-[0.16em] text-[var(--ink-muted)]">
+                ⓘ build_verify stage 會在 implement 的快照上跑「build 指令」驗證編譯；env script 讓 toolchain（如 arm-none-eabi-gcc）上 PATH。可留空，之後再補。
+              </p>
+            </div>
           )}
         </div>
 

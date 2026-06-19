@@ -9,6 +9,7 @@ from plugin_api import PluginHost
 from plugin_api.workflow import AgentBinding, WorkflowSpec
 
 from .architecture_stage import ARCHITECTURE_STAGE, VALIDATORS as ARCH_VALIDATORS
+from .build_verify_stage import BUILD_VERIFY_STAGE
 from .change_request_stage import CHANGE_REQUEST_STAGE
 from .prd_stage import PRD_STAGE, VALIDATORS as PRD_VALIDATORS
 from .stories_stage import STORIES_STAGE, VALIDATORS as STORIES_VALIDATORS
@@ -22,6 +23,7 @@ def register(host: PluginHost) -> None:
     host.register_stage(UI_DESIGN_STAGE)
     host.register_stage(STORIES_STAGE)
     host.register_stage(CHANGE_REQUEST_STAGE)
+    host.register_stage(BUILD_VERIFY_STAGE)   # 跑編譯驗證的非 LLM stage（可在 /workflows 加進任何 workflow）
 
     # 2. validators —— 雙詞彙 (telemetry_stage, operation) 對應 registry
     for vlist in (PRD_VALIDATORS, ARCH_VALIDATORS, UI_VALIDATORS, STORIES_VALIDATORS):

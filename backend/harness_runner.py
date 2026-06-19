@@ -72,6 +72,11 @@ class HarnessRunner:
         # fix-loop 用：記下上次 run 的 validation outcomes，供 feedback_block 取用
         self._last_validations: list[HarnessValidationOutcome] = []
 
+    def record_validations(self, outcomes: list[HarnessValidationOutcome]) -> None:
+        """供非 LLM stage（如 build_verify）直接記錄 validation outcomes，讓 engine 的 has_fail
+        機制生效（fail → stage 標 needs_revision），不必經 harnessed_step / model adapter。"""
+        self._last_validations = list(outcomes)
+
     # ============ harnessed_step ============
     def harnessed_step(
         self, *, telemetry_stage: str, operation: str, prompt: str,

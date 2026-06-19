@@ -1,6 +1,7 @@
 """per-project delivery repo 解析（host 層）。
 
 resolve_project_repo：依專案的 delivery 設定回 (target, repo_full_name)。
+- local：不 clone remote；repo_full_name 位置回傳本機資料夾絕對路徑（呼叫端據此走快照/唯讀讀碼）。
 - existing：直接回設定的 owner/repo。
 - new 且未建：用 integration.create_repo + keystore token lazy 建 repo，回填 DB（repo_created=1）。
 - new 且已建：回回填的 full_name（冪等，不重複建）。
@@ -38,6 +39,12 @@ def resolve_project_repo(registry, thread_id: str, *, create: bool = True) -> tu
     full = (proj.get("repo_full_name") or "").strip()
     mode = (proj.get("repo_mode") or "").strip()
 
+    if mode == "local":
+        # 本機資料夾：不 clone remote，repo_full_name 位置回傳本機絕對路徑。
+        local = (proj.get("local_path") or "").strip()
+        if not local:
+            raise DeliveryRepoError("local 模式但未填本機路徑（local_path）")
+        return target, local
     if mode == "existing":
         if not full:
             raise DeliveryRepoError("existing 模式但未填 repo（owner/repo）")
@@ -70,6 +77,8 @@ def clone_url(target: str, creds: dict, repo: str) -> str:
     """依 delivery target 組含 token 的 clone url（token 缺 → ""）。
 
     sync 生成端（workflow_engine 讀碼 stage）與 async 實作端共用，故放 host 層。"""
+    if target == "local":
+        return ""  # 本機模式不 clone remote（防呆：呼叫端應已分流，不會走到這）
     token = creds.get("token", "")
     if not token:
         return ""
