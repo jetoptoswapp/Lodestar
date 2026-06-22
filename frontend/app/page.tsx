@@ -2785,7 +2785,9 @@ function ArchSectionView({ heading, body, num }: { heading: string; body: string
 function MarkdownBlock({ text }: { text: string }) {
   const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
   return (
-    <div className="space-y-4 font-[family-name:var(--font-sans)] text-[14px] leading-[1.7] text-[#cdd4df]">
+    // min-w-0 + overflow-wrap:anywhere：長 token（路徑 / URL / 無空白字串）與寬表格欄位才會換行塞進
+    // 內容欄，而非把整份文件撐出橫向捲動、右側被裁切看不到（overflow-wrap 會繼承到 p / li / td）。
+    <div className="min-w-0 space-y-4 font-[family-name:var(--font-sans)] text-[14px] leading-[1.7] text-[#cdd4df] [overflow-wrap:anywhere]">
       {blocks.map((b, i) => {
         if (b.kind === "code") {
           return (
@@ -2879,7 +2881,8 @@ function MarkdownTable({ src }: { src: string }) {
   const header = split(lines[0]);
   const rows = lines.slice(2).map(split);
   return (
-    <div className="overflow-x-auto">
+    // max-w-full + overflow-x-auto：內容仍超寬時只讓「表格自己」橫向捲動（有可見捲軸），不外溢整份文件
+    <div className="max-w-full overflow-x-auto">
       <table className="w-full border-collapse text-[13px]">
         <thead>
           <tr>

@@ -374,8 +374,10 @@ class DeliveryPublishRequest(BaseModel):
 class DeliveryPublishResponse(BaseModel):
     success: bool
     target: str
-    count: int
-    created: list[str]      # 已建立的 issue / ticket URL
+    count: int              # 預計總數（含已存在的）
+    created: list[str]      # 本次新建的 issue / ticket URL
+    skipped: int = 0        # 冪等：已存在、跳過未重建
+    failed: list[dict] = [] # 逐項失敗 [{"title","reason"}]
 
 
 class DocsPublishResponse(BaseModel):

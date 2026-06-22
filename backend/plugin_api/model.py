@@ -4,7 +4,12 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, Optional
+
+# 直接以子模組路徑匯入（非 `from plugin_api import rate_limit`）：本檔在 plugin_api/__init__
+# 初始化途中被載入，走子模組路徑可避開「__init__ 尚未設好屬性」的迴圈匯入陷阱。rate_limit 僅依賴 stdlib。
+import plugin_api.rate_limit as rate_limit
 
 _log = logging.getLogger("plugin_api.runner")
 
@@ -92,27 +97,73 @@ class AgentRunner(ABC):
     async def run(self, *, cwd: str, prompt: str, timeout: int,
                   on_log: OnLog, on_event: Optional[OnEvent] = None,
                   hooks: Optional[list[ToolHook]] = None) -> RunResult:
-        """base class 統一驅動子程序 / 串流 / timeout / 取消。
+        """base class 統一驅動子程序 / 串流 / timeout / 取消 / 用量上限自動續跑。
 
         紀律：
         - prompt 經 stdin 餵入後關閉（避免命令列長度上限、避免 CLI 卡在讀 stdin）
-        - pre_run hook：None=原樣、list=改寫 argv、raise HookAbort=拒絕（向上拋給 caller）
+        - pre_run hook：None=原樣、list=改寫 argv、raise HookAbort=拒絕（向上拋給 caller）；只跑一次
         - on_log_chunk hook：None=丟棄該行、str=轉發（可 redact）；逐行串流
         - timeout / cancel 皆 graceful terminate→5s→kill
         - 子程序 spawn 失敗（FileNotFoundError 等）回傳 exit_code=127 而非例外
+        - 用量上限（5hr 訂閱方案）：子類 _detect_rate_limit 命中 → 算解鎖時間 → 可取消地等到那刻 →
+          重啟同一子程序自動續跑（封頂 cfg.max_cycles 輪，防無限迴圈）。等待對 caller 透明，
+          回傳的是「等完並續跑後的最終 result」。post_run 只在最終 result 跑一次。
         """
         hooks = hooks or []
         self._cancel_requested = False
         self._proc = None
+        self._cancel_event = asyncio.Event()   # 供等待用量重置期間被 cancel 即時喚醒
 
         argv = self.build_argv(cwd=cwd, prompt=prompt)
         env = dict(os.environ)
-        # pre_run：HookAbort 直接往上拋（caller 負責記錄為拒絕）
+        # pre_run：HookAbort 直接往上拋（caller 負責記錄為拒絕）。只在進迴圈前跑一次（argv 不變）。
         for hook in hooks:
             rewritten = hook.pre_run(self.name, argv, env)
             if rewritten is not None:
                 argv = rewritten
 
+        cfg = rate_limit.load_config()
+        result = RunResult(exit_code=-1)
+        for cycle in range(cfg.max_cycles + 1):
+            self._last_scan = ""
+            result = await self._spawn_once(
+                argv=argv, env=env, cwd=cwd, prompt=prompt, timeout=timeout,
+                on_log=on_log, on_event=on_event, hooks=hooks,
+            )
+            # 終局（成功 / 取消 / 逾時）→ 收工
+            if result.ok or result.cancelled or result.timed_out:
+                break
+            # 純失敗 → 是否為用量上限？（用 head∪tail 偵測，避免大型輸出漏看最後的上限事件）
+            # 非上限 → 交回 caller 既有重試策略
+            signal = self._detect_rate_limit(getattr(self, "_last_scan", "") or result.last_output)
+            if signal is None:
+                break
+            if cycle >= cfg.max_cycles:
+                on_log(f"[rate-limit] 已續跑 {cfg.max_cycles} 輪仍受限，停止等待\n")
+                break
+            wait_s = rate_limit.seconds_until(signal, now=datetime.now(), cfg=cfg)
+            on_log(f"⏸ {signal.message}；約 {rate_limit.humanize(wait_s)} 後自動續跑\n")
+            if on_event is not None:
+                on_event({"type": "rate_limit_wait", "runner": self.name,
+                          "reset_at": signal.reset_at.isoformat() if signal.reset_at else None,
+                          "seconds": wait_s})
+            interrupted = await self._sleep(wait_s)
+            if interrupted:                       # 等待中被 cancel → 視為取消，不再續跑
+                result.cancelled = True
+                break
+            on_log("▶ 用量已重置，續跑中\n")
+            if on_event is not None:
+                on_event({"type": "rate_limit_resume", "runner": self.name})
+
+        for hook in hooks:
+            hook.post_run(self.name, result)
+        return result
+
+    async def _spawn_once(self, *, argv: list[str], env: dict, cwd: str, prompt: str,
+                          timeout: int, on_log: OnLog, on_event: Optional[OnEvent],
+                          hooks: list[ToolHook]) -> RunResult:
+        """跑一次子程序（spawn + 串流 + timeout/cancel），回 RunResult。
+        不跑 pre_run/post_run（由 run() 統籌）；可被 run() 在用量上限續跑時重複呼叫。"""
         if on_event is not None:
             on_event({"type": "start", "runner": self.name, "argv": argv})
 
@@ -128,14 +179,15 @@ class AgentRunner(ABC):
             )
         except (OSError, ValueError) as exc:
             _log.warning("runner %s spawn failed: %s", self.name, exc)
-            result = RunResult(exit_code=127, last_output=f"spawn failed: {exc}")
-            for hook in hooks:
-                hook.post_run(self.name, result)
-            return result
+            return RunResult(exit_code=127, last_output=f"spawn failed: {exc}")
 
         self._proc = proc
         captured: list[str] = []
         captured_bytes = 0
+        # 另留一段「尾段」緩衝：captured 只收前 64KB（head），但用量上限 / result 事件在輸出的最後，
+        # 大型輸出時 head 收不到。尾段環狀緩衝確保偵測看得到最後的事件（與 head 合併供偵測用）。
+        tail: list[str] = []
+        tail_bytes = 0
         timed_out = False
 
         async def _feed_stdin() -> None:
@@ -153,7 +205,7 @@ class AgentRunner(ABC):
                     pass
 
         async def _read_stdout() -> None:
-            nonlocal captured_bytes
+            nonlocal captured_bytes, tail_bytes
             assert proc.stdout is not None
             async for raw in proc.stdout:
                 line: Optional[str] = raw.decode("utf-8", errors="replace")
@@ -167,6 +219,10 @@ class AgentRunner(ABC):
                 if captured_bytes < self.last_output_max_bytes:
                     captured.append(line)
                     captured_bytes += len(line.encode("utf-8"))
+                tail.append(line)
+                tail_bytes += len(line.encode("utf-8"))
+                while tail_bytes > self.last_output_max_bytes and len(tail) > 1:
+                    tail_bytes -= len(tail.pop(0).encode("utf-8"))
 
         async def _drive() -> None:
             # 並行餵 stdin + 讀 stdout：避免「大 prompt × 早期大量輸出」的管線死結
@@ -192,16 +248,38 @@ class AgentRunner(ABC):
             cancelled=cancelled,
             timed_out=timed_out,
         )
+        # 偵測用文字 = head ∪ tail（小型輸出兩者重疊，無害；大型輸出確保看得到最後的 result/上限事件）。
+        self._last_scan = result.last_output + "".join(tail)
         if on_event is not None:
             on_event({"type": "exit", "runner": self.name, "code": exit_code,
                       "cancelled": cancelled, "timed_out": timed_out})
-        for hook in hooks:
-            hook.post_run(self.name, result)
         return result
 
+    def _detect_rate_limit(self, output: str) -> Optional[rate_limit.RateLimitSignal]:
+        """子類覆寫：從輸出判斷是否撞到用量上限並解析解鎖時間。base 不判（回 None）。"""
+        return None
+
+    async def _sleep(self, seconds: float) -> bool:
+        """睡 seconds 秒；期間被 cancel() 喚醒則提早回 True（中斷），睡滿回 False。
+        抽成 method 便於測試覆寫（不真的睡）。"""
+        if seconds <= 0:
+            return self._cancel_requested
+        ev = getattr(self, "_cancel_event", None)
+        if ev is None:
+            await asyncio.sleep(seconds)
+            return self._cancel_requested
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=seconds)
+            return True                          # event 被 set → 等待中遭取消
+        except asyncio.TimeoutError:
+            return False                         # 睡滿，未被取消
+
     async def cancel(self) -> None:
-        """要求取消：標記旗標 + graceful terminate 已存子程序。"""
+        """要求取消：標記旗標 + 喚醒等待中的睡眠 + graceful terminate 已存子程序。"""
         self._cancel_requested = True
+        ev = getattr(self, "_cancel_event", None)
+        if ev is not None:
+            ev.set()
         proc = getattr(self, "_proc", None)
         if proc is not None:
             await self._terminate(proc)

@@ -49,6 +49,8 @@ type PublishResult = {
   target: string;
   count: number;
   created: string[];
+  skipped?: number;                          // 冪等：已存在、跳過未重建
+  failed?: { title: string; reason: string }[]; // 逐項失敗
 };
 
 type Step =
@@ -497,7 +499,11 @@ function PublishingStep({ target }: { target: string }) {
 }
 
 function ResultStep({ result }: { result: PublishResult }) {
-  const failed = result.count - result.created.length;
+  const skipped = result.skipped ?? 0;
+  const failedList = result.failed ?? [];
+  const failed = failedList.length;
+  const created = result.created.length;
+  const allSkipped = created === 0 && failed === 0 && skipped > 0;
   return (
     <div className="space-y-4">
       <div
@@ -508,14 +514,30 @@ function ResultStep({ result }: { result: PublishResult }) {
         }`}
       >
         <div className="font-[family-name:var(--font-display)] text-[18px] font-semibold text-[#e6ecf5]">
-          {result.success ? "✓ 發佈完成" : failed > 0 ? "⚠ 部分失敗" : "✗ 發佈失敗"}
+          {result.success ? (allSkipped ? "✓ 已是最新（全部已存在）" : "✓ 發佈完成") : "⚠ 部分失敗"}
         </div>
         <p className="mt-1 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.18em] text-[var(--ink-muted)]">
-          target {result.target} · 預計 {result.count} · 已建立 {result.created.length}
+          target {result.target} · 預計 {result.count} · 新建 {created}
+          {skipped > 0 && <span> · 跳過 {skipped}</span>}
           {failed > 0 && <span className="text-[#f47171]"> · 失敗 {failed}</span>}
         </p>
       </div>
-      {result.created.length > 0 ? (
+      {failed > 0 && (
+        <div>
+          <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[#f47171]">
+            失敗項目 · 再按一次發佈會自動只補這些（不重複已建）
+          </div>
+          <ul className="max-h-[28vh] overflow-y-auto space-y-1">
+            {failedList.map((f, i) => (
+              <li key={f.title + i} className="border border-[color-mix(in_oklab,#f47171_30%,transparent)] bg-[color-mix(in_oklab,#f47171_6%,transparent)] px-3 py-1.5">
+                <div className="font-[family-name:var(--font-sans)] text-[12.5px] text-[#e6ecf5] [overflow-wrap:anywhere]">{f.title}</div>
+                <div className="font-[family-name:var(--font-mono)] text-[10.5px] text-[var(--ink-muted)] [overflow-wrap:anywhere]">{f.reason}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {created > 0 ? (
         <div>
           <div className="mb-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.22em] text-[var(--ink-muted)]">
             已建立的 issue
@@ -536,6 +558,10 @@ function ResultStep({ result }: { result: PublishResult }) {
             ))}
           </ul>
         </div>
+      ) : skipped > 0 ? (
+        <p className="font-[family-name:var(--font-sans)] text-[13px] text-[var(--ink-muted)]">
+          全部 {skipped} 個 story 在 repo 都已存在，無需重建（冪等：不會重複發佈）。
+        </p>
       ) : (
         <p className="font-[family-name:var(--font-sans)] text-[13px] text-[var(--ink-muted)]">
           沒有 issue 被建立。檢查 token / repo 設定是否正確，或看 backend log。

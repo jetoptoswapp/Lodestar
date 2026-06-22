@@ -208,6 +208,9 @@ body::before {
   }
 }
 
+/* mermaid 圖縮放塞進內容欄，避免寬流程圖把整份文件撐出橫向捲動、右側看不到 */
+.mermaid-shell svg { max-width: 100%; height: auto; }
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--rule-dark); border-radius: 0; }

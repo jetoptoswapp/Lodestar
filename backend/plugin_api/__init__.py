@@ -14,6 +14,8 @@ from plugin_api.integration import IntegrationSpec
 from plugin_api.model import (
     ModelAdapter, AgentRunner, RunResult, ToolHook, HookAbort, OnLog, OnEvent,
 )
+from plugin_api import rate_limit
+from plugin_api.rate_limit import RateLimitSignal
 from plugin_api.runner import HarnessRunner
 from plugin_api.host import PluginHost, PluginManifest
 
@@ -28,4 +30,5 @@ __all__ = [
     "IntegrationSpec",
     "ModelAdapter", "AgentRunner", "RunResult", "ToolHook", "HookAbort",
     "OnLog", "OnEvent", "HarnessRunner", "PluginHost", "PluginManifest",
+    "rate_limit", "RateLimitSignal",
 ]

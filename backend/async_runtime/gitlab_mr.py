@@ -73,6 +73,32 @@ def list_open_issues(base: str, token: str, repo: str, *, max_pages: int = 5) ->
     return out
 
 
+def list_all_issues(base: str, token: str, repo: str, *, max_pages: int = 30) -> list[tuple[int, str]]:
+    """列 GitLab project 的**所有** issue（opened + closed）(iid, title)。
+    與 list_open_issues 不同：**失敗會 raise RuntimeError**（給 publish 冪等用，不可吞，否則會重複發佈）。"""
+    pid = urllib.parse.quote(repo, safe="")
+    out: list[tuple[int, str]] = []
+    try:
+        for page in range(1, max_pages + 1):
+            url = f"{base}/api/v4/projects/{pid}/issues?per_page=100&page={page}"
+            req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not items:
+                break
+            for it in items:
+                iid = it.get("iid")
+                if isinstance(iid, int):
+                    out.append((iid, it.get("title") or ""))
+            if len(items) < 100:
+                break
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"列既有 issue 失敗（HTTP {exc.code}）") from None
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"列既有 issue 失敗：{exc}") from None
+    return out
+
+
 def get_issue_detail(base: str, token: str, repo: str, iid: int) -> dict:
     """讀單一 GitLab issue 的 {number, title, body, url}（修改既有專案：匯入 issue 當任務來源）。
     失敗 → raise RuntimeError（訊息不含 token）。number 用 iid（與 list_open_issues 一致）。"""

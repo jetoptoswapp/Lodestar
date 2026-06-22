@@ -71,6 +71,10 @@ class HarnessRunner:
         self.judge_model_choice = judge_model_choice
         # fix-loop 用：記下上次 run 的 validation outcomes，供 feedback_block 取用
         self._last_validations: list[HarnessValidationOutcome] = []
+        # 上次 harnessed_step 的 model/harness 錯誤（harness 不 raise、吞進 result）；供 engine 補抓，
+        # 否則 handler 只取 raw_output、錯誤被默默吃掉 → 前端「沒反應」。
+        self._last_error_code: str = ""
+        self._last_error_message: str = ""
 
     def record_validations(self, outcomes: list[HarnessValidationOutcome]) -> None:
         """供非 LLM stage（如 build_verify）直接記錄 validation outcomes，讓 engine 的 has_fail
@@ -145,6 +149,8 @@ class HarnessRunner:
                 error_message=error_message,
             )
             self._last_validations = outcomes
+            self._last_error_code = error_code
+            self._last_error_message = error_message
             # 每輪記一筆 harness_runs，用 parent_run_id 串接 fix-loop（多輪可追蹤）
             self._record_run(iter_run_id, telemetry_stage, operation, started, ended,
                              result_this, parent_run_id=prev_run_id)

@@ -419,6 +419,14 @@ class WorkflowEngine:
             error_message = repr(exc)
             log.exception("dispatch %s/%s/%s unexpected", thread_id, stage_id, op)
 
+        # harness 把 model 錯誤吞進 result（不 raise）、handler 只取 raw_output → 錯誤會被默默吃掉、
+        # 前端只收到空回覆（「沒反應」）。這裡補抓 runner 記下的 model/harness 錯誤，讓它如實上報。
+        if not error_code:
+            rc = getattr(runner, "_last_error_code", "")
+            if rc:
+                error_code = rc
+                error_message = getattr(runner, "_last_error_message", "")
+
         # 本次 harnessed_step 的 validations（collab 分支不經此 runner → 空）。
         # has_fail：judge 等 fail 級 validator 未通過（含跑滿 fix-loop 仍未解）。
         validations = list(getattr(runner, "_last_validations", []))

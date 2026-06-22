@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import shutil
 import sys
+from datetime import datetime
+from typing import Optional
 
-from plugin_api import AgentRunner
+from plugin_api import AgentRunner, RateLimitSignal, rate_limit
 
 
 class ClaudeCliRunner(AgentRunner):
@@ -46,6 +48,10 @@ class ClaudeCliRunner(AgentRunner):
 
     def is_available(self) -> bool:
         return shutil.which("claude") is not None
+
+    def _detect_rate_limit(self, output: str) -> Optional[RateLimitSignal]:
+        """claude CLI 撞 5hr 用量上限 → 交給 base run() 等到解鎖時間後自動續跑（同 cwd 接續半成品）。"""
+        return rate_limit.detect(output, now=datetime.now())
 
 
 class CodexCliRunner(AgentRunner):

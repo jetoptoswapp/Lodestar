@@ -116,6 +116,31 @@ def test_dispatch_refine_updates_artifact_and_records_revision(tmp_db):
     assert revs[0]["instruction"] == "加上一條安全需求"
 
 
+def test_dispatch_chat_surfaces_model_error(tmp_db):
+    """回歸：harness 把 model 錯誤吞進 result（不 raise）、handler 只取 raw_output → 錯誤不可被默默吃掉，
+    否則前端只收到空回覆（使用者看到「沒反應」）。dispatch 要把 runner 記下的錯誤如實上報。"""
+    import plugin_loader as L
+    from persistence import dal
+
+    reg = L.load_all()
+
+    def _boom(prompt):
+        raise RuntimeError("claude-cli exited 1: boom from stdout")
+
+    reg.model_adapters["claude-cli"] = ModelAdapter(
+        model_choice="claude-cli", invoke=_boom, is_available=lambda: True,
+        description="mock", max_context_tokens=1000,
+        prompt_budget_tokens=900, response_budget_tokens=100,
+    )
+    dal.create_project("t1", "test")
+    engine = WorkflowEngine(reg)
+    out = engine.dispatch(thread_id="t1", stage_id="prd", op="chat", user_input="做一個 terminal")
+
+    assert out["error_code"].startswith("model.")          # 不再是空 error_code
+    assert "boom from stdout" in (out["error_message"] or "")
+    assert not out["reply"]
+
+
 def test_dispatch_stage_not_found_raises(tmp_db):
     import plugin_loader as L
     from persistence import dal

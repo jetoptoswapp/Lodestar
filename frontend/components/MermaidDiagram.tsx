@@ -102,7 +102,9 @@ export default function MermaidDiagram({ code, className, idPrefix = "mermaid" }
   return (
     <div
       ref={ref}
-      className={(className ?? "") + " mermaid-shell flex justify-center"}
+      // overflow-x-auto + globals.css 的 .mermaid-shell svg{max-width:100%}：寬架構圖縮放塞進內容欄，
+      // 仍過寬時只在圖自己的框內橫捲，不會把整份文件撐爆、右側看不到。
+      className={(className ?? "") + " mermaid-shell flex justify-center overflow-x-auto"}
       // Inline SVG from mermaid render is safe — code is local content not user-supplied HTML.
       dangerouslySetInnerHTML={{ __html: svg }}
     />
