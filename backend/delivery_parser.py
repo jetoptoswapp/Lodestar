@@ -58,9 +58,11 @@ def detect_truncated_stories(artifact: str) -> str | None:
     if not stories:
         return None  # 完全沒有 story heading 另由 has_story validator / 前端容錯處理
 
-    # 1) 開頭應是 markdown 標題；截斷版會從句子中間開始（如 "(up to 10,000 rows)…"）
-    first_line = next((ln for ln in artifact.splitlines() if ln.strip()), "")
-    if not first_line.lstrip().startswith("#"):
+    # 1) 第一個 Story 之前應有 markdown 標題（title / Epic）；真截斷會從內文中段起手、整個前段不見。
+    #    允許標題前有 AI 開場白等 prose（如 "方向已鎖定…我直接產出…"）——只要 Story 1.1 前存在標題即未截斷。
+    first_story = _STORY_RE.search(artifact)
+    head = artifact[: first_story.start()] if first_story else artifact
+    if not re.search(r"(?m)^#{1,3}\s+\S", head):
         return (f"stories 文件開頭被截斷（未以標題起手，第一個故事是 Story {stories[0][0]}）"
                 "，缺少前段 Epic/Story")
 

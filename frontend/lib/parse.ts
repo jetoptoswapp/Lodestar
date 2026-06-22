@@ -258,8 +258,10 @@ function parseStoryBody(
   const reqsLine = capture(body, /\*\*Requirement\s+IDs?\*\*\s*[:：]?\s*(.+?)(?=\n|$)/i);
   const requirements: string[] = [];
   if (reqsLine) {
+    const seen = new Set<string>();   // 去重：LLM 偶爾把同一碼列兩次（如 NFR-6, NFR-6），避免重複 chip 與 React key 撞號
     for (const m of reqsLine.matchAll(/(FR-\d+|NFR-\d+|OPS-\d+)/gi)) {
-      requirements.push(m[1].toUpperCase());
+      const code = m[1].toUpperCase();
+      if (!seen.has(code)) { seen.add(code); requirements.push(code); }
     }
   }
 
@@ -300,10 +302,13 @@ function capture(text: string, re: RegExp): string | null {
 // 或最小 Epic/Story 編號 > 1 → 前段（標題 + 前面 Epic/Story）疑似生成時被截斷。
 export function detectTruncatedStories(md: string): string | null {
   if (!md || !md.trim()) return null;
-  const stories = [...md.matchAll(/^###\s+Story\s+(\d+)\.\d+\s+[—–-]/gim)].map((m) => parseInt(m[1], 10));
+  const storyRe = /^###\s+Story\s+(\d+)\.\d+\s+[—–-]/gim;
+  const stories = [...md.matchAll(storyRe)].map((m) => parseInt(m[1], 10));
   if (stories.length === 0) return null;
-  const firstLine = md.split(/\r?\n/).find((ln) => ln.trim()) ?? "";
-  if (!firstLine.trimStart().startsWith("#")) {
+  // 第一個 Story 之前應有 markdown 標題；允許標題前有 AI 開場白等 prose（與後端對齊）。
+  const firstStory = md.search(/^###\s+Story\s+\d+\.\d+\s+[—–-]/im);
+  const head = firstStory >= 0 ? md.slice(0, firstStory) : md;
+  if (!/^#{1,3}\s+\S/m.test(head)) {
     return "stories 文件開頭被截斷（未以標題起手），缺少前段 Epic／Story";
   }
   const epicNums = [...md.matchAll(/^##\s+Epic\s+(\d+)\s*[:：]/gim)].map((m) => parseInt(m[1], 10));

@@ -81,6 +81,19 @@ export type Plugin = {
 // ============================================================
 //  Fetch helper
 // ============================================================
+// 帶 HTTP status 與後端 error category 的 Error。extends Error → 既有 (e as Error).message 用法不受影響，
+// 需要分流時（如 409 impl_in_progress）可讀 e.category。
+export class ApiError extends Error {
+  status: number;
+  category?: string;
+  constructor(message: string, status: number, category?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.category = category;
+  }
+}
+
 export async function apiCall<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -88,13 +101,15 @@ export async function apiCall<T = unknown>(path: string, init?: RequestInit): Pr
   });
   if (!r.ok) {
     let msg: string = r.statusText;
+    let category: string | undefined;
     try {
       const body = await r.json();
       msg = body?.detail?.message ?? body?.detail ?? JSON.stringify(body);
+      category = body?.detail?.category;
     } catch {
       /* ignore */
     }
-    throw new Error(msg);
+    throw new ApiError(msg, r.status, category);
   }
   // Handle 204 / empty
   const text = await r.text();

@@ -30,6 +30,10 @@ export default function MermaidDiagram({ code, className, idPrefix = "mermaid" }
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "loose",
+          // 語法錯誤時別把「Syntax error」bomb SVG 注入 body：mermaid 在 throw 前已渲染 bomb、
+          // 卻在 removeTempElements() 之前就 throw，暫存節點會永久漏在 body（漏到頁面左下）。
+          // 設 true → 兩條錯誤路徑都先 removeTempElements() 再 throw，由我們的 catch 顯示 inline 錯誤。
+          suppressErrorRendering: true,
           theme: "base",
           themeVariables: {
             // Industrial Cobalt × Drafting Dusk
