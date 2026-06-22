@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,6 +47,18 @@ def _preview(target: str, ref_key: str):
 # ============================================================
 #  GitHub real publish（M2.5）
 # ============================================================
+_MAX_RETRY = 3   # secondary rate limit（403/429）退避重試次數上限
+
+
+def _retry_after_seconds(headers, attempt: int) -> float:
+    """從回應 header 取退避秒數：優先 Retry-After，否則指數退避（封頂 60s）。"""
+    ra = headers.get("Retry-After") if headers else None
+    if ra and str(ra).strip().isdigit():
+        return min(float(ra), 60.0)
+    return min(2.0 ** attempt * 2.0, 60.0)   # 2,4,8…s
+
+
+
 def _publish_github(items: list[DeliveryItem], config: dict[str, str]) -> DeliveryPublishResult:
     """POST /repos/{owner}/{repo}/issues 對每個 DeliveryItem 建一個 issue。
 
@@ -85,44 +98,60 @@ def _publish_github(items: list[DeliveryItem], config: dict[str, str]) -> Delive
     }
 
     created: list[str] = []
-    any_failed = False
+    failed: list = []
     for it in items:
         payload = {
             "title": it.title,
             "body": it.body,
             "labels": list(it.labels),
         }
-        req = urllib.request.Request(
-            url, data=json.dumps(payload).encode("utf-8"),
-            headers=headers, method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+        # 連建大量 issue 會觸發 GitHub secondary rate limit（403/429）→ 讀 Retry-After 退避重試。
+        # 這正是「前面成功、後段成片失敗」的主因；退避讓單次 publish 更可能一次到位。
+        reason = ""
+        for attempt in range(_MAX_RETRY + 1):
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"),
+                headers=headers, method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
                 issue_url = body.get("html_url") or ""
                 if issue_url:
                     created.append(issue_url)
                     it.github_issue_number = int(body.get("number") or 0)
                     it.github_repo = repo
                     it.github_url = issue_url
+                    reason = ""
                 else:
-                    any_failed = True
-        except urllib.error.HTTPError as e:
-            any_failed = True
-            try:
-                msg = e.read().decode("utf-8", errors="replace")[:200]
-            except Exception:
-                msg = str(e)
-            log.warning("github publish HTTPError %s: %s — story=%s", e.code, msg, it.title)
-        except Exception as e:  # noqa: BLE001
-            any_failed = True
-            log.warning("github publish error: %s — story=%s", e, it.title)
+                    reason = "回應無 html_url"
+                break
+            except urllib.error.HTTPError as e:
+                try:
+                    detail = e.read().decode("utf-8", errors="replace")[:200]
+                except Exception:  # noqa: BLE001
+                    detail = ""
+                reason = f"HTTP {e.code}: {detail}".strip()
+                if e.code in (403, 429) and attempt < _MAX_RETRY:
+                    wait = _retry_after_seconds(e.headers, attempt)
+                    log.warning("github publish %s（限流），%ss 後重試 — story=%s", e.code, wait, it.title)
+                    time.sleep(wait)
+                    continue
+                log.warning("github publish HTTPError %s: %s — story=%s", e.code, detail, it.title)
+                break
+            except Exception as e:  # noqa: BLE001
+                reason = str(e)[:200]
+                log.warning("github publish error: %s — story=%s", e, it.title)
+                break
+        if reason:
+            failed.append((it.title, reason))
 
     return DeliveryPublishResult(
-        success=(not any_failed) and bool(created),
+        success=(not failed) and bool(created),
         target="github",
         count=len(items),
         created=created,
+        failed=failed,
     )
 
 
@@ -223,7 +252,7 @@ def _publish_gitlab(items: list[DeliveryItem], config: dict[str, str]) -> Delive
     base = _gitlab_base(config)
     pid = urllib.parse.quote(repo, safe="")
     created: list[str] = []
-    any_failed = False
+    failed: list = []
     for it in items:
         try:
             body = _gitlab_req(
@@ -236,12 +265,12 @@ def _publish_gitlab(items: list[DeliveryItem], config: dict[str, str]) -> Delive
                 it.gitlab_issue_url = url
                 it.gitlab_issue_iid = int(body.get("iid") or 0)
             else:
-                any_failed = True
+                failed.append((it.title, "回應無 web_url"))
         except Exception as exc:  # noqa: BLE001
-            any_failed = True
+            failed.append((it.title, str(exc)[:200]))
             log.warning("gitlab publish error: %s — story=%s", exc, it.title)
-    return DeliveryPublishResult(success=(not any_failed) and bool(created),
-                                 target="gitlab", count=len(items), created=created)
+    return DeliveryPublishResult(success=(not failed) and bool(created),
+                                 target="gitlab", count=len(items), created=created, failed=failed)
 
 
 def _publish_stub(target: str):

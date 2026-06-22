@@ -87,6 +87,35 @@ def list_open_issue_numbers(repo: str, token: str, *, max_pages: int = 5) -> lis
     return [n for n, _ in list_open_issues(repo, token, max_pages=max_pages)]
 
 
+def list_all_issues(repo: str, token: str, *, max_pages: int = 30) -> list[tuple[int, str]]:
+    """列 repo 的**所有** issue（open + closed，排除 PR）(number, title)。
+
+    與 list_open/closed_issues 不同：**列舉失敗會 raise RuntimeError**（不吞）。給 publish 冪等用——
+    若無法確認既有 issue 卻當成「沒有」，會重複發佈（正是要避免的 bug），故寧可中止也不靜默放行。"""
+    out: list[tuple[int, str]] = []
+    try:
+        for page in range(1, max_pages + 1):
+            url = f"https://api.github.com/repos/{repo}/issues?state=all&per_page=100&page={page}"
+            req = urllib.request.Request(url, headers=_gh_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not items:
+                break
+            for it in items:
+                if "pull_request" in it:
+                    continue
+                n = it.get("number")
+                if isinstance(n, int):
+                    out.append((n, it.get("title") or ""))
+            if len(items) < 100:
+                break
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"列既有 issue 失敗（HTTP {exc.code}）") from None
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"列既有 issue 失敗：{exc}") from None
+    return out
+
+
 def get_issue_detail(repo: str, token: str, number: int) -> dict:
     """讀單一 issue 的 {number, title, body, url}（修改既有專案：匯入 issue 當任務來源）。
     失敗 / 該編號是 PR → raise RuntimeError（訊息不含 token）。"""

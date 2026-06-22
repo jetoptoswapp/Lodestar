@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -210,47 +211,62 @@ def test_publish_dry_run(tmp_db):
             assert url.startswith("https://github.com/acme/checkout/issues/dry-run-")
 
 
+def _mock_resp(obj):
+    """組一個 urlopen context-manager mock，read() 回 json(obj)。obj 可為 dict 或 list。"""
+    m = MagicMock()
+    m.read.return_value = json.dumps(obj).encode("utf-8")
+    m.__enter__ = lambda s: m
+    m.__exit__ = lambda s, *a: False
+    return m
+
+
+def _http_error(code: int, *, retry_after: str | None = None):
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return urllib.error.HTTPError("https://api.github.com/x", code, "err", headers,
+                                  io.BytesIO(b'{"message":"boom"}'))
+
+
+def _gh_fake(existing: list[tuple[int, str]], post_handler):
+    """fake_urlopen：GET（list_all_issues）回 existing；POST 交給 post_handler(req)。
+    同一個 fake 同時 patch register 與 github_pr 兩個 urllib。"""
+    def fake(req, timeout=20):
+        if req.get_method() == "GET":
+            return _mock_resp([{"number": n, "title": t} for n, t in existing])
+        return post_handler(req)
+    return fake
+
+
 def test_publish_real_api_call_intercepted(tmp_db):
-    """攔截 urlopen 模擬 GitHub 回 200 + html_url；驗證 payload 正確。"""
+    """攔截 urlopen 模擬 GitHub 回 200 + html_url；驗證 payload + 冪等過濾（既有為空 → 全建）。"""
     with TestClient(appmod.app) as c:
         tid = c.post("/api/projects", json={"name": "x"}).json()["thread_id"]
         dal.upsert_artifact(tid, "stories", _SAMPLE_STORIES)
 
         captured_payloads: list[dict] = []
-        def fake_urlopen(req, timeout=20):
+        def post_handler(req):
             payload = json.loads(req.data.decode("utf-8"))
             captured_payloads.append(payload)
             n = len(captured_payloads)
-            mock = MagicMock()
-            mock.read.return_value = json.dumps({
-                "number": n,
-                "html_url": f"https://github.com/acme/checkout/issues/{n}",
-            }).encode("utf-8")
-            mock.__enter__ = lambda s: mock
-            mock.__exit__ = lambda s, *a: False
-            return mock
+            return _mock_resp({"number": n, "html_url": f"https://github.com/acme/checkout/issues/{n}"})
 
-        with patch("plugins.builtin_integrations.register.urllib.request.urlopen", fake_urlopen):
+        fake = _gh_fake([], post_handler)   # 既有 issue 為空
+        with patch("plugins.builtin_integrations.register.urllib.request.urlopen", fake), \
+             patch("async_runtime.github_pr.urllib.request.urlopen", fake):
             r = c.post(
                 f"/api/stage/stories/{tid}/publish",
-                json={"target": "github", "config": {
-                    "repo": "acme/checkout",
-                    "token": "ghp_fake_token",
-                }},
+                json={"target": "github", "config": {"repo": "acme/checkout", "token": "ghp_fake_token"}},
             )
         assert r.status_code == 200
         body = r.json()
         assert body["success"] is True
         assert body["count"] == 3
         assert len(body["created"]) == 3
+        assert body["skipped"] == 0 and body["failed"] == []
         assert all("github.com/acme/checkout/issues/" in u for u in body["created"])
-
-        # 驗證 payload 內容
         assert len(captured_payloads) == 3
         p1 = captured_payloads[0]
         assert "Story 1.1 — pnpm workspace scaffold" == p1["title"]
-        assert "story" in p1["labels"]
-        assert "epic-1" in p1["labels"]
+        assert "story" in p1["labels"] and "epic-1" in p1["labels"]
         assert "**Acceptance Criteria**" in p1["body"]
 
 
@@ -280,3 +296,102 @@ def test_publish_jira_remains_stub(tmp_db):
         )
         assert r.status_code == 200
         assert r.json()["success"] is False
+
+
+# ============================================================
+#  冪等重推（只補缺漏、不重複）+ 逐項失敗 + 限流退避 + 列舉失敗中止
+# ============================================================
+def test_publish_idempotent_skips_existing(tmp_db):
+    """repo 已有 Story 1.1 的 issue → 重發只建其餘 story，1.1 跳過、不重複。"""
+    with TestClient(appmod.app) as c:
+        tid = c.post("/api/projects", json={"name": "x"}).json()["thread_id"]
+        dal.upsert_artifact(tid, "stories", _SAMPLE_STORIES)
+
+        posted: list[dict] = []
+        def post_handler(req):
+            posted.append(json.loads(req.data.decode("utf-8")))
+            n = 100 + len(posted)
+            return _mock_resp({"number": n, "html_url": f"https://github.com/acme/checkout/issues/{n}"})
+
+        existing = [(1, "Story 1.1 — pnpm workspace scaffold")]   # 1.1 已存在
+        fake = _gh_fake(existing, post_handler)
+        with patch("plugins.builtin_integrations.register.urllib.request.urlopen", fake), \
+             patch("async_runtime.github_pr.urllib.request.urlopen", fake):
+            r = c.post(f"/api/stage/stories/{tid}/publish",
+                       json={"target": "github", "config": {"repo": "acme/checkout", "token": "t"}})
+        body = r.json()
+        assert r.status_code == 200 and body["success"] is True
+        assert body["count"] == 3            # 預計總數不變
+        assert body["skipped"] == 1          # 1.1 已存在 → 跳過
+        assert len(body["created"]) == 2     # 只建其餘 2 個
+        # 沒有任何 POST 帶 Story 1.1（沒重複建）
+        assert not any("Story 1.1" in p["title"] for p in posted)
+
+
+def test_publish_surfaces_per_item_failure(tmp_db):
+    """某個 story 建立失敗 → failed 帶 (title, reason)，其餘照常建立。"""
+    with TestClient(appmod.app) as c:
+        tid = c.post("/api/projects", json={"name": "x"}).json()["thread_id"]
+        dal.upsert_artifact(tid, "stories", _SAMPLE_STORIES)
+
+        n = {"i": 0}
+        def post_handler(req):
+            n["i"] += 1
+            if n["i"] == 2:                  # 第 2 個失敗（422，非限流 → 不重試）
+                raise _http_error(422)
+            return _mock_resp({"number": n["i"], "html_url": f"https://github.com/acme/checkout/issues/{n['i']}"})
+
+        fake = _gh_fake([], post_handler)
+        with patch("plugins.builtin_integrations.register.urllib.request.urlopen", fake), \
+             patch("async_runtime.github_pr.urllib.request.urlopen", fake):
+            r = c.post(f"/api/stage/stories/{tid}/publish",
+                       json={"target": "github", "config": {"repo": "acme/checkout", "token": "t"}})
+        body = r.json()
+        assert r.status_code == 200 and body["success"] is False
+        assert len(body["created"]) == 2 and len(body["failed"]) == 1
+        assert "422" in body["failed"][0]["reason"] and body["failed"][0]["title"]
+
+
+def test_publish_backoff_retries_rate_limit(tmp_db):
+    """secondary rate limit（403）→ 讀 Retry-After 退避重試 → 最終成功，不算失敗。"""
+    with TestClient(appmod.app) as c:
+        tid = c.post("/api/projects", json={"name": "x"}).json()["thread_id"]
+        dal.upsert_artifact(tid, "stories", _SAMPLE_STORIES)
+
+        calls = {"post": 0}
+        def post_handler(req):
+            calls["post"] += 1
+            if calls["post"] == 1:           # 第一次 POST 撞限流，重試後成功
+                raise _http_error(403, retry_after="0")
+            n = calls["post"]
+            return _mock_resp({"number": n, "html_url": f"https://github.com/acme/checkout/issues/{n}"})
+
+        fake = _gh_fake([], post_handler)
+        with patch("plugins.builtin_integrations.register.urllib.request.urlopen", fake), \
+             patch("async_runtime.github_pr.urllib.request.urlopen", fake), \
+             patch("plugins.builtin_integrations.register.time.sleep", lambda *_: None):
+            r = c.post(f"/api/stage/stories/{tid}/publish",
+                       json={"target": "github", "config": {"repo": "acme/checkout", "token": "t"}})
+        body = r.json()
+        assert r.status_code == 200 and body["success"] is True
+        assert len(body["created"]) == 3 and body["failed"] == []
+        assert calls["post"] == 4            # 3 個 story + 1 次重試
+
+
+def test_publish_aborts_when_existing_unverifiable(tmp_db):
+    """列既有 issue 失敗（GET 500）→ 中止（502），不冒重複發佈的險。"""
+    with TestClient(appmod.app) as c:
+        tid = c.post("/api/projects", json={"name": "x"}).json()["thread_id"]
+        dal.upsert_artifact(tid, "stories", _SAMPLE_STORIES)
+
+        def fake(req, timeout=20):
+            if req.get_method() == "GET":
+                raise _http_error(500)
+            raise AssertionError("列舉失敗時不應該再 POST 建 issue")
+
+        with patch("plugins.builtin_integrations.register.urllib.request.urlopen", fake), \
+             patch("async_runtime.github_pr.urllib.request.urlopen", fake):
+            r = c.post(f"/api/stage/stories/{tid}/publish",
+                       json={"target": "github", "config": {"repo": "acme/checkout", "token": "t"}})
+        assert r.status_code == 502
+        assert "existing_issues_unverified" in json.dumps(r.json())

@@ -1141,23 +1141,51 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
     if not items:
         raise HTTPException(400, detail=error_detail("stories_unparseable", "stories 解析失敗"))
 
-    # 真實 publish（GitHub 已實作；jira / gitlab stub 會回 success=False）
-    result = await asyncio.to_thread(integ.publish, items, cfg)
+    # 冪等：跳過 repo 內已存在（open/closed）的 story，只建缺漏 → 重發只補失敗/缺漏，不重複、不動已建。
+    # 列既有 issue 失敗 → 中止（**不可**當成「沒有」全建，否則就是重複發佈那個 bug）。
+    repo_now = cfg.get("repo", "")
+    skipped = 0
+    to_create = items
+    # dry_run 純預覽不打 API → 不做既有比對。其餘 github/gitlab 才冪等過濾。
+    if req.target in ("github", "gitlab") and repo_now and not cfg.get("dry_run"):
+        try:
+            existing = await asyncio.to_thread(_existing_issue_keys, req.target, cfg, repo_now)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, detail=error_detail(
+                "existing_issues_unverified",
+                f"無法確認 {repo_now} 既有 issue（{exc}）；為避免重複發佈已中止，請稍後重試"))
+        to_create = [it for it in items if impl_batch._story_key(it.title) not in existing]
+        skipped = len(items) - len(to_create)
+
+    # 全部已存在 → 無需發佈（直接回成功、created 空）；否則只發缺漏的。
+    if to_create:
+        result = await asyncio.to_thread(integ.publish, to_create, cfg)
+        created = list(result.created)
+        failed = [{"title": t, "reason": r} for t, r in (result.failed or [])]
+        publish_ok = result.success
+    else:
+        created, failed, publish_ok = [], [], True   # 全跳過 = 成功
+    success = publish_ok and not failed
+
     dal.append_event(
         thread_id, "stories",
-        event_type="delivery_published" if result.success else "delivery_publish_failed",
+        event_type="delivery_published" if success else "delivery_publish_failed",
         detail=json.dumps({
-            "target": result.target,
-            "count": result.count,
-            "created": len(result.created),
-            "repo": cfg.get("repo", ""),
+            "target": req.target,
+            "count": len(items),
+            "created": len(created),
+            "skipped": skipped,
+            "failed": len(failed),
+            "repo": repo_now,
         }),
     )
     return DeliveryPublishResponse(
-        success=result.success,
-        target=result.target,
-        count=result.count,
-        created=list(result.created),
+        success=success,
+        target=req.target,
+        count=len(items),                         # 預計總數（含已存在）
+        created=created,                          # 本次新建
+        skipped=skipped,                          # 已存在、跳過未重建
+        failed=failed,                            # 逐項失敗 [{title, reason}]
     )
 
 
@@ -1368,6 +1396,25 @@ def _batch_issue_lister(target: str, creds: dict, repo: str):
         return lambda: gl_list(base, token, repo)
     from async_runtime.github_pr import list_open_issues as gh_list
     return lambda: gh_list(repo, token)
+
+
+def _existing_issue_keys(target: str, creds: dict, repo: str) -> set[str]:
+    """publish 冪等：回 repo 內**已存在**（open+closed）的 story 編號集 → 這些 story 不重建。
+    github / gitlab 支援；**列舉失敗會 raise**（呼叫端據此中止，避免把『沒查到』誤當『沒有』而重複發佈）。
+    其他 target（jira stub）→ set()（不過濾）。"""
+    token = creds.get("token", "")
+    if not token or not repo:
+        return set()
+    if target == "github":
+        from async_runtime.github_pr import list_all_issues
+        pairs = list_all_issues(repo, token)
+    elif target == "gitlab":
+        from async_runtime.gitlab_mr import list_all_issues as gl_all
+        base = (creds.get("base_url") or "https://gitlab.com").rstrip("/")
+        pairs = gl_all(base, token, repo)
+    else:
+        return set()
+    return {k for _n, t in pairs if (k := impl_batch._story_key(t))}
 
 
 def _batch_skip_keys(target: str, creds: dict, repo: str) -> set[str]:
