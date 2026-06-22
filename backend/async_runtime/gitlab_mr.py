@@ -224,24 +224,49 @@ def make_gitlab_mr_opener(*, get_token: Callable[[], str],
 #  策略 A（GitLab）：merge MR + 冪等重跑（對齊 github_pr）
 # ============================================================
 def merge_mr(base: str, token: str, repo: str, mr_iid: int, *,
-             attempts: int = 4, delay: float = 1.5) -> bool:
+             ready_timeout: float = 45.0, poll_delay: float = 2.0) -> bool:
     """Merge 一個 MR（PUT /merge_requests/:iid/merge）。回 True=已 merge。
 
-    GitLab 開 MR 後 merge_status 可能還在 'checking' → 首次 merge 回 405；故短暫重試幾次。
-    真正不可 merge（衝突 / 需 pipeline / 405 持續）→ 回 False（不上拋，由 batch 記 log 續跑）。"""
+    先 GET 輪詢 mergeability 直到離開 'checking/unchecked/preparing'（GitLab 非同步算 merge_status，
+    剛開 MR 多半還在算）→ 就緒才 PUT merge；真不可 merge（衝突 / 需 pipeline / 需 approve）→ 回 False
+    （不上拋，由 batch 記 log 續跑）。窗口拉長到 ~45s：避免「還在 checking 就放棄」→ 後續 story 亂序
+    merge → 先前 story 反被擠成衝突（策略 A 序列化失效的根因）。"""
     pid = urllib.parse.quote(repo, safe="")
-    url = f"{base}/api/v4/projects/{pid}/merge_requests/{mr_iid}/merge"
-    for i in range(attempts):
-        req = urllib.request.Request(url, data=b"{}", method="PUT",
+    detail_url = f"{base}/api/v4/projects/{pid}/merge_requests/{mr_iid}"
+    merge_url = f"{detail_url}/merge"
+
+    # 1) 輪詢 mergeability：等它算完再決定（就緒 / 真不可 merge / 超時）
+    deadline = time.monotonic() + ready_timeout
+    while True:
+        try:
+            req = urllib.request.Request(detail_url, headers=_gl_headers(token), method="GET")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                mr = json.loads(resp.read().decode("utf-8"))
+        except Exception:                            # noqa: BLE001 - 查不到當不可 merge
+            return False
+        if mr.get("state") == "merged":              # 已被 merge → 冪等回 True
+            return True
+        status = (mr.get("detailed_merge_status") or mr.get("merge_status") or "").lower()
+        if status in ("mergeable", "can_be_merged"):
+            break                                    # 就緒 → 去 merge
+        if status not in ("checking", "unchecked", "preparing", ""):
+            return False                             # conflict / ci_must_pass / not_approved / draft… → 不可 merge
+        if time.monotonic() >= deadline:
+            return False                             # 還在算就超時 → 不亂 merge，留人處理
+        time.sleep(poll_delay)
+
+    # 2) 就緒 → PUT merge（偶有短暫 race 回 405/409 → 少量重試）
+    for i in range(3):
+        req = urllib.request.Request(merge_url, data=b"{}", method="PUT",
                                      headers={**_gl_headers(token), "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             return body.get("state") == "merged"
         except urllib.error.HTTPError as exc:
-            if exc.code in (405, 406, 409):       # not mergeable / 還在 checking / 衝突
-                if i < attempts - 1:
-                    time.sleep(delay)             # 多半是 merge_status='checking'，等一下再試
+            if exc.code in (405, 406, 409):
+                if i < 2:
+                    time.sleep(1.5)
                     continue
                 return False
             raise MrError(f"merge MR !{mr_iid} failed (HTTP {exc.code})") from exc

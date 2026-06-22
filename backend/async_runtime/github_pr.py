@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -228,21 +229,54 @@ def _create_pr(repo: str, token: str, head: str, base: str, session_id: int,
     return pr_url
 
 
-def merge_pr(repo: str, token: str, pr_number: int, *, method: str = "squash") -> bool:
+def merge_pr(repo: str, token: str, pr_number: int, *, method: str = "squash",
+             ready_timeout: float = 45.0, poll_delay: float = 2.0) -> bool:
     """Merge 一個 PR（PUT /pulls/{n}/merge）。回 True=已 merge；
-    405（not mergeable）/ 409（衝突/sha 過期）→ False（不可 merge，不上拋）；其餘 HTTP 錯 → PrError。"""
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/merge"
-    req = urllib.request.Request(
-        url, data=json.dumps({"merge_method": method}).encode("utf-8"),
-        headers={**_gh_headers(token), "Content-Type": "application/json"}, method="PUT")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        return bool(body.get("merged"))
-    except urllib.error.HTTPError as exc:
-        if exc.code in (405, 409):
+    405（not mergeable）/ 409（衝突/sha 過期）→ False（不可 merge，不上拋）；其餘 HTTP 錯 → PrError。
+
+    先 GET 輪詢直到 GitHub 算完 mergeability（剛開 PR `mergeable` 為 null / `mergeable_state`='unknown'）→
+    可 merge 才 PUT；真衝突（mergeable=false）→ 回 False。避免「還沒算完就 PUT → 405 直接放棄」導致
+    後續 story 亂序 merge（策略 A 序列化失效）。"""
+    detail_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    # 1) 輪詢 mergeability：等 GitHub 算完
+    deadline = time.monotonic() + ready_timeout
+    while True:
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(detail_url, headers=_gh_headers(token), method="GET"),
+                timeout=20) as resp:
+                pr = json.loads(resp.read().decode("utf-8"))
+        except Exception:                            # noqa: BLE001 - 查不到當不可 merge
             return False
-        raise PrError(f"merge PR #{pr_number} failed (HTTP {exc.code})") from exc
+        if pr.get("merged"):                         # 已被 merge → 冪等
+            return True
+        mergeable = pr.get("mergeable")              # True / False / None(計算中)
+        if mergeable is True:
+            break
+        if mergeable is False:
+            return False                             # 衝突 → 不可 merge
+        if time.monotonic() >= deadline:             # 仍在算（None）→ 超時不亂 merge
+            return False
+        time.sleep(poll_delay)
+
+    # 2) 就緒 → PUT merge（偶有短暫 race 回 405/409 → 少量重試）
+    url = f"{detail_url}/merge"
+    for i in range(3):
+        req = urllib.request.Request(
+            url, data=json.dumps({"merge_method": method}).encode("utf-8"),
+            headers={**_gh_headers(token), "Content-Type": "application/json"}, method="PUT")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            return bool(body.get("merged"))
+        except urllib.error.HTTPError as exc:
+            if exc.code in (405, 409):
+                if i < 2:
+                    time.sleep(1.5)
+                    continue
+                return False
+            raise PrError(f"merge PR #{pr_number} failed (HTTP {exc.code})") from exc
+    return False
 
 
 def make_github_pr_merger(*, get_token: Callable[[], str], repo: str,
