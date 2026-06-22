@@ -32,6 +32,7 @@ import {
   type ImplementBatch,
   type RunnerInfo,
   type StageCatalogItem,
+  ApiError,
   apiCall,
   createAgent,
   createSkill,
@@ -297,6 +298,9 @@ export default function Page() {
   const [crStatus, setCrStatus] = useState<string>("draft");
   const [crBusy, setCrBusy] = useState<StageBusy>(false);
   const [crImplementing, setCrImplementing] = useState(false);
+  // change_request 內嵌實作狀態面板：reloadKey 啟動後 +1 → 重新水合最新 session；implActive = 後端有 running/pending
+  const [implReloadKey, setImplReloadKey] = useState(0);
+  const [implActive, setImplActive] = useState(false);
   // issue picker（匯入既有 issue 當討論起點）
   const [issuePicker, setIssuePicker] = useState<{ open: boolean; loading: boolean; issues: { number: number; title: string }[]; error: string | null }>({ open: false, loading: false, issues: [], error: null });
   // ===== M2 baseline：真實 thread list + plugin count + model list + modal state =====
@@ -856,21 +860,28 @@ export default function Page() {
     }
   }, [thread, crBusy, modelChoice]);
 
-  // 用 brief 當 story 觸發 single implement（一個任務一個 PR）
+  // 用 brief 當 story 觸發 single implement（一個任務一個 PR）。
+  // implement 不是 modify_existing 的 stage（會被 stage 守衛彈回、且 ImplementWorkspace 以 stories 為前提而鎖死），
+  // 故狀態就近長在下方 ChangeImplementStatus：啟動後 bump reloadKey 讓它水合新 session、即時呈現 + 可取消。
   const onImplementChangeRequest = useCallback(async () => {
-    if (!thread || crImplementing || !crArtifact.trim()) return;
+    if (!thread || crImplementing || implActive || !crArtifact.trim()) return;
     setErr(null);
     setCrImplementing(true);
     try {
       await startImplement({ thread_id: thread, runner: "claude-cli", story: crArtifact });
-      setNav("workspace");
-      setSelected("implement");
+      setImplReloadKey((k) => k + 1);
     } catch (e) {
-      setErr(`啟動 implement 失敗：${(e as Error).message}`);
+      // 已有實作在跑（共用工作目錄）→ 不丟生硬錯誤，刷新面板讓使用者就地查看 / 取消
+      if (e instanceof ApiError && e.category === "impl_in_progress") {
+        setImplReloadKey((k) => k + 1);
+        setErr("已有實作在進行中，請見下方「實作狀態」查看或取消。");
+      } else {
+        setErr(`啟動 implement 失敗：${(e as Error).message}`);
+      }
     } finally {
       setCrImplementing(false);
     }
-  }, [thread, crImplementing, crArtifact]);
+  }, [thread, crImplementing, implActive, crArtifact]);
 
   // 匯入既有 issue：列出 → 選一個 → 把 title+body 當討論起點（送進 change_request chat）
   const openIssuePicker = useCallback(async () => {
@@ -1221,6 +1232,9 @@ export default function Page() {
                       status={crStatus}
                       busy={crBusy}
                       implementing={crImplementing}
+                      implActive={implActive}
+                      implReloadKey={implReloadKey}
+                      onImplActiveChange={setImplActive}
                       modelChoice={modelChoice}
                       onGenerate={onGenerateChangeRequest}
                       onImplement={onImplementChangeRequest}
@@ -2096,19 +2110,150 @@ function PrdWorkspace({
   );
 }
 
+// ============================== 修改既有專案：內嵌實作狀態 ==============================
+// modify_existing 的 change_request 觸發的是 single implement，但 implement 不在此 workflow 的 stage 清單，
+// 既到不了 ImplementWorkspace（stage 守衛彈回）、那邊也以 stories 為前提而鎖死 → implement 在 GUI 無處可見。
+// 故把它的即時狀態就近長在 change_request：水合該 thread 最新 session、700ms 輪詢狀態 + log、可展開、可取消。
+// 父層以 key={thread:reloadKey} 掛載 → 切 thread / 啟動後自然 remount 重置狀態（免在 effect 裡同步 reset）。
+function ChangeImplementStatus({
+  thread, onActiveChange,
+}: {
+  thread: string | null;
+  onActiveChange: (active: boolean) => void;
+}) {
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [session, setSession] = useState<ImplementSession | null>(null);
+  const [lines, setLines] = useState<ImplementLogLine[]>([]);
+  const [logOpen, setLogOpen] = useState(false);
+  const cursorRef = useRef(0);
+  const logScrollRef = useRef<HTMLDivElement>(null);
+  const { events: logEvents, stats: logStats } = useMemo(() => parseImplLog(lines), [lines]);
+
+  // 水合該 thread 最新 session（DESC，[0] = 最近）
+  useEffect(() => {
+    if (!thread) return;
+    let on = true;
+    fetchImplementSessions(thread)
+      .then((sessions) => { if (on && sessions.length) setSessionId(sessions[0].session_id); })
+      .catch(() => {/* 靜默；無歷史即 idle */});
+    return () => { on = false; };
+  }, [thread]);
+
+  // 輪詢 session 狀態 + log（running/pending 時遞迴 setTimeout，終局再補一次補尾）
+  useEffect(() => {
+    if (sessionId == null) return;
+    let on = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const drainLog = async () => {
+      const log = await fetchImplementLog(sessionId, cursorRef.current);
+      if (!on) return;
+      if (log.lines.length) {
+        cursorRef.current = log.next_cursor;
+        setLines((prev) => [...prev, ...log.lines]);
+      }
+    };
+    const tick = async () => {
+      try {
+        const s = await fetchImplementSession(sessionId);
+        if (!on) return;
+        setSession(s);
+        await drainLog();
+        if (!on) return;
+        if (s.status === "running" || s.status === "pending") timer = setTimeout(tick, 700);
+        else await drainLog();
+      } catch {/* 靜默；下次水合會再試 */}
+    };
+    tick();
+    return () => { on = false; if (timer) clearTimeout(timer); };
+  }, [sessionId]);
+
+  const status = session?.status ?? "idle";
+  const active = status === "running" || status === "pending";
+  useEffect(() => { onActiveChange(active); }, [active, onActiveChange]);
+
+  // log 自動捲到底（只捲面板內的容器，不動整頁）
+  useEffect(() => {
+    if (logOpen && logScrollRef.current) logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
+  }, [lines, logOpen]);
+
+  const cancel = async () => {
+    if (sessionId == null) return;
+    try { await cancelImplement(sessionId); } catch {/* 靜默：UI 會在下次輪詢反映 */}
+  };
+
+  if (!session) return null;   // 從未跑過 → 不佔版面
+  const runs = session.runs ?? [];
+
+  return (
+    <div className="mt-4 border border-[var(--rule-dark)] bg-[var(--bg-elev)]/40">
+      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--rule)] px-4 py-2.5">
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--ink-muted)]">實作狀態</span>
+        {active && <span className="pulse-star inline-block h-1.5 w-1.5 rounded-full bg-[var(--polaris)]" />}
+        <ImplStatusPill status={status} />
+        {runs.map((r) => <ImplAttemptChip key={r.run_id} run={r} />)}
+        <div className="ml-auto flex items-center gap-2">
+          {lines.length > 0 && (
+            <button onClick={() => setLogOpen((v) => !v)}
+              className="border border-[var(--rule-dark)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[9px] uppercase tracking-[0.16em] text-[var(--ink-muted)] transition hover:border-[var(--polaris)] hover:text-[var(--polaris)]">
+              {logOpen ? "▾ 收合 log" : "▸ log"}
+            </button>
+          )}
+          {active && <ToolBtn onClick={cancel}>取消</ToolBtn>}
+        </div>
+      </div>
+
+      {session.pr_url ? <ImplPrBanner url={session.pr_url} /> : null}
+      {status === "failed" && session.error_message ? <ImplFailBanner msg={session.error_message} /> : null}
+
+      {lines.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em]">
+          <ImplStat label="files" value={String(logStats.filesWritten)} />
+          <ImplStat label="tools" value={String(logStats.toolCalls)} />
+          <ImplStat label="turns" value={String(logStats.turns)} />
+          <ImplStat label="elapsed" value={`${(logStats.durationMs / 1000).toFixed(0)}s`} />
+          {logStats.hasCost && <ImplStat label="cost" value={`$${logStats.costUsd.toFixed(3)}`} />}
+        </div>
+      )}
+
+      {logOpen && (
+        <div ref={logScrollRef} className="max-h-[280px] overflow-auto border-t border-[var(--rule)] px-4 py-3">
+          {logEvents.length === 0 ? (
+            <div className="py-4 text-center font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+              {active ? "agent 思考中…（無可顯示事件）" : "無可顯示事件。"}
+            </div>
+          ) : (
+            <ul className="space-y-1 font-[family-name:var(--font-mono)] text-[11px] leading-5">
+              {logEvents.map((e) => (
+                <li key={e.key} className={IMPL_TONE_CLASS[e.tone]}>
+                  {e.ts && <span className="mr-1 tabular-nums opacity-30">{fmtLogTs(e.ts)}</span>}
+                  <span className="opacity-30">[a{e.attempt}]</span>{" "}
+                  <span className={e.tone === "agent" ? "whitespace-pre-wrap" : ""}>{e.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============================== 修改既有專案：change_request workspace ==============================
 function ChangeRequestWorkspace({
-  thread, artifact, status, busy, implementing, modelChoice,
-  onGenerate, onImplement, onImportIssue, onChatArtifact,
+  thread, artifact, status, busy, implementing, implActive, implReloadKey, modelChoice,
+  onGenerate, onImplement, onImplActiveChange, onImportIssue, onChatArtifact,
 }: {
   thread: string | null;
   artifact: string;
   status: string;
   busy: false | "generate" | "refine";
   implementing: boolean;
+  implActive: boolean;
+  implReloadKey: number;
   modelChoice: string;
   onGenerate: () => void;
   onImplement: () => void;
+  onImplActiveChange: (active: boolean) => void;
   onImportIssue: () => void;
   onChatArtifact: (content: string) => void;
 }) {
@@ -2149,12 +2294,13 @@ function ChangeRequestWorkspace({
           left={hasContent ? <>{artifact.length} chars · {status}</> : <>empty · awaiting brief</>}
           right={<>thread <code className="text-[#cdd4df]">{thread ?? "(bootstrapping…)"}</code> · reads existing repo</>}
         />
+        <ChangeImplementStatus key={`${thread ?? "none"}:${implReloadKey}`} thread={thread} onActiveChange={onImplActiveChange} />
         <div className="mt-4 flex items-center justify-end gap-2">
           <ToolBtn onClick={onGenerate} disabled={!thread || !!busy}>
             {busy === "generate" ? "Generating…" : hasContent ? "重新生成" : "生成 brief"}
           </ToolBtn>
-          <ToolBtn primary onClick={onImplement} disabled={!thread || !hasContent || implementing}>
-            {implementing ? "啟動中…" : "Implement → PR"}
+          <ToolBtn primary onClick={onImplement} disabled={!thread || !hasContent || implementing || implActive}>
+            {implementing ? "啟動中…" : implActive ? "實作進行中…" : "Implement → PR"}
           </ToolBtn>
         </div>
       </section>
