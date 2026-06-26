@@ -1,4 +1,4 @@
-# Lodestar 原生啟動器（Windows）：釋放 port -> 起後端 + 前端 -> Ctrl-C 一併關閉。
+﻿# Lodestar 原生啟動器（Windows）：釋放 port -> 起後端 + 前端 -> Ctrl-C 一併關閉。
 # 這是 start.sh（Unix 專屬）的 PowerShell 對應版。前提：已跑過 setup.ps1，且 claude CLI 已登入。
 Set-Location $PSScriptRoot
 

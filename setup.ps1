@@ -1,4 +1,4 @@
-# Lodestar 一次性環境設定（Windows 原生 PowerShell）。
+﻿# Lodestar 一次性環境設定（Windows 原生 PowerShell）。
 # 用法：在專案根目錄  ->  .\setup.ps1
 # 需要：Python 3.12（py -3.12）、Node 22+ / npm、git 皆已安裝。
 $ErrorActionPreference = "Stop"

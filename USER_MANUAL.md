@@ -106,11 +106,29 @@ sudo dnf install -y tesseract tesseract-langpack-chi_tra   # 可選
 ### Windows
 
 > [!IMPORTANT]
-> **`start.sh` 是 Unix 專屬（bash + `lsof` + `trap`），無法在 cmd 或 PowerShell 原生執行。** Windows 有兩條路：
-> 1. **WSL2（強烈建議）** —— 在 WSL2 裡有真正的 bash，`start.sh` 可原封不動執行。
-> 2. **原生 PowerShell（用 repo 附的 `start.ps1` / `start.bat`）** —— 不依賴 `start.sh`。
+> **`start.sh` 是 Unix 專屬（bash + `lsof` + `trap`），無法在 cmd 或 PowerShell 原生執行。** Windows 有三條路（由易到難）：
+> 1. **一鍵自動安裝（最簡單，推薦給非開發者）** —— 雙擊 `Lodestar-Install.bat`，自動偵測並安裝缺少的環境，再啟動。
+> 2. **WSL2** —— 在 WSL2 裡有真正的 bash，`start.sh` 可原封不動執行。
+> 3. **原生 PowerShell（用 repo 附的 `start.ps1` / `start.bat`）** —— 不依賴 `start.sh`。
 
-**路線 A：WSL2（建議）**
+**路線 A：一鍵自動安裝（推薦）**
+
+雙擊專案根目錄的 **`Lodestar-Install.bat`**（底層是 `windows-bootstrap.ps1`）。它會：
+
+1. 偵測機器環境，**已安裝的略過、只裝缺的**：用內建的 `winget` 裝 Python 3.12 / Node（LTS，≥22）/ git，再用 `npm` 裝 `claude` CLI。
+2. 檢查 `claude` 登入狀態；**沒登入才**開瀏覽器跑 `claude auth login`（用你自己的 Claude 帳號）。
+3. 建立 `backend\.venv` + 安裝前後端依賴（已存在就略過）。
+4. 啟動前後端，並在數秒後自動開啟 http://localhost:8724。
+
+> [!NOTE]
+> - 需要 **Windows 10+ 內建的 winget**（「應用程式安裝程式 / App Installer」）。沒有的話到 Microsoft Store 裝一下，或改走路線 B / C。
+> - 安裝工具時可能跳 **UAC**，請允許。
+> - 整個過程**可重複執行**：若剛裝完某個工具、本視窗還抓不到（PATH 尚未生效），它會請你「關閉視窗再雙擊一次」，第二次會略過已裝好的、很快跑完。
+> - **唯一無法省略的步驟是第一次的 `claude auth login`**（綁個人 Claude 訂閱的瀏覽器登入），這是設計上打不進安裝包的。
+
+設定好之後，之後每次啟動只要雙擊 `start.bat`（不會再重裝）即可。
+
+**路線 B：WSL2**
 
 ```powershell
 # 在 Windows PowerShell（系統管理員）
@@ -119,7 +137,7 @@ wsl --install -d Ubuntu
 
 進入 Ubuntu 後，照上面的 **Linux** 章節安裝工具鏈、`claude auth login` 登入、做首次設定，最後 `./start.sh`。所有東西（`start.sh`、`lsof`、`trap`、`&`/`wait`）都原樣運作。請把 `claude` 安裝並登入在 **WSL distro 內**。
 
-**路線 B：原生 PowerShell（不用 start.sh）**
+**路線 C：原生 PowerShell（不用 start.sh，手動裝好環境者）**
 
 注意 Windows venv 的 python 在 `backend\.venv\Scripts\python.exe`（不是 `bin/python`）。
 
@@ -215,14 +233,16 @@ curl http://localhost:8723/api/health
 
 | 作業系統 | 一次性設定 | 啟動 |
 |---|---|---|
+| **Windows（全自動，雙擊）** | `Lodestar-Install.bat`（連 runtime 都自動裝） | 之後雙擊 `start.bat` |
 | macOS（雙擊） | `setup.command` | `Lodestar.command` |
 | macOS / Linux（終端機） | `./setup.sh` | `./start.sh` |
 | Linux（桌面捷徑） | `./setup.sh` | `Lodestar.desktop`（範本見下，需填絕對路徑） |
-| Windows（雙擊 / PowerShell） | `setup.ps1` | `start.bat`（雙擊）或 `start.ps1` |
+| Windows（已自備環境） | `setup.ps1` | `start.bat`（雙擊）或 `start.ps1` |
 
 各啟動器的行為：
 
-- **`setup.sh` / `setup.command` / `setup.ps1`**：建立 `backend/.venv`、`pip install -r backend/requirements.txt`、`npm install`，完成後提示你 `claude auth login`。只需跑一次。
+- **`Lodestar-Install.bat` + `windows-bootstrap.ps1`（Windows 全自動，最接近「一鍵」）**：冪等偵測機器環境，用 `winget` / `npm` 補裝缺少的 Python 3.12 / Node / git / claude，確認 `claude` 登入後建環境並啟動。詳見上面「安裝 → Windows → 路線 A」。**唯一不能省的是第一次 `claude auth login`。**
+- **`setup.sh` / `setup.command` / `setup.ps1`**：建立 `backend/.venv`、`pip install -r backend/requirements.txt`、`npm install`，完成後提示你 `claude auth login`。只需跑一次。（前提：runtime 已自備。）
 - **`Lodestar.command`（macOS 雙擊）**：自動把最新的 nvm Node 22 加進 PATH，再呼叫 `./start.sh`。沒用 nvm 也能跑（那段會略過）。
 - **`start.ps1` / `start.bat`（Windows）**：`start.sh` 的 PowerShell 對應版 —— 釋放 8723/8724、起後端 uvicorn + 前端 next、`Ctrl-C` 一併關閉。`start.bat` 只是用合適執行原則包一層呼叫 `start.ps1`，方便雙擊。
 
@@ -519,9 +539,13 @@ cd frontend && npm run lint                  # eslint
 | `setup.sh` | macOS / Linux | 一次性環境設定（venv + pip + npm） |
 | `setup.command` | macOS（雙擊） | 雙擊執行 `setup.sh` |
 | `Lodestar.command` | macOS（雙擊） | 雙擊啟動（自動補 nvm Node 22 → `start.sh`） |
-| `setup.ps1` | Windows | 一次性環境設定 |
+| `Lodestar-Install.bat` | Windows（雙擊） | **全自動**：偵測並補裝 Python/Node/git/claude → 確認登入 → 建環境 → 啟動（雙擊呼叫 `windows-bootstrap.ps1`） |
+| `windows-bootstrap.ps1` | Windows | 上者的實際邏輯（冪等，可重複執行） |
+| `setup.ps1` | Windows | 一次性環境設定（runtime 已自備時用） |
 | `start.ps1` | Windows | 原生啟動（釋放 port + 起前後端） |
-| `start.bat` | Windows（雙擊） | 雙擊呼叫 `start.ps1` |
+| `start.bat` | Windows（雙擊） | 雙擊呼叫 `start.ps1`（已設定好後的日常啟動） |
+
+> Windows 的 `.ps1` 檔均存成 **UTF-8 with BOM**，確保在 Windows PowerShell 5.1（預設）下中文訊息不會變亂碼。
 
 ### F. 專案連結與文件
 
