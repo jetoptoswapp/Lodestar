@@ -9,6 +9,10 @@
 > 🧭 **製造業 RCA Copilot**（領域 plugin，與需求工程並存）：異常根因分析助手。
 > 快速上手 → [`docs/RCA_QUICKSTART.md`](./docs/RCA_QUICKSTART.md)；架構說明 → [`docs/RCA.md`](./docs/RCA.md)。
 
+> 📘 **完整使用手冊**（各 OS 安裝 / 一鍵啟動 / 使用教學 / 疑難排解）→ [`USER_MANUAL.md`](./USER_MANUAL.md)。
+> 全新機器可用單檔安裝器一行裝好（`Install-Lodestar.ps1` / `install.sh`，詳見手冊「全新機器：一行指令」）。
+> 自訂 agent/workflow 的版控備份 → [`config-export/`](./config-export/)。
+
 ---
 
 ## 快速開始
@@ -29,6 +33,8 @@
 Port 刻意避開常用值（3000 / 8000 / 8080 / 5173）以免與本機其他服務衝突。
 
 ### 首次設定（環境若還沒備好）
+
+> 懶人版：直接跑 `./setup.sh`（macOS/Linux）或 `setup.ps1`（Windows）一鍵完成下面這些；全新機器可用單檔安裝器（見 [`USER_MANUAL.md`](./USER_MANUAL.md)）。
 
 ```bash
 # Backend venv（一次）
@@ -91,13 +97,13 @@ ai-tool-v3/
 │   │   ├── impl_dal.py · impl_usage.py   #   實作資料存取 / token·成本聚合
 │   │   └── task_registry.py
 │   ├── plugins/                          # 能力都在這
-│   │   ├── builtin_core_stages/          #   prd / architecture / stories
+│   │   ├── builtin_core_stages/          #   prd / architecture / ui_design / stories / change_request / build_verify
 │   │   ├── builtin_implement/            #   M5 實作 runner + 安全 hooks
 │   │   ├── builtin_agents/               #   seed agents（lead / frontend / backend …）
-│   │   ├── builtin_models/               #   ModelAdapter（claude-cli / codex-cli）
+│   │   ├── builtin_models/               #   ModelAdapter（claude-cli / codex-cli / agy-cli）
 │   │   ├── builtin_integrations/         #   GitHub / Jira / GitLab IntegrationSpec
 │   │   └── rca_domain/                   #   製造業 RCA copilot 領域 plugin
-│   └── tests/                            # pytest（327 tests / 39 檔）
+│   └── tests/                            # pytest（437 tests / 46 檔）
 └── frontend/
     ├── app/layout.tsx                    # Fraunces × Geist Sans / Mono 字型
     ├── app/globals.css                   # Industrial Cobalt × Drafting Dusk tokens
@@ -110,7 +116,7 @@ ai-tool-v3/
 
 ```bash
 # Backend（從專案根；pyproject 已設 pythonpath=backend, testpaths=backend/tests）
-backend/.venv/bin/python -m pytest          # 327 tests
+backend/.venv/bin/python -m pytest          # 437 tests
 
 # Frontend typecheck
 cd frontend && npx tsc --noEmit
@@ -141,10 +147,10 @@ cd frontend && npx tsc --noEmit
 | Backend | Python 3.12, FastAPI, SQLite WAL |
 | 流程編排 | 自製輕量 `WorkflowEngine`（純 Python）—— **不用** LangGraph |
 | Manifest 解析 | 內建 `tomllib`（零新依賴） |
-| Model 接入 | CLI adapters（claude-cli / codex-cli），registry 模式 |
+| Model 接入 | CLI adapters（claude-cli / codex-cli / agy-cli），registry 模式 |
 | Frontend | Next 16 (App Router) + TypeScript + Tailwind v4 |
 | 字型 | Fraunces (display, italic) × Geist Sans × Geist Mono |
-| 測試 | pytest（backend, 327 tests）、tsc typecheck（frontend） |
+| 測試 | pytest（backend, 437 tests）、tsc typecheck（frontend） |
 
 ---
 

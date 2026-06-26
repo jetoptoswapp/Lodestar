@@ -370,7 +370,7 @@ export LODESTAR_KEYSTORE_KEY="$(backend/.venv/bin/python -c 'from cryptography.f
 ### C. 跑測試
 
 ```bash
-backend/.venv/bin/python -m pytest      # 後端，repo 根執行（約 430 個測試 / 46 檔）
+backend/.venv/bin/python -m pytest      # 後端，repo 根執行（約 440 個測試 / 46 檔）
 cd frontend && npx tsc --noEmit         # 前端型別檢查
 cd frontend && npm run lint             # eslint
 ```
