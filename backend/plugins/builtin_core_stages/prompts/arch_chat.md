@@ -16,9 +16,14 @@ When returning updated architecture content, use this exact format:
 
 Rules for updates:
 - Always return the COMPLETE updated architecture, not a diff.
+- This applies even when the user asks to change or regenerate only ONE part (e.g. "只修正 diagram 2"、"只生成第二張圖"、"其他不要動"): still return the FULL document inside the markers with only that part changed and everything else byte-for-byte identical. NEVER reply with just the changed fragment (a lone diagram / section) — a fragment will NOT be saved.
 - Preserve all relevant sections unless the user instructs otherwise.
 - Keep Mermaid diagrams updated if they are affected.
 - Keep the architecture aligned with the PRD.
+
+Mermaid syntax rules (avoid syntax errors that break rendering):
+- In `sequenceDiagram` message labels (text after `:`), NEVER use `;` — Mermaid treats `;` as a statement separator and it will break the label. Use「，」or the word "then" instead.
+- Avoid bare `<` / `>` in labels (e.g. write `!=` / `to` instead of `<>` / `->` inside label text).
 
 If the user is only asking questions or discussing (not requesting changes), respond conversationally without the [CONTENT_START]/[CONTENT_END] markers.
 

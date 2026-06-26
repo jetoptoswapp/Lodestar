@@ -293,6 +293,15 @@ class WorkflowEngine:
                 raise MissingDependencyError(stage_id, up)
             upstream[up] = art
 
+        # 軟上游（soft_depends_on）：artifact 存在才注入，缺不擋。
+        # 只取在本 workflow 內、且尚未被硬依賴帶入的；不參與 gating / 拓樸。
+        # e.g. architecture 想參考 ui_design，但純後端專案可以沒有 ui_design。
+        for up in getattr(stage, "soft_depends_on", ()):
+            if up in workflow.stages and up not in upstream:
+                art = dal.get_artifact(thread_id, up)
+                if art and art.strip():
+                    upstream[up] = art
+
         current = dal.get_artifact(thread_id, stage_id) or ""
 
         # 3. conversation history —— chat / refine / generate 皆載入。

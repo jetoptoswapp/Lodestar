@@ -86,7 +86,7 @@ def test_stage_agent_and_workflow_registered(tmp_db):
     assert s.telemetry_stage == "design"
     assert s.depends_on == ("prd",)
     assert s.supports_chat is True
-    assert reg.workflows["default"].stages == ("prd", "architecture", "ui_design", "stories")
+    assert reg.workflows["default"].stages == ("prd", "ui_design", "architecture", "stories")
     by_role = {a.role: a for a in reg.agents.values()}
     assert by_role["ui_design"].agent_id == "seed_ui_designer"
     assert by_role["ui_design"].system_prompt == ""    # 空 = 用 stage default persona
@@ -192,7 +192,7 @@ def test_stories_prompt_gets_stripped_ui_brief(tmp_db):
     prompt = log[-1]["prompt"]
     assert "## Screen: 今日菜單" in prompt                # 畫面結構餵進 stories
     assert "<!DOCTYPE html>" not in prompt                # 原型 HTML 已 strip
-    assert "UI alignment" in prompt                       # user_stories.md 的 HARD RULE
+    assert "Frontend & delivery-surface coverage" in prompt   # user_stories.md 的前端覆蓋 HARD RULE
 
 
 # ============================================================

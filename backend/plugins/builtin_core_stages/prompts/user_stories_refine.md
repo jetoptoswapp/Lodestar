@@ -43,6 +43,36 @@ Apply the matching rule:
 
 If the Architecture has no tier line (legacy), infer from PRD facts and apply the matching rule. Do not preserve T2-style over-splitting in a T0 / T1 project just because the input had it — the refine is the right place to correct.
 
+## Epic organisation and vertical story check (HARD RULE — applies on refine too)
+
+For each Epic in the document, verify and fix the following:
+
+**1. Epic title must describe a user capability, not a technical component.**
+- ❌ `## Epic 3: mDNS Discovery 完成` — technical component, rewrite it
+- ✅ `## Epic 3: 使用者可以在 app 裡看到同網段的電腦` — user capability
+
+**2. Every Epic must end with a vertical story (no `[prereq]` prefix).**
+- If the last story of an Epic has a `[prereq]` prefix, the Epic is missing its vertical story — add one.
+- Library / infrastructure stories within an Epic must carry the `[prereq]` prefix; the final story must not.
+
+**3. The vertical story's AC must contain a concrete launch command.**
+- At least one AC must name the exact command used to start the product (e.g. `cargo run --bin X -- --headless`, `python -m myservice`, `./gradlew connectedAndroidTest`, `npm start`).
+- An AC whose `Then` clause only calls a library function (e.g. `browse_snapshot()` returns X) does NOT qualify — add or replace it with one that observes a running product.
+
+When adding a missing vertical story, use this shape:
+```
+### Story N.M — <user-observable outcome>
+
+**As a** user, **I want** <goal> **so that** <benefit>.
+
+**Acceptance Criteria**
+- AC-1: Given `<launch command>` starts without error, When <trigger>, Then <observable outcome in the running product>.
+
+**Requirement IDs**: <relevant FR/NFR IDs>
+**Senior RD Estimate**
+- 2
+```
+
 ## Story sizing (HARD RULE — applies on refine too):
 
 Stories are implemented by an autonomous coding agent with a 10–15 minute per-attempt budget. Multi-day stories cannot finish in that window and get auto-cancelled. When refining:

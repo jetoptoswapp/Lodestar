@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lodestar — 核心概念動圖</title>
+<style>
+:root{
+  --bg:#faf9f5;--bg1:#ffffff;--bg2:#f0eee6;
+  --txt:#1f1f1c;--txt2:#5f5e59;--txt3:#9c9a92;
+  --bd:#dedcd1;--info:#185fa5;--ok:#0F6E56;--warn:#854F0B;--err:#A32D2D;
+  --t:#9c9a92;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#262624;--bg1:#30302e;--bg2:#3a3a37;
+    --txt:#f0efea;--txt2:#c2c0b6;--txt3:#9c9a92;
+    --bd:#4a4a45;--info:#85B7EB;--ok:#5DCAA5;--warn:#FAC775;--err:#F09595;
+    --t:#9c9a92;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  font-size:16px;line-height:1.7}
+main{max-width:760px;margin:0 auto;padding:32px 24px 80px}
+h1{font-size:24px;font-weight:600;margin:0 0 4px}
+h2{font-size:18px;font-weight:600;margin:3.5rem 0 4px}
+.sub{font-size:13px;color:var(--txt2);margin:0 0 16px}
+section{background:var(--bg1);border:1px solid var(--bd);border-radius:14px;padding:20px 24px;margin-top:12px}
+button{font:inherit;font-size:12.5px;color:var(--txt);background:transparent;
+  border:1px solid var(--bd);border-radius:8px;padding:5px 12px;cursor:pointer}
+button:hover{background:var(--bg2)}
+code,.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+svg{display:block;width:100%;height:auto}
+svg text{font-family:inherit}
+svg .th{font-size:14px;font-weight:600;fill:var(--txt)}
+svg .ts{font-size:12px;fill:var(--txt2)}
+svg .arr{stroke:var(--txt3);stroke-width:1.2;fill:none}
+svg .c-purple rect,svg .c-purple circle{fill:#EEEDFE;stroke:#534AB7}
+svg .c-purple .th{fill:#3C3489}svg .c-purple .ts{fill:#534AB7}
+svg .c-teal rect,svg .c-teal circle{fill:#E1F5EE;stroke:#0F6E56}
+svg .c-teal .th{fill:#085041}svg .c-teal .ts{fill:#0F6E56}
+svg .c-coral rect,svg .c-coral circle{fill:#FAECE7;stroke:#993C1D}
+svg .c-coral .th{fill:#712B13}svg .c-coral .ts{fill:#993C1D}
+svg .c-gray rect,svg .c-gray circle{fill:#F1EFE8;stroke:#5F5E5A}
+svg .c-gray .th{fill:#444441}svg .c-gray .ts{fill:#5F5E5A}
+@media (prefers-color-scheme: dark){
+  svg .c-purple rect,svg .c-purple circle{fill:#3C3489;stroke:#AFA9EC}
+  svg .c-purple .th{fill:#CECBF6}svg .c-purple .ts{fill:#AFA9EC}
+  svg .c-teal rect,svg .c-teal circle{fill:#085041;stroke:#5DCAA5}
+  svg .c-teal .th{fill:#9FE1CB}svg .c-teal .ts{fill:#5DCAA5}
+  svg .c-coral rect,svg .c-coral circle{fill:#712B13;stroke:#F0997B}
+  svg .c-coral .th{fill:#F5C4B3}svg .c-coral .ts{fill:#F0997B}
+  svg .c-gray rect,svg .c-gray circle{fill:#444441;stroke:#B4B2A9}
+  svg .c-gray .th{fill:#D3D1C7}svg .c-gray .ts{fill:#B4B2A9}
+}
+.anim{opacity:0;transition:opacity .6s ease,transform .6s ease;transform:translateY(6px)}
+.anim.vis{opacity:1;transform:none}
+.hot rect{stroke-width:2.5px}
+.dimmed{opacity:.25;transition:opacity .6s}
+.narr{font-size:13.5px;line-height:1.65;min-height:46px;margin:12px 0 8px;color:var(--txt)}
+.ctlrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.legend{margin-left:auto;font-size:12px;color:var(--txt3)}
+.dots{display:flex;gap:6px;margin-left:4px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--bd);cursor:pointer;border:none;padding:0;min-width:9px}
+.dot.cur{background:var(--info)}
+@media (prefers-reduced-motion: no-preference){
+  .flow{stroke-dasharray:5 5;animation:dash 1.1s linear infinite}
+  @keyframes dash{to{stroke-dashoffset:-20}}
+  .hot{animation:glowp 1.2s ease-in-out infinite}
+  @keyframes glowp{50%{opacity:.8}}
+  .spin{display:inline-block;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .shake{animation:shake .3s ease-in-out 2}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+}
+/* —— 模擬器 —— */
+.lbl{font-size:12px;color:var(--txt3);margin:1.4rem 0 8px}
+.reg{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.regc{background:var(--bg2);border-radius:10px;padding:10px 12px}
+.regc .mono{font-size:11px;color:var(--txt2)}
+.slot{flex:1;min-width:0;border:1px solid var(--bd);border-radius:12px;padding:10px 12px;
+  cursor:pointer;background:var(--bg1);transition:border-color .3s,opacity .3s}
+.slot.locked{opacity:.45}
+.slot.done{border-color:#1D9E75}
+.slot.running{border-color:#D85A30}
+.sst{font-size:12px;color:var(--txt2);margin:4px 0 8px;min-height:18px}
+.bdg{font-size:11px;padding:1px 8px;border-radius:999px;background:var(--bg2);
+  color:var(--txt2);border:1px solid var(--bd);white-space:nowrap}
+.bdg.bl{background:#E6F1FB;color:#185FA5;border-color:transparent}
+.bdg.bm{border-style:dashed}
+.bdg.br{background:#FAEEDA;color:#854F0B;border-color:transparent}
+@media (prefers-color-scheme: dark){
+  .bdg.bl{background:#0C447C;color:#B5D4F4}
+  .bdg.br{background:#633806;color:#FAC775}
+}
+.wsel.active{border-color:var(--info);color:var(--info)}
+#w-chip{display:block;margin:8px 0 12px;font-size:11.5px;color:var(--txt2)}
+#w-log{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.6;
+  background:var(--bg2);border-radius:10px;padding:10px 12px;min-height:112px}
+.hint{font-size:12px;color:var(--txt3);margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Lodestar — 核心概念動圖</h1>
+<p class="sub">三支動畫：① 整條 pipeline 的產出怎麼流動（給所有人看）② workflow / stage 的架構精神（可操作模擬）③ 工廠分析 RCA Copilot（領域 plugin 示範）。支援深色模式，瀏覽器直接開即可。</p>
+
+<!-- ════════════ ① 產出流動 ════════════ -->
+<h2>① 從一句話到合併的 PR — 產出流動總覽</h2>
+<p class="sub">綠色卡片都是「產出」。自動播放，也可用按鈕逐步看。</p>
+<section id="sec-pipeline">
+<svg viewBox="0 0 680 316" role="img" aria-label="Lodestar 產出流動圖">
+ <defs><marker id="aw" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+ <g class="c-gray" data-hot="0">
+  <rect x="40" y="40" width="130" height="52" rx="8" stroke-width="0.5"/>
+  <text class="th" x="105" y="58" text-anchor="middle" dominant-baseline="central">想法</text>
+  <text class="ts" x="105" y="76" text-anchor="middle" dominant-baseline="central">一句話需求</text>
+ </g>
+ <g class="c-purple" data-hot="1">
+  <rect x="197" y="40" width="130" height="52" rx="8" stroke-width="0.5"/>
+  <text class="th" x="262" y="58" text-anchor="middle" dominant-baseline="central">PRD 站</text>
+  <text class="ts" x="262" y="76" text-anchor="middle" dominant-baseline="central">寫需求文件</text>
+ </g>
+ <g class="c-purple" data-hot="3">
+  <rect x="354" y="40" width="130" height="52" rx="8" stroke-width="0.5"/>
+  <text class="th" x="419" y="58" text-anchor="middle" dominant-baseline="central">架構站</text>
+  <text class="ts" x="419" y="76" text-anchor="middle" dominant-baseline="central">畫系統設計</text>
+ </g>
+ <g class="c-purple" data-hot="4">
+  <rect x="511" y="40" width="130" height="52" rx="8" stroke-width="0.5"/>
+  <text class="th" x="576" y="58" text-anchor="middle" dominant-baseline="central">Stories 站</text>
+  <text class="ts" x="576" y="76" text-anchor="middle" dominant-baseline="central">拆使用者故事</text>
+ </g>
+ <line x1="172" y1="66" x2="193" y2="66" class="arr flow" marker-end="url(#aw)"/>
+ <line x1="329" y1="66" x2="350" y2="66" class="arr flow" marker-end="url(#aw)"/>
+ <line x1="486" y1="66" x2="507" y2="66" class="arr flow" marker-end="url(#aw)"/>
+ <g class="anim" data-on="1">
+  <line x1="262" y1="94" x2="262" y2="108" class="arr" marker-end="url(#aw)"/>
+  <g class="c-teal" data-dim="9">
+   <rect x="216" y="112" width="92" height="62" rx="6" stroke-width="0.5"/>
+   <text class="ts" x="262" y="128" text-anchor="middle" dominant-baseline="central">需求文件</text>
+   <rect x="228" y="142" width="68" height="3" rx="1.5" opacity=".35"/>
+   <rect x="228" y="151" width="56" height="3" rx="1.5" opacity=".35"/>
+   <rect x="228" y="160" width="62" height="3" rx="1.5" opacity=".35"/>
+  </g>
+ </g>
+ <g class="anim" data-on="2">
+  <circle cx="304" cy="170" r="9" fill="#1D9E75"/>
+  <path d="M300 170L303 173L309 166" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+ </g>
+ <g class="anim" data-on="9" data-hot="9">
+  <circle cx="222" cy="118" r="9" fill="#D85A30"/>
+  <text x="222" y="118.5" text-anchor="middle" dominant-baseline="central" font-size="11" fill="#fff">↻</text>
+ </g>
+ <path d="M308 143 C330 143 350 120 370 97" fill="none" class="arr flow anim" data-on="3" marker-end="url(#aw)"/>
+ <g class="anim" data-on="3">
+  <line x1="419" y1="94" x2="419" y2="108" class="arr" marker-end="url(#aw)"/>
+  <g class="c-teal" data-dim="9">
+   <rect x="373" y="112" width="92" height="62" rx="6" stroke-width="0.5"/>
+   <text class="ts" x="419" y="128" text-anchor="middle" dominant-baseline="central">架構文件</text>
+   <rect x="385" y="142" width="68" height="3" rx="1.5" opacity=".35"/>
+   <rect x="385" y="151" width="60" height="3" rx="1.5" opacity=".35"/>
+   <rect x="385" y="160" width="64" height="3" rx="1.5" opacity=".35"/>
+  </g>
+ </g>
+ <g class="anim" data-on="4" data-dim="9">
+  <circle cx="461" cy="170" r="9" fill="#1D9E75"/>
+  <path d="M457 170L460 173L466 166" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+ </g>
+ <path d="M465 143 C487 143 505 120 527 97" fill="none" class="arr flow anim" data-on="4" marker-end="url(#aw)"/>
+ <g class="anim" data-on="4">
+  <line x1="576" y1="94" x2="576" y2="108" class="arr" marker-end="url(#aw)"/>
+  <g class="c-teal" data-dim="9">
+   <rect x="530" y="112" width="92" height="62" rx="6" stroke-width="0.5"/>
+   <text class="ts" x="576" y="128" text-anchor="middle" dominant-baseline="central">故事清單</text>
+   <rect x="542" y="142" width="68" height="3" rx="1.5" opacity=".35"/>
+   <rect x="542" y="151" width="68" height="3" rx="1.5" opacity=".35"/>
+   <rect x="542" y="160" width="68" height="3" rx="1.5" opacity=".35"/>
+  </g>
+ </g>
+ <g class="anim" data-on="5" data-dim="9">
+  <circle cx="618" cy="170" r="9" fill="#1D9E75"/>
+  <path d="M614 170L617 173L623 166" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+ </g>
+ <path d="M576 180 L576 192 L96 192 L96 199" fill="none" class="arr flow anim" data-on="5" marker-end="url(#aw)"/>
+ <g class="anim" data-on="5" data-dim="9">
+  <g class="c-teal" data-hot="6">
+   <rect x="40" y="204" width="112" height="26" rx="6" stroke-width="0.5"/>
+   <text class="ts" x="96" y="217" text-anchor="middle" dominant-baseline="central">#1 查詢頁面</text>
+  </g>
+  <g class="c-teal" data-hot="7">
+   <rect x="40" y="236" width="112" height="26" rx="6" stroke-width="0.5"/>
+   <text class="ts" x="96" y="249" text-anchor="middle" dominant-baseline="central">#2 查詢 API</text>
+  </g>
+  <g class="c-teal" data-hot="7">
+   <rect x="40" y="268" width="112" height="26" rx="6" stroke-width="0.5"/>
+   <text class="ts" x="96" y="281" text-anchor="middle" dominant-baseline="central">#3 通知信</text>
+  </g>
+ </g>
+ <line x1="156" y1="248" x2="186" y2="248" class="arr flow anim" data-on="6" marker-end="url(#aw)"/>
+ <g class="c-coral" data-hot="6,7">
+  <rect x="192" y="214" width="180" height="66" rx="8" stroke-width="0.5"/>
+  <text class="th" x="282" y="232" text-anchor="middle" dominant-baseline="central">自動實作</text>
+  <text class="ts" x="282" y="250" text-anchor="middle" dominant-baseline="central" font-size="11">lead→RD→tester→reviewer</text>
+  <text class="ts" x="282" y="266" text-anchor="middle" dominant-baseline="central" font-size="11">一次一張，過關才下一張</text>
+ </g>
+ <line x1="376" y1="248" x2="400" y2="248" class="arr flow anim" data-on="6" marker-end="url(#aw)"/>
+ <g class="anim" data-on="6" data-dim="9">
+  <g class="c-teal"><rect x="406" y="204" width="96" height="26" rx="6" stroke-width="0.5"/>
+  <text class="ts" x="454" y="217" text-anchor="middle" dominant-baseline="central">PR #1 已合併</text></g>
+ </g>
+ <g class="anim" data-on="7" data-dim="9">
+  <g class="c-teal"><rect x="406" y="236" width="96" height="26" rx="6" stroke-width="0.5"/>
+  <text class="ts" x="454" y="249" text-anchor="middle" dominant-baseline="central">PR #2 已合併</text></g>
+  <g class="c-teal"><rect x="406" y="268" width="96" height="26" rx="6" stroke-width="0.5"/>
+  <text class="ts" x="454" y="281" text-anchor="middle" dominant-baseline="central">PR #3 已合併</text></g>
+ </g>
+ <line x1="506" y1="248" x2="522" y2="248" class="arr flow anim" data-on="8" marker-end="url(#aw)"/>
+ <g class="c-gray" data-hot="8">
+  <rect x="528" y="204" width="112" height="90" rx="8" stroke-width="0.5"/>
+  <text class="th" x="584" y="222" text-anchor="middle" dominant-baseline="central" font-size="13">Flight Log</text>
+ </g>
+ <g class="anim" data-on="8">
+  <text class="ts" x="584" y="244" text-anchor="middle" dominant-baseline="central" font-size="11">3/3 故事完成</text>
+  <text class="ts" x="584" y="262" text-anchor="middle" dominant-baseline="central" font-size="11">耗時·重試輪數</text>
+  <text class="ts" x="584" y="280" text-anchor="middle" dominant-baseline="central" font-size="11">token·成本彙總</text>
+ </g>
+</svg>
+<p class="narr"></p>
+<div class="ctlrow">
+ <button class="ctl-prev">‹ 上一步</button>
+ <button class="ctl-pp">暫停</button>
+ <button class="ctl-next">下一步 ›</button>
+ <div class="dots"></div>
+ <span class="legend">紫＝AI 工作站 · 綠＝產出 · 珊瑚＝實作工廠</span>
+</div>
+</section>
+
+<!-- ════════════ ② workflow / stage 模擬器 ════════════ -->
+<h2>② workflow / stage 的架構精神 — 可操作模擬器</h2>
+<p class="sub">點卡片＝生成；已核准再點＝重生成（下游自動 reset）；點上鎖的卡看 engine 擋下。</p>
+<section id="sec-sim">
+<p class="lbl" style="margin-top:0">1 · plugin 註冊能力卡（StageSpec 掛進 registry，裝／卸像 App）</p>
+<div class="reg">
+ <div class="regc">
+  <div style="font-size:13px;font-weight:600"><span class="mono">prd</span></div>
+  <div class="mono" style="margin-top:6px">depends_on = ()</div>
+  <div class="mono">generate · refine · chat</div>
+ </div>
+ <div class="regc">
+  <div style="font-size:13px;font-weight:600"><span class="mono">architecture</span></div>
+  <div class="mono" style="margin-top:6px">depends_on = ("prd",)</div>
+  <div class="mono">generate · refine · chat</div>
+ </div>
+ <div class="regc">
+  <div style="font-size:13px;font-weight:600"><span class="mono">stories</span></div>
+  <div class="mono" style="margin-top:6px">depends_on = ("architecture",)</div>
+  <div class="mono">generate · refine · chat</div>
+ </div>
+ <div class="regc">
+  <div style="font-size:13px;font-weight:600"><span class="mono">change_request</span></div>
+  <div class="mono" style="margin-top:6px">depends_on = ()</div>
+  <div class="mono">requires = ("workspace",)</div>
+ </div>
+</div>
+<p class="lbl">2 · workflow 是一筆資料（WorkflowSpec 存 DB；換流程＝換資料，engine 不變）</p>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+ <button class="wsel active" data-w="default" onclick="wSetWf('default')">Standard Pipeline</button>
+ <button class="wsel" data-w="requirements_panel" onclick="wSetWf('requirements_panel')">Requirements Panel（討論）</button>
+ <button class="wsel" data-w="modify_existing" onclick="wSetWf('modify_existing')">修改既有專案</button>
+</div>
+<code id="w-chip">WorkflowSpec(id="default", stages=("prd", "architecture", "stories"))</code>
+<div id="w-track" style="display:flex;align-items:stretch;gap:0"></div>
+<p class="hint">提示順序：先點上鎖的「架構」看被擋下 → 依序生成到全綠 → 回頭重生成 PRD，看下游被 reset。</p>
+<p class="lbl">3 · engine console — 零 stage 硬編碼，依賴與下游 reset 全從資料推導</p>
+<div id="w-log"></div>
+</section>
+
+<!-- ════════════ ③ 工廠分析 RCA ════════════ -->
+<h2>③ 工廠分析 — RCA Copilot（領域 plugin）</h2>
+<p class="sub">AI 是 Copilot 不是 Judge：產出候選根因表，工程師逐列確認、到現場查證。</p>
+<section id="sec-rca">
+<svg viewBox="0 0 680 400" role="img" aria-label="製造業 RCA Copilot 流程">
+ <defs><marker id="awr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+ <rect class="anim" data-on="9" x="32" y="22" width="616" height="364" rx="12" fill="none" stroke="var(--t)" stroke-width="1" stroke-dasharray="6 6"/>
+ <g class="c-gray" data-hot="0">
+  <rect x="40" y="48" width="160" height="72" rx="8" stroke-width="0.5"/>
+  <text class="th" x="120" y="64" text-anchor="middle" dominant-baseline="central">ETCH-03 異常</text>
+  <polyline points="56,80 76,78 96,81 112,79 126,88 146,94 168,99" fill="none" stroke="#E24B4A" stroke-width="1.5" stroke-linecap="round"/>
+  <text class="ts" x="120" y="110" text-anchor="middle" dominant-baseline="central" font-size="11">附件：製程數據.csv</text>
+ </g>
+ <line x1="204" y1="84" x2="234" y2="84" class="arr flow" marker-end="url(#awr)"/>
+ <g class="c-purple" data-hot="1">
+  <rect x="240" y="48" width="130" height="72" rx="8" stroke-width="0.5"/>
+  <text class="th" x="305" y="72" text-anchor="middle" dominant-baseline="central">Intake 站</text>
+  <text class="ts" x="305" y="94" text-anchor="middle" dominant-baseline="central" font-size="11">只記事實，不猜原因</text>
+ </g>
+ <line x1="374" y1="84" x2="402" y2="84" class="arr flow anim" data-on="1" marker-end="url(#awr)"/>
+ <g class="anim" data-on="1">
+  <g class="c-teal">
+   <rect x="408" y="48" width="92" height="72" rx="6" stroke-width="0.5"/>
+   <text class="ts" x="454" y="66" text-anchor="middle" dominant-baseline="central">事實簡報</text>
+   <rect x="420" y="82" width="68" height="3" rx="1.5" opacity=".35"/>
+   <rect x="420" y="92" width="58" height="3" rx="1.5" opacity=".35"/>
+   <rect x="420" y="102" width="64" height="3" rx="1.5" opacity=".35"/>
+  </g>
+ </g>
+ <path d="M454 124 L454 130 L110 130 L110 136" fill="none" class="arr flow anim" data-on="2" marker-end="url(#awr)"/>
+ <g class="c-purple" data-hot="2">
+  <rect x="40" y="140" width="140" height="56" rx="8" stroke-width="0.5"/>
+  <text class="th" x="110" y="158" text-anchor="middle" dominant-baseline="central">基線分析</text>
+  <text class="ts" x="110" y="176" text-anchor="middle" dominant-baseline="central" font-size="11">量化正常 vs 異常</text>
+ </g>
+ <g class="c-purple" data-hot="3">
+  <rect x="200" y="140" width="140" height="56" rx="8" stroke-width="0.5"/>
+  <text class="th" x="270" y="158" text-anchor="middle" dominant-baseline="central">因果推理</text>
+  <text class="ts" x="270" y="176" text-anchor="middle" dominant-baseline="central" font-size="11">分開相關與因果</text>
+ </g>
+ <g class="c-purple" data-hot="4">
+  <rect x="360" y="140" width="140" height="56" rx="8" stroke-width="0.5"/>
+  <text class="th" x="430" y="158" text-anchor="middle" dominant-baseline="central">知識比對</text>
+  <text class="ts" x="430" y="176" text-anchor="middle" dominant-baseline="central" font-size="11">對照 SOP 故障模式</text>
+ </g>
+ <g class="c-purple" data-hot="5">
+  <rect x="520" y="140" width="120" height="56" rx="8" stroke-width="0.5"/>
+  <text class="th" x="580" y="158" text-anchor="middle" dominant-baseline="central">彙整 lead</text>
+  <text class="ts" x="580" y="176" text-anchor="middle" dominant-baseline="central" font-size="11">排序候選根因</text>
+ </g>
+ <line x1="184" y1="168" x2="196" y2="168" class="arr flow" marker-end="url(#awr)"/>
+ <line x1="344" y1="168" x2="356" y2="168" class="arr flow" marker-end="url(#awr)"/>
+ <line x1="504" y1="168" x2="516" y2="168" class="arr flow" marker-end="url(#awr)"/>
+ <g class="anim" data-on="2">
+  <g class="c-teal"><rect x="50" y="202" width="120" height="22" rx="11" stroke-width="0.5"/>
+  <text class="ts" x="110" y="213" text-anchor="middle" dominant-baseline="central" font-size="11">95.2% → 92.9%</text></g>
+ </g>
+ <g class="anim" data-on="3">
+  <circle class="c-teal" cx="230" cy="213" r="7" stroke-width="0.5"/>
+  <circle class="c-teal" cx="270" cy="213" r="7" stroke-width="0.5"/>
+  <circle class="c-teal" cx="310" cy="213" r="7" stroke-width="0.5"/>
+  <line x1="239" y1="213" x2="259" y2="213" class="arr" marker-end="url(#awr)"/>
+  <line x1="279" y1="213" x2="299" y2="213" class="arr" marker-end="url(#awr)"/>
+ </g>
+ <g class="anim" data-on="4">
+  <g class="c-teal"><rect x="370" y="202" width="120" height="22" rx="11" stroke-width="0.5"/>
+  <text class="ts" x="430" y="213" text-anchor="middle" dominant-baseline="central" font-size="11">對上 SOP-114</text></g>
+ </g>
+ <path d="M580 196 L580 230 L195 230 L195 236" fill="none" class="arr flow anim" data-on="5" marker-end="url(#awr)"/>
+ <g class="anim" data-on="5">
+  <g class="c-teal">
+   <rect x="40" y="240" width="310" height="110" rx="8" stroke-width="0.5"/>
+   <text class="th" x="195" y="256" text-anchor="middle" dominant-baseline="central" font-size="13">候選根因表（嫌疑清單）</text>
+   <line x1="52" y1="268" x2="338" y2="268" stroke="var(--t)" stroke-width="0.5" opacity=".4"/>
+   <text class="ts" x="54" y="282" dominant-baseline="central" font-size="11">1 · 腔體壓力漂移</text>
+   <text class="ts" x="54" y="306" dominant-baseline="central" font-size="11">2 · RF 匹配網路老化</text>
+   <text class="ts" x="54" y="330" dominant-baseline="central" font-size="11">3 · MFC 流量計偏移</text>
+   <rect x="240" y="274" width="36" height="16" rx="8" fill="var(--bg2)" stroke="none"/>
+   <rect x="240" y="298" width="36" height="16" rx="8" fill="var(--bg2)" stroke="none"/>
+   <rect x="240" y="322" width="36" height="16" rx="8" fill="var(--bg2)" stroke="none"/>
+  </g>
+  <text x="258" y="282" text-anchor="middle" dominant-baseline="central" font-size="11" fill="var(--txt2)">高</text>
+  <text x="258" y="306" text-anchor="middle" dominant-baseline="central" font-size="11" fill="var(--txt2)">中</text>
+  <text x="258" y="330" text-anchor="middle" dominant-baseline="central" font-size="11" fill="var(--txt2)">低</text>
+ </g>
+ <g class="anim" data-on="6">
+  <circle cx="312" cy="282" r="8" fill="#1D9E75"/>
+  <path d="M308.5 282L311.5 285L317 279" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="312" cy="306" r="8" fill="none" stroke="var(--t)" stroke-width="1"/>
+  <text x="312" y="306.5" text-anchor="middle" dominant-baseline="central" font-size="10" fill="var(--t)">?</text>
+  <circle cx="312" cy="330" r="8" fill="#E24B4A"/>
+  <path d="M308.5 326.5L315.5 333.5M315.5 326.5L308.5 333.5" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+ </g>
+ <line x1="354" y1="287" x2="384" y2="287" class="arr flow anim" data-on="6" marker-end="url(#awr)"/>
+ <g class="c-gray" data-hot="6">
+  <rect x="390" y="252" width="120" height="70" rx="8" stroke-width="0.5"/>
+  <text class="th" x="450" y="276" text-anchor="middle" dominant-baseline="central">工程師</text>
+  <text class="ts" x="450" y="296" text-anchor="middle" dominant-baseline="central" font-size="11">Confirm / Reject</text>
+ </g>
+ <line x1="514" y1="287" x2="534" y2="287" class="arr flow anim" data-on="7" marker-end="url(#awr)"/>
+ <g class="c-gray" data-hot="7">
+  <rect x="540" y="252" width="100" height="70" rx="8" stroke-width="0.5"/>
+  <text class="th" x="590" y="276" text-anchor="middle" dominant-baseline="central">現場查證</text>
+  <text class="ts" x="590" y="296" text-anchor="middle" dominant-baseline="central" font-size="11">人確認真因</text>
+ </g>
+ <g class="anim" data-on="8">
+  <text class="ts" x="40" y="365" dominant-baseline="central" font-size="11">同一引擎可換隊形：</text>
+  <g class="c-gray"><rect x="150" y="354" width="92" height="22" rx="11" stroke-width="0.5"/>
+  <text class="ts" x="196" y="365" text-anchor="middle" dominant-baseline="central" font-size="11">單人 copilot</text></g>
+  <g class="c-gray"><rect x="252" y="354" width="56" height="22" rx="11" stroke-width="0.5"/>
+  <text class="ts" x="280" y="365" text-anchor="middle" dominant-baseline="central" font-size="11">五人鏈</text></g>
+  <g class="c-gray"><rect x="318" y="354" width="140" height="22" rx="11" stroke-width="0.5"/>
+  <text class="ts" x="388" y="365" text-anchor="middle" dominant-baseline="central" font-size="11">AI 先提計畫、人核准</text></g>
+ </g>
+ <text class="ts anim" data-on="9" x="636" y="376" text-anchor="end" dominant-baseline="central" font-size="11">rca_domain plugin — 核心引擎零修改</text>
+</svg>
+<p class="narr"></p>
+<div class="ctlrow">
+ <button class="ctl-prev">‹ 上一步</button>
+ <button class="ctl-pp">暫停</button>
+ <button class="ctl-next">下一步 ›</button>
+ <div class="dots"></div>
+ <span class="legend">紫＝AI 分析站 · 綠＝產出 · 灰＝人拍板</span>
+</div>
+</section>
+
+<script>
+/* ───── 共用：步進式動畫 ───── */
+function makeStory(rootId, steps, interval){
+  const root=document.getElementById(rootId);
+  const narr=root.querySelector('.narr'), dotsBox=root.querySelector('.dots');
+  let cur=0, playing=true, timer=null;
+  steps.forEach((_,i)=>{
+    const b=document.createElement('button');
+    b.className='dot'; b.setAttribute('aria-label','第'+(i+1)+'步');
+    b.addEventListener('click',()=>go(i)); dotsBox.appendChild(b);
+  });
+  function update(){
+    root.querySelectorAll('[data-on]').forEach(e=>{
+      const on=+e.dataset.on, off=e.dataset.off?+e.dataset.off:99;
+      e.classList.toggle('vis',cur>=on&&cur<off);});
+    root.querySelectorAll('[data-hot]').forEach(e=>
+      e.classList.toggle('hot',e.dataset.hot.split(',').includes(String(cur))));
+    root.querySelectorAll('[data-dim]').forEach(e=>
+      e.classList.toggle('dimmed',cur>=+e.dataset.dim));
+    narr.textContent=steps[cur];
+    root.querySelectorAll('.dot').forEach((d,i)=>d.classList.toggle('cur',i===cur));
+  }
+  function go(i){cur=(i+steps.length)%steps.length;update();restart();}
+  function restart(){clearInterval(timer);if(playing)timer=setInterval(()=>{cur=(cur+1)%steps.length;update();},interval);}
+  root.querySelector('.ctl-prev').addEventListener('click',()=>go(cur-1));
+  root.querySelector('.ctl-next').addEventListener('click',()=>go(cur+1));
+  root.querySelector('.ctl-pp').addEventListener('click',function(){
+    playing=!playing;this.textContent=playing?'暫停':'播放';restart();});
+  update();restart();
+}
+
+/* ───── ① pipeline 產出流動 ───── */
+makeStory('sec-pipeline',[
+ '一切從一句話開始——例如「我想做讓客戶查訂單進度的網站」。',
+ 'PRD 站開工：AI 把一句話寫成第一份產出——「需求文件」，寫的時候自己會反覆檢查修正。',
+ '你看過、按下核准，文件蓋上綠色印章——核准之前，下一站是鎖住的。',
+ '架構站讀著核准的需求文件，產出第二份東西：「架構文件」（系統怎麼蓋）。',
+ 'Stories 站把架構拆成一條條使用者故事，整理成「故事清單」——文件類的產出到此齊了。',
+ '核准故事清單後，每條故事自動變成一張張工單（issue），發佈到 GitHub 或 GitLab。',
+ '自動實作工廠領走工單 #1：lead 規劃、RD 寫程式、tester 實測、reviewer 把關——過關就產出一個真的程式碼 PR 並合併。',
+ '一次只做一張、過關才換下一張。#2、#3 依序進廠，三個 PR 全數合併。',
+ '所有產出最後都記進 Flight Log：哪個故事花多久、重試幾輪、燒了多少 token 和錢，一頁看完。',
+ '中途改需求怎麼辦？需求文件一重寫，下游的架構、故事和工單全部自動作廢重來——文件永遠不會彼此矛盾。'
+],3000);
+
+/* ───── ③ RCA 工廠分析 ───── */
+makeStory('sec-rca',[
+ '凌晨兩點，ETCH-03 的良率突然往下掉。工程師把症狀描述和製程數據（CSV）丟給 RCA Copilot。',
+ 'Intake 站先把症狀和數據整理成「事實簡報」——這一步只記事實，刻意不猜原因。',
+ '基線分析師讀原始數據，量化「正常時 vs 異常後」到底差多少：良率從 95.2% 掉到 92.9%。',
+ '因果推理師畫出候選因果圖，把「剛好一起發生」和「真的會導致」分開。',
+ '知識比對員拿異常特徵去對照已知故障模式與 SOP——這次的特徵對上了 SOP-114。',
+ '彙整 lead 把所有線索合併成主角：「候選根因表」——每列有信心等級、引用的證據、下一步該查什麼。',
+ '關鍵精神：AI 是 Copilot，不是 Judge。這張表是嫌疑人清單——工程師逐列 Confirm（✓）或 Reject（✗）。',
+ '工程師照建議的檢查順序到現場查證——真正的根因由人在機台前確認，不是 AI 說了算。',
+ '不是每次都要五人鏈：同一個引擎換一筆 workflow 資料，就能切成單人 copilot，或讓 AI 先提分析計畫、人核准後照計畫跑。',
+ '這整套工廠分析是掛上 Lodestar 的一個 plugin——和需求工程共用同一個核心引擎，核心一行都沒改。'
+],3000);
+
+/* ───── ② workflow / stage 模擬器 ───── */
+(function(){
+const STAGES={
+ prd:{label:'PRD',deps:[]},
+ architecture:{label:'架構',deps:['prd']},
+ stories:{label:'Stories',deps:['architecture']},
+ change_request:{label:'Change request',deps:[],requires:'workspace'}
+};
+const W={
+ default:{stages:['prd','architecture','stories'],bindings:{},collab:{},
+  chip:'WorkflowSpec(id="default", stages=("prd", "architecture", "stories"))'},
+ requirements_panel:{stages:['prd','architecture','stories'],
+  bindings:{prd:[['SA','lead'],['PM','peer'],['資安','peer']]},collab:{prd:'discussion'},
+  chip:'agent_bindings["prd"] = (lead SA, peer PM, peer 資安) · collab_mode["prd"] = "discussion"'},
+ modify_existing:{stages:['change_request'],
+  bindings:{change_request:[['change_planner','lead']]},collab:{},
+  chip:'WorkflowSpec(id="modify_existing", stages=("change_request",)) · StageSpec.requires = ("workspace",)'}
+};
+let wf='default',busy=false;
+const S={default:{},requirements_panel:{},modify_existing:{}};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const CONN='<svg width="34" height="14" viewBox="0 0 34 14" style="align-self:center;flex-shrink:0;width:34px;color:var(--txt3)" aria-hidden="true"><line x1="2" y1="7" x2="26" y2="7" stroke="currentColor" stroke-width="1.2" class="flow"/><path d="M24 3L29 7L24 11" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
+function depsOf(sid){return STAGES[sid].deps.filter(d=>W[wf].stages.includes(d));}
+function downstream(sid){const out=[],q=[sid],seen=new Set();
+ while(q.length){const c=q.shift();W[wf].stages.forEach(s=>{if(!seen.has(s)&&depsOf(s).includes(c)){seen.add(s);out.push(s);q.push(s);}});}
+ return out;}
+function statusOf(sid){const st=S[wf][sid];if(st==='done')return'done';if(st==='running')return'running';
+ return depsOf(sid).some(d=>S[wf][d]!=='done')?'locked':'ready';}
+function render(){
+ const t=document.getElementById('w-track');t.innerHTML='';
+ W[wf].stages.forEach((sid,i)=>{
+  if(i>0)t.insertAdjacentHTML('beforeend',CONN);
+  const st=statusOf(sid),sp=STAGES[sid],b=W[wf].bindings[sid];
+  const badges=(b?b.map(x=>'<span class="bdg'+(x[1]==='lead'?' bl':'')+'">'+x[1]+' '+x[0]+'</span>').join(''):'<span class="bdg">lead（stage 預設）</span>')
+   +(W[wf].collab[sid]?'<span class="bdg bm">'+W[wf].collab[sid]+'</span>':'')
+   +(sp.requires?'<span class="bdg br">requires: workspace</span>':'');
+  const stext={ready:'待生成 — 點我',locked:'上鎖：等 '+depsOf(sid).filter(d=>S[wf][d]!=='done').join(', '),done:'已核准 — 點我重生成',running:S[wf][sid+'_sub']||'執行中…'}[st];
+  const ic=st==='done'?'<span style="color:var(--ok)">✓</span>'
+   :st==='running'?'<span class="spin" style="color:#D85A30">⟳</span>'
+   :st==='locked'?'<span style="opacity:.5">–</span>':'<span style="opacity:.6">▸</span>';
+  t.insertAdjacentHTML('beforeend','<div class="slot '+st+'" id="w-slot-'+sid+'" onclick="wClickStage(\''+sid+'\')">'
+   +'<div style="display:flex;align-items:center;gap:6px;font-size:13.5px;font-weight:600">'+sp.label+'<span style="margin-left:auto;font-size:15px">'+ic+'</span></div>'
+   +'<div class="sst">'+stext+'</div>'
+   +'<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:20px">'+badges+'</div></div>');
+ });
+ document.getElementById('w-chip').textContent=W[wf].chip;
+ document.querySelectorAll('.wsel').forEach(b=>b.classList.toggle('active',b.dataset.w===wf));
+}
+function log(kind,msg){
+ const c={err:'var(--err)',warn:'var(--warn)',ok:'var(--ok)',info:'var(--txt2)'}[kind];
+ const box=document.getElementById('w-log');
+ box.insertAdjacentHTML('afterbegin','<div style="color:'+c+';padding:1px 0">▸ '+msg+'</div>');
+ while(box.children.length>6)box.removeChild(box.lastChild);
+}
+window.wClickStage=async function(sid){
+ if(busy)return;
+ const st=statusOf(sid);
+ if(st==='locked'){
+  const miss=depsOf(sid).find(d=>S[wf][d]!=='done');
+  log('err','MissingDependencyError("'+sid+'") — \''+miss+'\' 必須先完成（engine 擋下，回 4xx）');
+  const el=document.getElementById('w-slot-'+sid);el.classList.add('shake');setTimeout(()=>el.classList.remove('shake'),700);
+  return;
+ }
+ busy=true;
+ if(st==='done'){
+  const ds=downstream(sid);
+  if(ds.length){ds.forEach(d=>S[wf][d]='');log('warn','重生成 '+sid+' → downstream_of("'+sid+'") = ['+ds.join(', ')+'] → 自動 reset');}
+  else log('info','重生成 '+sid);
+ }
+ S[wf][sid]='running';
+ const ups=depsOf(sid);
+ log('info','host 備料：upstream_artifacts = {'+(ups.length?ups.map(u=>u+'.md').join(', '):'')+'}'+(STAGES[sid].requires?' · clone 既有 repo → workspace_dir':''));
+ for(const sub of ['handler 生成中…','validator 檢查…','fix-loop 修正…']){S[wf][sid+'_sub']=sub;render();await sleep(650);}
+ delete S[wf][sid+'_sub'];S[wf][sid]='done';render();
+ log('ok','StageResult → host 寫 artifact["'+sid+'"]、記 revision；解鎖下游');
+ if(W[wf].stages.every(s=>S[wf][s]==='done'))
+  log('ok',wf==='modify_existing'?'brief 完成 → 交給 implement 開 PR':'workflow 完成 → stories 解析成 issues → 交付／自動實作');
+ busy=false;
+};
+window.wSetWf=function(id){if(busy)return;wf=id;render();log('info','載入 WorkflowSpec("'+id+'") — 換的是一筆資料，engine 同一份');};
+render();
+log('info','engine 啟動 — core 沒寫死任何 stage 名，全部從 registry + workflow 資料推導');
+log('info','compute_dependencies：edges_override ?? StageSpec.depends_on（只留 workflow 內的 stage）');
+})();
+</script>
+</main>
+</body>
+</html>

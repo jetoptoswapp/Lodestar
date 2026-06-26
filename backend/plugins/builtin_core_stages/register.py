@@ -30,13 +30,14 @@ def register(host: PluginHost) -> None:
         for telemetry_stage, operation, fn in vlist:
             host.register_validator(telemetry_stage, operation, fn)
 
-    # 3. default workflow —— PRD → (Architecture ∥ UI 設計) → Stories
-    #    stages 順序只是顯示/拓樸序；平行性由 depends_on 表達（architecture 與 ui_design 都只依賴 prd）。
+    # 3. default workflow —— PRD → UI 設計 → 架構 → Stories
+    #    ui_design 排在 architecture 前：architecture 以 soft_depends_on=("ui_design",) 參考設計，
+    #    故顯示/執行序讓設計先行（純後端專案沒做 ui_design 也不擋，soft dep 缺則略過）。
     host.register_workflow(WorkflowSpec(
         id="default",
         label="Standard Pipeline",
-        description="Lodestar default：想法 → PRD → 架構 ∥ UI 設計 → 使用者故事",
-        stages=("prd", "architecture", "ui_design", "stories"),
+        description="Lodestar default：想法 → PRD → UI 設計 → 架構 → 使用者故事",
+        stages=("prd", "ui_design", "architecture", "stories"),
         source_plugin="builtin_core_stages",
     ))
 
@@ -47,7 +48,7 @@ def register(host: PluginHost) -> None:
         id="requirements_panel",
         label="Requirements Panel（討論）",
         description="PRD 多 agent 討論：SA 主筆 + PM／資安 peer 評論後彙整；架構、UI 設計、故事維持單一 agent。",
-        stages=("prd", "architecture", "ui_design", "stories"),
+        stages=("prd", "ui_design", "architecture", "stories"),
         agent_bindings={
             "prd": (
                 AgentBinding("seed_prd", "lead"),

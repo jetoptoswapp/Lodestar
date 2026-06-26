@@ -9,6 +9,7 @@ Rules:
 - If the instruction asks to remove or change requirements, update the relevant sections accordingly.
 - Keep functional, non-functional, and operational requirements individually traceable with IDs such as `FR-1`, `NFR-2`, and `OPS-1`.
 - When adding new requirements, continue the numbering instead of restarting it.
+- **Preserve the `## Delivery Surface` section. Never silently drop or narrow an In-scope touchpoint (e.g. quietly turning a product with a Human Web UI into a backend-only deliverable).** Only change a surface's In/Out status when the instruction explicitly asks for it. If the PRD has no Delivery Surface section yet (legacy), add one — infer the touchpoints from the requirements (screens/editors/dashboards ⇒ Human Web UI In scope).
 - Do not include commentary before or after the PRD.
 
 Current PRD:

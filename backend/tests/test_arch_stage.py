@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from plugin_api.harness import HarnessContext
-from plugins.builtin_core_stages._shared import extract_content_block
+from plugins.builtin_core_stages._shared import (
+    autofix_mermaid,
+    extract_content_block,
+    lint_mermaid,
+)
 from plugins.builtin_core_stages.architecture_stage import (
     _architecture_structural_validator,
 )
@@ -106,3 +110,32 @@ def test_extract_content_block_absent():
     reply, updated = extract_content_block(text)
     assert updated is None
     assert reply == "純對話、沒有更新內容。"
+
+
+# ============ mermaid focused lint（改完先驗證）============
+_SEQ_BAD = (
+    "# arch\n```mermaid\nsequenceDiagram\n"
+    "W->>OB: retry w/ backoff; mark index=STALE\n"
+    "App->>FSM: assert Approved to Published\n```\n"
+)
+
+
+def test_lint_mermaid_catches_sequence_semicolon():
+    findings = lint_mermaid(_SEQ_BAD)
+    assert len(findings) == 1
+    assert findings[0].rule == "sequence.semicolon_in_label"
+    assert findings[0].block_index == 1
+    assert findings[0].autofix is not None
+
+
+def test_autofix_mermaid_fixes_and_clears():
+    fixed_md, fixed, unfixable = autofix_mermaid(_SEQ_BAD)
+    assert len(fixed) == 1 and unfixable == []
+    assert ";" not in [ln for ln in fixed_md.splitlines() if "retry" in ln][0]
+    assert lint_mermaid(fixed_md) == []          # 修完不再有 findings
+
+
+def test_lint_mermaid_no_false_positive_on_flowchart():
+    # flowchart 的 `;` 是合法語句終止符，不該誤報（規則只限 sequenceDiagram）
+    flow = "```mermaid\ngraph TD\nA-->B; B-->C;\n```"
+    assert lint_mermaid(flow) == []

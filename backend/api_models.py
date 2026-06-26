@@ -121,6 +121,7 @@ class ProjectResponse(BaseModel):
     local_path: str = ""
     build_command: str = ""
     build_env_script: str = ""
+    base_url: str = ""                  # gitlab self-hosted host（給前端組正確 issue 連結；非 gitlab / 未設則空）
 
 
 class ProjectListResponse(BaseModel):

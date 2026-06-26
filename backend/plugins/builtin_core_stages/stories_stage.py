@@ -62,6 +62,52 @@ _BAD_STORY_BOLD = re.compile(r"(?m)^\s*\*\*Story\s+\d+\.\d+")
 _BAD_STORY_H4 = re.compile(r"(?m)^####\s+Story\s+\d+\.\d+")
 _BAD_EPIC_H3 = re.compile(r"(?m)^###\s+Epic\s+\d+\s*[:：]")
 
+# UI 設計畫面 heading（`## Screen: <name>`）—— coverage 檢查用
+_UI_SCREEN_HEADING = re.compile(r"(?im)^##\s+Screen\s*[:：]\s*(.+?)\s*$")
+
+# Vertical story checks
+_EPIC_BOUNDARY = re.compile(r"(?m)^(##\s+Epic\s+\d+\s*[:：].+)$")
+_STORY_TITLE = re.compile(r"(?m)^###\s+Story\s+\d+\.\d+\s+[—–-]\s+(.+)$")
+_LAUNCH_CMD = re.compile(
+    r"(?i)(cargo\s+run|python\s+-m|\.\/gradlew|npm\s+(start|run)\b|go\s+run|"
+    r"dotnet\s+run|--headless|HeadlessRunner)"
+)
+
+
+def _check_vertical_stories(artifact: str) -> list[HarnessValidationOutcome]:
+    """每個 Epic 必須有一個不帶 [prereq] 的 vertical story，且其 AC 含啟動指令。warn-only。"""
+    outcomes: list[HarnessValidationOutcome] = []
+    positions = [(m.start(), m.group(1)) for m in _EPIC_BOUNDARY.finditer(artifact)]
+    if not positions:
+        return outcomes
+
+    sections = [
+        (title.strip(), artifact[pos: positions[i + 1][0] if i + 1 < len(positions) else len(artifact)])
+        for i, (pos, title) in enumerate(positions)
+    ]
+
+    for epic_title, content in sections:
+        stories = _STORY_TITLE.findall(content)
+        if not stories:
+            continue
+        epic_num_m = re.search(r"Epic\s+(\d+)", epic_title)
+        num = epic_num_m.group(1) if epic_num_m else "?"
+
+        has_vertical = any(not s.strip().lower().startswith("[prereq]") for s in stories)
+        if not has_vertical:
+            outcomes.append(HarnessValidationOutcome(
+                validator="stories.missing_vertical", severity=SEVERITY_WARN,
+                message=f"Epic {num} 所有 story 都帶 `[prereq]`，缺少 vertical story — 功能不會被接進 runtime",
+                fix_hint=f"在 Epic {num} 最後加一個不帶 `[prereq]` 的 story，AC 含具體啟動指令（如 `cargo run --bin X`）",
+            ))
+        elif not _LAUNCH_CMD.search(content):
+            outcomes.append(HarnessValidationOutcome(
+                validator="stories.vertical_no_launch_cmd", severity=SEVERITY_WARN,
+                message=f"Epic {num} 有 vertical story 但 AC 缺少具體啟動指令 — agent 可能用 unit test 繞過 runtime",
+                fix_hint=f"在 Epic {num} 的 vertical story AC 加上啟動指令（如 `cargo run --bin X`、`python -m Y`、`./gradlew connectedAndroidTest`）",
+            ))
+    return outcomes
+
 
 def _stories_structural_validator(
     artifact: str, _ctx: HarnessContext,
@@ -117,6 +163,47 @@ def _stories_structural_validator(
             message="偵測到 `### Epic N:`（H3）—— parser 期待 H2",
             fix_hint="把 `### Epic 1:` 升一層為 `## Epic 1:`",
         ))
+    outcomes.extend(_check_vertical_stories(artifact))
+    return outcomes
+
+
+def _extract_screen_names(ui_brief: str) -> list[str]:
+    """從 UI 設計 brief 抽出 `## Screen: <name>` 的畫面名清單。"""
+    return [m.group(1).strip() for m in _UI_SCREEN_HEADING.finditer(ui_brief or "")]
+
+
+def _stories_coverage_validator(
+    artifact: str, ctx: HarnessContext,
+) -> list[HarnessValidationOutcome]:
+    """前端覆蓋檢查：UI 設計的每個畫面都該有對應 story。warn-only。
+
+    畫面清單由 handler 透過 metadata['ui_screens'] 傳入（validator 拿不到 upstream）。
+    無畫面（headless / 未做 UI 設計）→ 不檢查。這是「設計了 UI 卻只生後端」的最後防線。"""
+    outcomes: list[HarnessValidationOutcome] = []
+    screens = ctx.metadata.get("ui_screens") or []
+    if not screens:
+        return outcomes
+    low = artifact.lower()
+    uncovered = [s for s in screens if s.lower() not in low]
+    if not uncovered:
+        return outcomes
+    if len(uncovered) == len(screens):
+        outcomes.append(HarnessValidationOutcome(
+            validator="stories.frontend_uncovered", severity=SEVERITY_WARN,
+            message=(f"UI 設計有 {len(screens)} 個畫面，但 stories 一個都沒對應 —— "
+                     f"前端會被整個漏掉（「設計了 UI 卻只生後端」的災情）"),
+            fix_hint=("為每個 `## Screen: <name>` 至少建一個 story，body 寫 "
+                      "`**Reference**: UI Design — Screen: <name>`；並加一個前端 Epic（含 scaffold + vertical story）"),
+            detail={"screens": screens},
+        ))
+    else:
+        outcomes.append(HarnessValidationOutcome(
+            validator="stories.screens_uncovered", severity=SEVERITY_WARN,
+            message=f"UI 設計有 {len(uncovered)} 個畫面沒有對應 story：{', '.join(uncovered)}",
+            fix_hint=("為這些畫面各補一個 story，body 寫 "
+                      "`**Reference**: UI Design — Screen: <name>` 並含視覺一致性 AC"),
+            detail={"uncovered": uncovered},
+        ))
     return outcomes
 
 
@@ -162,7 +249,8 @@ def _stories_generate(ctx: StageContext, run) -> StageResult:
     prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
     result = run.harnessed_step(
         telemetry_stage="deliver", operation="generate_user_stories",
-        prompt=prompt, metadata={"thread_id": ctx.thread_id},
+        prompt=prompt,
+        metadata={"thread_id": ctx.thread_id, "ui_screens": _extract_screen_names(ui)},
         max_iterations=1,
     )
     return StageResult(
@@ -184,7 +272,8 @@ def _stories_refine(ctx: StageContext, run) -> StageResult:
     })
     result = run.harnessed_step(
         telemetry_stage="deliver", operation="refine_user_stories",
-        prompt=prompt, metadata={"thread_id": ctx.thread_id},
+        prompt=prompt,
+        metadata={"thread_id": ctx.thread_id, "ui_screens": _extract_screen_names(ui)},
         max_iterations=1,
     )
     return StageResult(
@@ -243,4 +332,7 @@ STORIES_STAGE = StageSpec(
 VALIDATORS = [
     ("deliver", "generate_user_stories", _stories_structural_validator),
     ("deliver", "refine_user_stories",   _stories_structural_validator),
+    # 前端覆蓋（UI 設計畫面 → story）：warn-only，畫面清單由 handler 經 metadata 傳入
+    ("deliver", "generate_user_stories", _stories_coverage_validator),
+    ("deliver", "refine_user_stories",   _stories_coverage_validator),
 ]

@@ -94,13 +94,17 @@ AC-1: Given `cargo run --bin kvm-app -- --headless` starts without error,
 ```
 Concrete launch command + specific assertion on the running product.
 
-## UI alignment (HARD RULE — when a UI Design document is provided)
+## Frontend & delivery-surface coverage (HARD RULE — the most common failure mode)
 
-The UI Design document below lists the designed screens as `## Screen: <name>` sections (HTML prototypes omitted — the implementation agent reads the full design document separately).
+The most frequent defect in this pipeline is a product designed with a UI shipping as backend-only because no story ever built the frontend. Prevent it:
 
-- Every story that builds or modifies a screen MUST reference the matching design screen by name in its body: `**Reference**: UI Design — Screen: <name>`.
-- Such stories must include at least one AC asserting visual conformance to the design (e.g. "uses the design-token CSS variables / theme constants from the UI Design document" or "layout matches the `Screen: <name>` prototype structure").
-- If the PRD requires a screen that the UI Design does NOT cover, still write the story but mark it `(no UI design — follow design tokens)` in the body so the implementer extends the existing visual language instead of inventing a new one.
+1. **Read the PRD `## Delivery Surface` section.** EVERY In-scope touchpoint must be covered by stories. If **Human Web UI / Mobile / Desktop App** is In scope, there MUST be at least one frontend Epic that builds the user-facing application — not just backend endpoints that "support" it. A run where the Delivery Surface lists a Web UI but the stories contain no frontend Epic is a hard defect.
+2. **Every designed screen must map to a story.** The UI Design document below lists screens as `## Screen: <name>` sections (HTML prototypes omitted — the implementation agent reads the full design separately). For EACH `## Screen: <name>` there MUST be at least one story that builds it, and that story MUST reference it by name in its body: `**Reference**: UI Design — Screen: <name>`. Do not leave a designed screen with no implementing story.
+3. Each screen-building story must include at least one AC asserting visual conformance to the design (e.g. "uses the design-token CSS variables / theme constants from the UI Design document" or "layout matches the `Screen: <name>` prototype structure").
+4. The frontend Epic needs its own scaffold story (app skeleton, build tool, routing, design-token setup) and its own vertical story whose AC starts the frontend (e.g. `npm run dev` / `npm run build && preview`) and observes a rendered screen — same vertical-story rule as every other Epic.
+5. If the PRD requires a screen the UI Design does NOT cover, still write the story but mark it `(no UI design — follow design tokens)` so the implementer extends the existing visual language instead of inventing a new one.
+
+If no UI Design is provided AND the Delivery Surface marks all human touchpoints Out of scope (headless/API-only product), skip the frontend Epic — that is the only case where having no frontend story is correct.
 
 ## Project tier propagation (HARD RULE — read this BEFORE story sizing)
 

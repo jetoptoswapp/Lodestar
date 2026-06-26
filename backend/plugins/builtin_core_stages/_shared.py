@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 
 # ============================================================
@@ -129,6 +129,84 @@ def extract_content_block(text: str) -> Tuple[str, Optional[str]]:
     updated = m.group(1).strip()
     reply = (text[: m.start()] + text[m.end() :]).strip()
     return reply, updated
+
+
+# ============================================================
+#  Mermaid focused lint（chat 修正端「改完先驗證」用）
+# ============================================================
+# 不是完整 parser——前端真 mermaid.parse() 才是發佈前的權威守門。這裡只抓 LLM 高頻產生、
+# 會讓 mermaid 直接語法錯誤的確定性地雷，低誤判、可自動修，供 chat 改圖時當場驗證/修正，
+# 避免再發生「回報已修正、artifact 卻仍是壞圖」。
+_MERMAID_BLOCK_RE = re.compile(r"```\s*mermaid\b[^\n]*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+# sequence 訊息行：A->>B: text / A-->>B: text / A->B: text / A-x B: text …（箭頭種類寬鬆比對）
+_SEQ_MSG_RE = re.compile(
+    r"^\s*[\w\"']+\s*(?:<?-{1,2}>>?|-{1,2}x|x-{1,2}|<<-{1,2}>>?)\s*[+-]?[\w\"']+\s*:(?P<label>.*)$"
+)
+
+
+class MermaidLintFinding(NamedTuple):
+    """一處 mermaid 語法地雷。autofix 非 None 表示可確定性整行替換修正。"""
+    block_index: int   # 第幾個 ```mermaid 區塊（1-based）
+    rule: str
+    message: str
+    original: str      # 出問題的原始行
+    autofix: Optional[str]  # 修正後整行；None = 無法自動修，只能警示
+
+
+def _lint_block(diagram: str, block_index: int) -> list[MermaidLintFinding]:
+    lines = diagram.splitlines()
+    first = next((ln.strip() for ln in lines if ln.strip()), "")
+    is_seq = first.lower().startswith("sequencediagram")
+    out: list[MermaidLintFinding] = []
+    for ln in lines:
+        if not is_seq:
+            continue
+        # 旗艦規則：sequenceDiagram 訊息標籤含 `;`——mermaid 把 `;` 當語句分隔符，
+        # 標籤會被從中切斷成新語句 → Syntax error。改成「，」即可（flowchart 的 `;` 合法，故只限 seq）。
+        m = _SEQ_MSG_RE.match(ln)
+        if m and ";" in m.group("label"):
+            new_label = m.group("label").replace(";", "，")
+            out.append(MermaidLintFinding(
+                block_index=block_index,
+                rule="sequence.semicolon_in_label",
+                message="sequence 訊息標籤含 `;`（mermaid 語句分隔符）會切斷標籤造成語法錯誤",
+                original=ln,
+                autofix=ln[: m.start("label")] + new_label,
+            ))
+    return out
+
+
+def lint_mermaid(markdown: str) -> list[MermaidLintFinding]:
+    """掃描 markdown 內所有 ```mermaid 區塊，回確定性語法地雷清單（純偵測、無副作用）。"""
+    findings: list[MermaidLintFinding] = []
+    for i, m in enumerate(_MERMAID_BLOCK_RE.finditer(markdown or ""), start=1):
+        findings.extend(_lint_block(m.group(1), i))
+    return findings
+
+
+def autofix_mermaid(markdown: str) -> Tuple[str, list[MermaidLintFinding], list[MermaidLintFinding]]:
+    """對 markdown 套用可確定性修正的 mermaid 地雷。
+
+    回 (fixed_markdown, fixed, unfixable)：fixed 已套進文字；unfixable 無法自動修、需警示。
+    """
+    fixed: list[MermaidLintFinding] = []
+    unfixable: list[MermaidLintFinding] = []
+    counter = {"i": 0}
+
+    def _sub(m: "re.Match[str]") -> str:
+        counter["i"] += 1
+        block = m.group(1)
+        block_findings = _lint_block(block, counter["i"])
+        new_block = block
+        for f in block_findings:
+            if f.autofix is not None:
+                new_block = new_block.replace(f.original, f.autofix, 1)
+                fixed.append(f)
+            else:
+                unfixable.append(f)
+        return m.group(0).replace(block, new_block, 1) if new_block != block else m.group(0)
+
+    return _MERMAID_BLOCK_RE.sub(_sub, markdown or ""), fixed, unfixable
 
 
 # ============================================================

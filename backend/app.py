@@ -870,7 +870,11 @@ async def get_project(thread_id: str):
     project = dal.get_project(thread_id)
     if project is None:
         raise HTTPException(404, detail=error_detail("thread_not_found", f"thread '{thread_id}' 不存在"))
-    return ProjectResponse(**project)
+    # gitlab self-hosted base_url（前端組正確 issue 連結用；self-hosted 如 gitlab.saikah.com 不是 gitlab.com）。
+    base_url = ""
+    if (project.get("delivery_target") or "") == "gitlab":
+        base_url = (keystore.get_credentials("gitlab") or {}).get("base_url", "") or ""
+    return ProjectResponse(**project, base_url=base_url)
 
 
 @app.get("/api/projects/{thread_id}/summary")
@@ -1056,6 +1060,17 @@ async def stage_chat(stage_id: str, req: StageChatRequest):
     )
 
 
+def _delivery_story_artifact(thread_id: str) -> str:
+    """交付/實作的 story 來源：優先 `stories`（生成 pipeline），缺則 fallback `change_request`
+    （modify_existing 的 brief）。讓「改既有專案」的大型 brief 也能 fan-out 成 per-story
+    issues + batch MR。brief 若是小改（CH-N 條列、無 canonical Epic/Story），下游 parser 回 0 筆，
+    自然不會誤觸 fan-out（小改仍走 single implement）。"""
+    stories = dal.get_artifact(thread_id, "stories") or ""
+    if stories.strip():
+        return stories
+    return dal.get_artifact(thread_id, "change_request") or ""
+
+
 @app.post("/api/stage/stories/{thread_id}/preview-delivery", response_model=DeliveryPreviewResponse)
 async def stories_preview_delivery(thread_id: str, req: DeliveryPublishRequest):
     """解析 stories artifact → DeliveryItem[] → 呼 IntegrationSpec.preview()。
@@ -1071,7 +1086,7 @@ async def stories_preview_delivery(thread_id: str, req: DeliveryPublishRequest):
             404,
             detail=error_detail("integration_not_found", f"integration '{req.target}' 未註冊"),
         )
-    artifact = dal.get_artifact(thread_id, "stories") or ""
+    artifact = _delivery_story_artifact(thread_id)
     if not artifact.strip():
         raise HTTPException(
             400,
@@ -1120,7 +1135,7 @@ async def stories_publish(thread_id: str, req: DeliveryPublishRequest):
             404,
             detail=error_detail("integration_not_found", f"integration '{req.target}' 未註冊"),
         )
-    artifact = dal.get_artifact(thread_id, "stories") or ""
+    artifact = _delivery_story_artifact(thread_id)
     if not artifact.strip():
         raise HTTPException(
             400,
@@ -1271,7 +1286,7 @@ async def specs_sync(thread_id: str):
         files[".lodestar/UI-DESIGN.md"] = ui
     project_name = (proj.get("name") or repo).strip()
     block = spec_sync.build_claude_md_block(project_name, has_ui=bool(ui.strip()))
-    readme = spec_sync.build_readme_starter(project_name, prd)
+    readme = spec_sync.build_readme(project_name, prd, arch)
     try:
         result = await asyncio.to_thread(
             spec_sync.sync_specs, thread_id, remote, files,
@@ -1540,7 +1555,7 @@ async def implement_start(req: ImplementStartRequest):
     runner = runner_cls()
     if not runner.is_available():
         raise HTTPException(400, detail=error_detail("runner_unavailable", f"runner '{req.runner}' 在此環境不可用"))
-    story = req.story.strip() or (dal.get_artifact(req.thread_id, "stories") or "")
+    story = req.story.strip() or _delivery_story_artifact(req.thread_id)
     if not story.strip():
         raise HTTPException(400, detail=error_detail("story_empty", "沒有 story 可實作：先生成 stories 或於請求帶 story"))
     hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
@@ -1591,6 +1606,35 @@ async def implement_start(req: ImplementStartRequest):
     return ImplementStartResponse(session_id=session_id)
 
 
+async def _ensure_batch_issues_published(target: str, target_repo: str, story_artifact: str) -> None:
+    """batch 啟動前冪等發 issue：parse story/brief → 跳過 repo 既有 → publish 缺漏。
+
+    讓 `modify_existing` 的 brief（沒有「stories→issues publish」步驟）也能讓 batch 的 PR
+    `Closes #issue`。stories 路徑因冪等（既有跳過）不受影響。best-effort：列/發失敗只警告、
+    不中止 batch（仍可開不帶 Closes 的 MR）。"""
+    reg = _registry()
+    integ = reg.integrations.get(target)
+    if integ is None or target not in ("github", "gitlab"):
+        return
+    items = parse_stories_to_delivery_items(story_artifact, target_project=target_repo)
+    if not items:
+        return
+    cfg = _effective_config(target, {"repo": target_repo})
+    try:
+        existing = await asyncio.to_thread(_existing_issue_keys, target, cfg, target_repo)
+    except Exception as exc:  # noqa: BLE001 - 列既有失敗 → 不自動發（避免重複），PR 將不帶 Closes
+        log.warning("batch 前自動發 issue：無法列 %s 既有 issue（%s）→ 略過，PR 不帶 Closes", target_repo, exc)
+        return
+    to_create = [it for it in items if impl_batch._story_key(it.title) not in existing]
+    if not to_create:
+        return
+    try:
+        await asyncio.to_thread(integ.publish, to_create, cfg)
+        log.info("batch 前自動發 issue：%s 新建 %d 筆", target_repo, len(to_create))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("batch 前自動發 issue 失敗（%s）→ 續跑，PR 不帶 Closes", exc)
+
+
 @app.post("/api/implement/start-batch", response_model=ImplementBatchStartResponse)
 async def implement_start_batch(req: ImplementBatchStartRequest):
     """逐 issue 依序實作：把該 thread 的 stories 拆成逐 story，依編號依序、一次一個 issue 實作。
@@ -1607,9 +1651,12 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
         raise HTTPException(400, detail=error_detail("runner_not_found", f"runner '{req.runner}' 未註冊"))
     if not runner_cls().is_available():
         raise HTTPException(400, detail=error_detail("runner_unavailable", f"runner '{req.runner}' 在此環境不可用"))
-    story_artifact = dal.get_artifact(req.thread_id, "stories") or ""
+    story_artifact = _delivery_story_artifact(req.thread_id)
     if not story_artifact.strip():
         raise HTTPException(400, detail=error_detail("story_empty", "沒有 stories 可實作：先生成 stories"))
+    # 來源：無 stories artifact → _delivery_story_artifact fallback 到 change_request brief（modify_existing）。
+    # 該 brief 依約接續既有 repo 編號（非從 Epic 1 起），截斷守門要寬容、不可用「必為 1」誤殺。
+    is_continuation = not (dal.get_artifact(req.thread_id, "stories") or "").strip()
     hooks = [h for h in reg.hooks.get("tool", []) if isinstance(h, ToolHook)]
     mode = req.mode if req.mode in ("single", "roles") else "roles"
 
@@ -1630,6 +1677,8 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
         clone_url = _delivery_clone_url(target, creds, target_repo)
         if not clone_url:
             raise HTTPException(400, detail=error_detail("token_missing", f"{target} token 未設定（到 INTEGRATIONS 設）"))
+        # batch 前先冪等發 issue（補 modify_existing 缺口：brief 無 publish 步驟 → PR 才能 Closes #issue）。
+        await _ensure_batch_issues_published(target, target_repo, story_artifact)
         list_issues = _batch_issue_lister(target, creds, target_repo)
 
         def build_opener(*, batch_id, issue_number_for, pr_title_for):
@@ -1670,7 +1719,7 @@ async def implement_start_batch(req: ImplementBatchStartRequest):
             target_repo=target_repo, clone_url=clone_url, list_issues=list_issues,
             build_opener=build_opener, hooks=hooks, stop_on_failure=req.stop_on_failure,
             persona_for=persona_for, runner_for=runner_for, merge_pr=merge_pr,
-            skip_keys=skip_keys,
+            skip_keys=skip_keys, allow_renumbered=is_continuation,
         )
     except impl_dal.ImplActiveError:
         raise HTTPException(409, detail=error_detail("impl_in_progress", "此專案已有實作在進行中（共用一份工作目錄），請等它結束或先取消"))

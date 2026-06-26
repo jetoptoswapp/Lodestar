@@ -85,3 +85,21 @@
 - **症狀**：使用者跑 44-story batch，跑到一半「突然 44 全失敗」，error 全是 `interrupted by server restart`。
 - **真因**：`interrupted by server restart` 只由 `impl_dal.fail_orphaned_running()` 設，而它只在**後端啟動時**（app.py lifespan）跑——把上次卡在 running/pending 的 implement session 全標 failed。我為了驗證在 port 8723 留了**第二個後端**，跟使用者 `start.sh`（開頭 `free_port 8723` 會殺佔 port 行程 + 啟動跑 orphan-sweep）相撞；任一後端(重)啟，進行中的整批就被掃光。
 - **修法/通則**：(1) **絕不**為了驗證在使用者已有後端的 port 上再起一個；要驗證就用使用者那台、或起在別的 port/DB。(2) implement batch 進行中**不要**重啟後端、不要重跑 start.sh、不要跑會 `pkill uvicorn` 的指令。(3) 起背景服務前先 `pgrep -f "uvicorn app:app"` 確認沒有既有實例。(4) batch 失敗先看 error_message：若是 `interrupted by server restart` → 不是 code/agent 問題，是後端被重啟，重跑即可。
+
+## mermaid（或任何可程式驗證的產物）「是否已修好」要用真 parser 驗，別信前一手的自報修正
+- **症狀**：使用者說 arch diagram 2 還是壞的。我先讀 DB，看到前一手 AI chat 把 `->`→`to`、`<>`→`!=`，artifact updated_at 也更新了，就判定「artifact 已修好、是 wiki 沒重發」。使用者貼出炸彈截圖打臉——修正版仍 Syntax error。
+- **真因**：前一手 AI 的診斷（`->`/`<>`）根本是錯的（那些在冒號後是純文字、不影響解析）；真兇是 sequence 訊息標籤裡的 `;`（mermaid 語句分隔符）。我沿用了前一手「已修正」的說法、沒實際 parse。
+- **修法/通則**：(1) 凡能用工具客觀驗證的產物（mermaid / JSON / 程式碼語法），**先跑真 parser 再下結論**，別靠肉眼或前一手的自報。本案用 `frontend/node_modules/mermaid` 的 `mermaid.parse()` 一跑就指到 line 32。(2) 「updated_at 變了 / 對方說已修正」≠「真的修好」。(3) 注意 node 跑 mermaid.parse 對 flowchart/state 會炸 `DOMPurify.addHook`（缺 DOM）——那是環境假陽性，sequence 的 parse 錯誤才是真的。
+
+## shell 腳本裡裸 `$VAR` 後緊接全形標點（中文括號/逗號）會被 `set -u` 判 unbound
+- **症狀**：`start.sh` 在 `log "...主體 $DEV_USER）→..."` 那行炸 `DEV_USER� unbound variable`（變數名後跟一個亂碼字元）；空庫/非空庫兩條路都會死在這行。我上個 session 在 UTF-8 + newer bash 下沒踩到，使用者環境踩到。
+- **真因**：bash 讀 `$NAME` 時用 `isalnum()`（locale 相依）判斷哪些位元組屬變數名。macOS 系統 bash 3.2，甚至 `en_US.UTF-8`、與 ISO8859-1 等 locale 下，會把全形 `）`（UTF-8 `EF BC 88`）的位元組當成字母吃進變數名 → 變成不存在的變數 → `set -u`（nounset）報 unbound。報錯字串裡 `$NAME` 後那個 `�` 就是被吃進去的標點首位元組。
+- **修法**：用 `${VAR}` 大括號明確界定變數名邊界（`${DEV_USER}）`）——任何 locale/bash 版本都安全。
+- **驗證法**：`for L in C en_US.ISO8859-1 en_US.UTF-8; do LC_ALL=$L bash -c 'set -u; V=x; echo "前 $V）後"'; done` 可重現；換 `${V}）` 三種 locale 全過。
+- **通則**：(1) shell 腳本（尤其含中文輸出）凡 `$VAR` 後**沒有空白/引號/ASCII 標點分隔**，一律寫 `${VAR}`。(2) 自己寫的「一鍵啟動」類腳本要在乾淨/非 UTF-8 locale + 系統預設 bash 下實跑驗證，別只在自己順手的環境跑過就當完成。
+
+## 「整個 app 看起來像假的/沒功能」要先查 auth/token，別怪前端
+- **症狀**：使用者開 JetBook，每頁只剩錯誤框（`malformed access-token claims`），罵「前端根本做假的、功能都沒有」。實際上前端是真的、後端+DB 都正常。
+- **真因**：我寫的 `start.sh` 鑄 dev JWT 時用 `${DEV_USER:-UUID}`，但使用者互動 shell 把 `DEV_USER` 解析成系統帳號名 `sheldon.chang`（非 UUID）。後端 `decode_access_token` 對 `sub` 做 `uuid.UUID(...)` → ValueError → 回 401 malformed → **每一個 API 都被拒** → 前端每頁退到錯誤/空狀態 → 看起來像「沒功能的假殼」。
+- **修法**：start.sh 在 source .env 後、seed 前驗 `DEV_USER` 是不是 UUID（regex），非 UUID 一律回退到 seed 用的示範 admin UUID（同時保護 seed 的 `permission_grant.principal_id` 寫入）。token 的 `sub` 必須＝seed 授權的 UUID，否則就算是合法 UUID 也沒權限。
+- **通則**：(1) 使用者說「做出來很爛/像假的/沒功能」時，**先驗 auth**——壞 token 會讓一個完全正常的 app 整片變空殼，跟「前端沒做」長得一模一樣。一顆正確 token 直接 curl 後端（`/dashboard` 等）回 200+真資料，就能立刻把「前端問題」和「token 問題」分開。(2) 自己寫的啟動腳本鑄的 dev token，`sub` 必須是後端能 parse 的型別（UUID）且對應 seed 的授權主體；別讓它吃環境裡同名變數（`USER`/`DEV_USER`）。(3) dev 腳本注入前端的值（`VITE_*`）改了要靠 Vite 偵測 .env 自動重啟才生效——驗證時記得確認重啟了。

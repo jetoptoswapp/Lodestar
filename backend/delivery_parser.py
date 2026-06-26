@@ -42,7 +42,7 @@ _REQ_LINE_RE = re.compile(
 )
 
 
-def detect_truncated_stories(artifact: str) -> str | None:
+def detect_truncated_stories(artifact: str, *, allow_renumbered: bool = False) -> str | None:
     """偵測 stories 文件「前段被截斷」（生成時 claude-cli 大輸出遺失開頭）。
 
     完整文件依契約一定以 `# <專案> — User Stories` 起手、首個故事為 Story 1.1（bootstrap）。
@@ -50,6 +50,12 @@ def detect_truncated_stories(artifact: str) -> str | None:
     代表開頭整段（標題 + 前面的 Epic/Story）不見了 → 回問題描述；否則回 None。
 
     用途：擋掉「默默拿半套 backlog 去實作」（症狀：implement 從 Story 5.3 開始）。
+
+    allow_renumbered：modify_existing 的 change_request brief 會「接續既有 repo 最大號」
+    （例如從 Epic 13 起），不從 Epic 1 起手——對它用『最小 Epic/Story 必為 1』會誤殺整批
+    （見 D4↔截斷守門衝突）。故 continuation 模式用『來源不同』而非『結構不同』判斷：
+    不要求起點為 1，但仍抓「首段遺失」（最低 epic 的最低 story 必須是 .1）與「epic 編號不連續」，
+    讓真正的砍頭仍擋得住、合法的高號起手放行。greenfield/stories 路徑（預設）完全不變。
     """
     if not artifact or not artifact.strip():
         return None  # 空 artifact 由各自的「未生成」檢核處理，不在此誤報
@@ -59,19 +65,35 @@ def detect_truncated_stories(artifact: str) -> str | None:
         return None  # 完全沒有 story heading 另由 has_story validator / 前端容錯處理
 
     # 1) 第一個 Story 之前應有 markdown 標題（title / Epic）；真截斷會從內文中段起手、整個前段不見。
-    #    允許標題前有 AI 開場白等 prose（如 "方向已鎖定…我直接產出…"）——只要 Story 1.1 前存在標題即未截斷。
+    #    允許標題前有 AI 開場白等 prose——只要第一個 Story 前存在標題即未砍頭。兩種模式都保留。
     first_story = _STORY_RE.search(artifact)
     head = artifact[: first_story.start()] if first_story else artifact
     if not re.search(r"(?m)^#{1,3}\s+\S", head):
         return (f"stories 文件開頭被截斷（未以標題起手，第一個故事是 Story {stories[0][0]}）"
                 "，缺少前段 Epic/Story")
 
-    # 2) 最小 epic / story 編號應為 1；跳號代表前面整段遺失
-    epics = [int(m.group(1)) for m in _EPIC_RE.finditer(artifact)]
-    if epics and min(epics) > 1:
-        return f"stories 缺少前面的 Epic（最小 Epic 為 {min(epics)}，應從 Epic 1 開始），前段疑似被截斷"
+    epics = sorted({int(m.group(1)) for m in _EPIC_RE.finditer(artifact)})
+    story_keys = [(int(num.split(".")[0]), int(num.split(".")[1])) for num, _title in stories]
 
-    story_epics = [int(num.split(".")[0]) for num, _title in stories]
+    if allow_renumbered:
+        # 接續編號（modify_existing brief）：不要求從 1 起。
+        # 2a) 最低 epic 的最低 story 必須是 .1；若首段遺失（如只剩 13.5–13.7）→ 最低 minor != 1 → 截斷。
+        if epics:
+            lo_epic = epics[0]
+            lo_minor = min(m for (e, m) in story_keys if e == lo_epic)
+            if lo_minor != 1:
+                return (f"stories 首段疑似被截斷（最低故事為 Story {lo_epic}.{lo_minor}，"
+                        f"非 {lo_epic}.1 起手）")
+        # 2b) epic 編號須連續，中段整段缺漏 = 截斷。
+        if len(epics) > 1 and epics != list(range(epics[0], epics[-1] + 1)):
+            return f"stories 的 Epic 編號不連續（{epics}），中段疑似被截斷"
+        return None
+
+    # 預設（生成 pipeline / greenfield）：完整 backlog 一定從 Epic 1 / Story 1.1 起。
+    if epics and epics[0] > 1:
+        return f"stories 缺少前面的 Epic（最小 Epic 為 {epics[0]}，應從 Epic 1 開始），前段疑似被截斷"
+
+    story_epics = [e for (e, _m) in story_keys]
     if story_epics and min(story_epics) > 1:
         return f"stories 缺少 Epic 1 的故事（最小故事為 Story {min(story_epics)}.x），前段疑似被截斷"
 

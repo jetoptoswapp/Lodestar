@@ -71,10 +71,10 @@ def test_builtin_agents_seed_loaded(tmp_db):
 
 
 def test_default_workflow_is_four_stage(tmp_db):
-    """default workflow 必須是 (prd, architecture, ui_design, stories)。"""
+    """default workflow 必須是 (prd, ui_design, architecture, stories)。"""
     reg = L.load_all()
     wf = reg.workflows["default"]
-    assert wf.stages == ("prd", "architecture", "ui_design", "stories")
+    assert wf.stages == ("prd", "ui_design", "architecture", "stories")
 
 
 def test_default_agent_role_resolves_unique_lead(tmp_db):

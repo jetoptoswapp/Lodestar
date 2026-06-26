@@ -82,7 +82,7 @@ def sync_specs(
 
     files：{相對路徑: 內容}，如 {".lodestar/PRD.md": ...}。
     claude_md_block：非空 → 寫/併入根 CLAUDE.md 的 managed block（既有內容保留）。
-    readme：非空且 repo 尚無 README.md → 寫一份依專案產生的 starter（不覆寫既有 README）。
+    readme：非空 → repo 無 README 則寫；已有但仍 Lodestar 受管則升級覆寫；已被人工充實則不動。
     回 {"ok", "url", "note", "files": [...]}。失敗 raise SpecSyncError（訊息不含 token）。
     """
     if not remote:
@@ -106,11 +106,14 @@ def sync_specs(
         _write(claude_path, merge_managed_block(existing, claude_md_block))
         written.append("CLAUDE.md")
 
-    # README：依專案產生 starter；只在 repo 尚無 README 時寫（不覆寫使用者既有 README）。
-    # 實作 agent 之後會依 .lodestar/PRD.md 把它充實成正式 README（見 CLAUDE.md 規矩）。
-    if readme and not (dest / "README.md").exists():
-        _write(dest / "README.md", readme)
-        written.append("README.md")
+    # README：repo 尚無 README → 寫；已有但仍是 Lodestar 受管（含 managed marker 或舊 stub 簽名）
+    # → 升級覆寫（每次 re-sync 反映最新 PRD/架構）；已被人工/實作 agent 充實（無 marker）→ 絕不覆寫。
+    readme_path = dest / "README.md"
+    if readme:
+        existing_readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else None
+        if existing_readme is None or _readme_is_managed(existing_readme):
+            _write(readme_path, readme)
+            written.append("README.md")
 
     _git(dest, ["add", "-A"])
     if _git(dest, ["diff", "--cached", "--quiet"], check=False).returncode == 0:
@@ -169,6 +172,64 @@ def build_claude_md_block(project_name: str, *, has_ui: bool) -> str:
     )
 
 
+# 舊版 build_readme_starter 寫的 stub 簽名（無 marker）——用來把既有專案的一行 stub 也認成受管、可升級。
+_LEGACY_README_SIGNATURE = "本 README 由實作 agent 依"
+
+
+def _readme_is_managed(text: str) -> bool:
+    """README 是否仍由 Lodestar 受管 / 仍是空殼（可安全升級覆寫）。
+
+    受管 = 含 managed marker（新版）或舊 stub 簽名（legacy）或只有一行 H1 標題的空殼
+    （多為 GitHub/GitLab 建 repo 時 auto-init 的 `# RepoName`）。一旦人工/實作 agent 寫成
+    有內容的正式 README（移除 marker、加了實質內容），即視為非受管，re-sync 絕不覆寫。"""
+    t = text or ""
+    if _BLOCK_BEGIN in t or _LEGACY_README_SIGNATURE in t:
+        return True
+    # host auto-init 空殼：去掉空行後只剩單一行 H1（`# Foo`）
+    lines = [ln for ln in t.splitlines() if ln.strip()]
+    return len(lines) == 1 and lines[0].lstrip().startswith("#")
+
+
+def _prd_features(prd: str, limit: int = 16) -> list[str]:
+    """從 PRD 抽功能群名稱：`### FR-001 Workspace Management **[P0]**` → `Workspace Management`。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"(?m)^#{2,4}\s+`?FR-[\d.]+`?\s+(.+?)\s*$", prd or ""):
+        name = re.sub(r"\*\*\[[^\]]*\]\*\*|`", "", m.group(1)).strip()
+        name = re.sub(r"\s+", " ", name)
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _arch_tier(arch: str) -> str:
+    """抽架構文件的 tier 宣告整句（`**Project tier**: T1 — …`）。無則回 ""。"""
+    m = re.search(r"(?im)^\s*\*\*Project tier\*\*:\s*(.+?)\s*$", arch or "")
+    return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
+
+
+def _arch_tech_stack(arch: str, limit: int = 8) -> list[str]:
+    """抽架構文件「技術棧 / Tech Stack」章節下的 bullet（找得到才有，否則回空）。"""
+    m = re.search(r"(?im)^#+\s*.*(tech\s*stack|技術選型|技術棧|technology stack).*$", arch or "")
+    if not m:
+        return []
+    out: list[str] = []
+    for raw in arch[m.end():].splitlines():
+        ln = raw.strip()
+        if ln.startswith("#"):
+            break
+        if ln.startswith(("-", "*")):
+            item = re.sub(r"\s+", " ", ln.lstrip("-* ").strip())
+            if item:
+                out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _prd_overview(prd: str, limit: int = 400) -> str:
     """從 PRD 抽一段簡短概述給 README starter：取第一段非標題、非清單的內文。"""
     if not prd or not prd.strip():
@@ -189,20 +250,42 @@ def _prd_overview(prd: str, limit: int = 400) -> str:
     return (text[:limit].rstrip() + "…") if len(text) > limit else text
 
 
-def build_readme_starter(project_name: str, prd: str) -> str:
-    """依專案產生 README starter（repo 尚無 README 時寫入）。
+def build_readme(project_name: str, prd: str, architecture: str = "") -> str:
+    """依 PRD + 架構確定性產出有內容的 README（用途/功能/技術/規格/開發）。
 
-    內容照專案：專案名 + 從 PRD 抽出的概述 + 指向 .lodestar/ 規格；並標明實作 agent 會充實它。"""
+    用 managed marker 包起來：re-sync 會升級這份受管 README，但人工/實作 agent 改寫（移除 marker）
+    後就不再覆寫。內容全部從 PRD/架構抽取，不靠 LLM、不留樣板佔位字。"""
+    parts: list[str] = [f"# {project_name}", ""]
+
     overview = _prd_overview(prd)
-    overview_block = (overview + "\n\n") if overview else ""
-    return (
-        f"# {project_name}\n"
-        "\n"
-        f"{overview_block}"
-        "> 本專案由 **Lodestar** 規劃與實作。完整規格見 `.lodestar/`："
-        "`PRD.md`（需求）、`ARCHITECTURE.md`（架構）、`UI-DESIGN.md`（UI 設計，若有）。\n"
-        "\n"
-        "## 開發\n"
-        "本 README 由實作 agent 依 `.lodestar/PRD.md` 持續充實——用途、功能、技術棧、安裝與啟動方式"
-        "請以實際專案內容為準。\n"
-    )
+    if overview:
+        parts += [overview, ""]
+
+    features = _prd_features(prd)
+    if features:
+        parts.append("## 主要功能")
+        parts += [f"- {f}" for f in features]
+        parts.append("")
+
+    tier = _arch_tier(architecture)
+    stack = _arch_tech_stack(architecture)
+    if tier or stack:
+        parts.append("## 技術")
+        if tier:
+            parts.append(f"- 架構層級：{tier}")
+        parts += [f"- {s}" for s in stack]
+        parts.append("")
+
+    parts += [
+        "## 規格文件",
+        "完整規格見 `.lodestar/`：`.lodestar/PRD.md`（需求）、"
+        "`.lodestar/ARCHITECTURE.md`（架構）、`.lodestar/UI-DESIGN.md`（UI 設計，若有）。",
+        "",
+        "## 開發",
+        "本 README 由 **Lodestar** 依規格自動生成。安裝與啟動方式請以實際程式碼為準——"
+        "實作 agent 會在動工後依專案內容補上（屆時本檔即由 agent 接手維護）。",
+    ]
+
+    body = "\n".join(parts).rstrip() + "\n"
+    # 包 managed marker（HTML 註解，render 時不顯示）：標記為 Lodestar 受管、可被 re-sync 升級。
+    return f"{_BLOCK_BEGIN}\n{body}{_BLOCK_END}\n"

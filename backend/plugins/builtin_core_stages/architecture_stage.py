@@ -24,6 +24,7 @@ from plugin_api import (
 from plugin_api.harness import HarnessContext
 
 from ._shared import (
+    autofix_mermaid,
     collab_discussion_prefix,
     effective_persona,
     extract_content_block,
@@ -31,6 +32,7 @@ from ._shared import (
     format_conversation,
     format_focus_section,
     render_skills_block,
+    strip_html_prototypes,
 )
 
 
@@ -80,6 +82,14 @@ def _upstream_prd(ctx: StageContext) -> str:
     return ctx.upstream_artifacts.get("prd", "")
 
 
+def _upstream_ui_brief(ctx: StageContext) -> str:
+    """UI 設計（軟上游）：可能不存在（純後端專案）。strip 掉 HTML 原型只留設計意圖/畫面清單。"""
+    raw = ctx.upstream_artifacts.get("ui_design", "")
+    if not raw or not raw.strip():
+        return "(no UI design produced — derive the delivery surface from the PRD)"
+    return strip_html_prototypes(raw)
+
+
 # stage 內建 persona（agent.system_prompt 未設時的 default）；機器契約留在 architect.md / arch_chat.md。
 # R1：逐字搬自重構前的開頭人設段。generate 與 chat 的 default 略不同（生成 vs 討論語境），
 # 但 user 設了 agent.system_prompt 後，兩者統一用該 persona。
@@ -103,6 +113,7 @@ def _arch_generate(ctx: StageContext, run) -> StageResult:
         "PERSONA": effective_persona(ctx, _DEFAULT_ARCHITECT_PERSONA),
         "SKILLS": render_skills_block(ctx.agent.skills if ctx.agent else ()),
         "PRD_DRAFT": _upstream_prd(ctx),
+        "UI_DESIGN_BRIEF": _upstream_ui_brief(ctx),
     })
     prompt = collab_discussion_prefix(ctx.conversation) + prompt  # collab：注入多方討論（單模式 no-op）
     result = run.harnessed_step(
@@ -156,6 +167,19 @@ def _arch_chat(ctx: StageContext, run) -> StageChatResult:
         max_iterations=1,
     )
     reply, updated = extract_content_block(result.raw_output)
+    # 改完先驗證：對更新後的 artifact 跑 mermaid focused lint。確定性地雷（如 sequence 標籤含 `;`）
+    # 當場自動修正並透明告知；無法自動修的不謊報「已修正」、如實警示。前端真 parser 仍是發佈前權威守門。
+    if updated:
+        updated, fixed, unfixable = autofix_mermaid(updated)
+        notes: list[str] = []
+        if fixed:
+            rules = "、".join(sorted({f.message for f in fixed}))
+            notes.append(f"（已自動修正 {len(fixed)} 處 Mermaid 語法問題：{rules}）")
+        if unfixable:
+            rules = "、".join(sorted({f.message for f in unfixable}))
+            notes.append(f"⚠ 仍偵測到 Mermaid 可能有語法問題（無法自動修，請再確認）：{rules}")
+        if notes:
+            reply = (reply + "\n\n" + "\n".join(notes)).strip()
     return StageChatResult(reply=reply, updated_artifact=updated)
 
 
@@ -172,6 +196,7 @@ ARCHITECTURE_STAGE = StageSpec(
     refine_operation="refine_architecture",
     chat_operation="chat_architecture",
     depends_on=("prd",),
+    soft_depends_on=("ui_design",),   # 有 UI 設計就參考它（前端架構對齊設計）；純後端專案可無，不擋
     artifact_key="architecture",
     prompt_keys=("architect.md", "architecture_refine.md", "arch_chat.md"),
     default_agent_role="architecture",

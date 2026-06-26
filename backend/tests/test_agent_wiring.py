@@ -39,7 +39,7 @@ def test_prd_generate_default_persona_keeps_contract(tmp_db):
     prompt = log[-1]["prompt"]
     assert "strict and meticulous System Analyst" in prompt   # _DEFAULT_SA_PERSONA（完整原文）
     assert "json-questionnaire" in prompt                     # 機器契約：questionnaire 格式
-    assert "## 3. Functional Requirements" in prompt          # 機器契約：PRD Format
+    assert "## 4. Functional Requirements" in prompt          # 機器契約：PRD Format（交付面插入後 FR 為第 4 節）
     assert "[PRD_READY]" in prompt                            # 機器契約：sentinel
     assert "{{PERSONA}}" not in prompt                        # 佔位已被替換
 

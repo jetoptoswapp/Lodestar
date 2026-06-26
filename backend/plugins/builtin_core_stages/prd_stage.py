@@ -37,6 +37,7 @@ from ._shared import (
 #  Validator —— structural sanity（warn-only；spec §11）
 # ============================================================
 _HAS_OVERVIEW    = re.compile(r"(?im)^#+\s*\d*\.?\s*(overview|概述)")
+_HAS_DELIVERY    = re.compile(r"(?im)^#+\s*\d*\.?\s*(delivery surface|交付面)")
 _HAS_FR_SECTION  = re.compile(r"(?im)^#+\s*\d*\.?\s*(functional requirements|功能需求)")
 _HAS_NFR_SECTION = re.compile(r"(?im)^#+\s*\d*\.?\s*(non-?functional requirements|非功能需求)")
 _FR_ITEM_PAT  = re.compile(r"`?FR-\d+`?", re.IGNORECASE)
@@ -53,6 +54,12 @@ def _prd_structural_validator(artifact: str, _ctx: HarnessContext) -> list[Harne
             validator="prd.has_overview", severity=SEVERITY_WARN,
             message="缺少 Overview / 概述 章節",
             fix_hint="補上 ## 1. Overview 章節，簡述產品目的與範圍",
+        ))
+    if not _HAS_DELIVERY.search(artifact):
+        outcomes.append(HarnessValidationOutcome(
+            validator="prd.has_delivery_surface", severity=SEVERITY_WARN,
+            message="缺少 Delivery Surface / 交付面 章節（要交付哪些觸面/層）",
+            fix_hint="新增 ## Delivery Surface 章節，逐項列出 Human Web UI / Mobile / API / MCP / CLI 的 In/Out 與理由；有人類可見介面就別漏掉前端",
         ))
     if not _HAS_FR_SECTION.search(artifact):
         outcomes.append(HarnessValidationOutcome(

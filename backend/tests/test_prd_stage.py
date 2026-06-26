@@ -44,6 +44,10 @@ def test_validator_passes_complete_prd():
 ## 1. Overview
 Foo.
 
+## 2. Delivery Surface
+- **Human Web UI**: In — main product surface.
+- **Programmatic API**: In — integrations.
+
 ## 3. Functional Requirements
 - `FR-1`: x
 
@@ -72,6 +76,10 @@ def test_validator_chinese_prd_passes():
 
 ## 1. 概述
 電商結帳重構。
+
+## 2. 交付面
+- **Human Web UI**: In — 結帳前端。
+- **Programmatic API**: In — 金流串接。
 
 ## 3. 功能需求
 - `FR-1`: 訪客結帳

@@ -85,7 +85,8 @@ class StageSpec:
     generate_operation: str = ""    # 預設 f"generate_{id}"
     refine_operation: str = ""      # 預設 f"refine_{id}"
     chat_operation: str = ""        # 預設 f"chat_{id}"
-    depends_on: tuple[str, ...] = ()        # 上游 stage_id；downstream 由 host 反推
+    depends_on: tuple[str, ...] = ()        # 硬上游 stage_id；缺則 host 直接 4xx（MissingDependency）。downstream 由 host 反推
+    soft_depends_on: tuple[str, ...] = ()   # 軟上游：artifact 存在才注入 upstream_artifacts，缺不擋（不參與 gating / 拓樸）。e.g. architecture 想看 ui_design 但純後端專案可無
     requires: tuple[str, ...] = ()  # 宣告需要的 host 資源（如 "workspace"=既有 repo clone）；core 讀此決定備料，不認 stage 名
     artifact_key: str = ""          # 預設等於 id（host 用它存/取 stage_artifacts）
     prompt_keys: tuple[str, ...] = ()       # 用到的 prompt 資產檔名（見附錄 D）

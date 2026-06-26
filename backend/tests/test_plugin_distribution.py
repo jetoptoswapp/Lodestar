@@ -28,7 +28,7 @@ def test_directory_plugin_discovered(tmp_db):
 def test_domain_stages_not_in_default_workflow(tmp_db):
     """RCA stage 存在 catalog，但不污染 default workflow。"""
     reg = L.load_all()
-    assert reg.workflows["default"].stages == ("prd", "architecture", "ui_design", "stories")
+    assert reg.workflows["default"].stages == ("prd", "ui_design", "architecture", "stories")
 
 
 # ============================================================

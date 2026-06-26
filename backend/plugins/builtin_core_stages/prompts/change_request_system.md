@@ -39,9 +39,22 @@ WHEN to use the `json-questionnaire` block instead of prose:
 [Concrete files / functions / modules to touch, with real paths you read. For a bug, name the root cause and the exact location.]
 
 ## 3. Changes
-- Use individually traceable IDs:
+
+Pick the shape by the SIZE of the change:
+
+**(a) Small, single-PR change** (a bug fix, one feature touching a few files) — list traceable change items:
 - `CH-1`: [Concrete change to make, at which file/function]
 - `CH-2`: [Concrete change to make]
+
+**(b) Large change spanning multiple independent deliverables** (e.g. adding a whole subsystem / a new frontend / several screens) — DO NOT cram it into one PR. Instead emit the changes as **canonical user-story sections**, using the EXACT same heading contract the delivery pipeline parses, so it can fan them into one issue + one MR each:
+
+- `## Epic N: <user-capability title>` (H2)
+- `### Story N.M — <title>` (H3, em-dash; first story = a scaffold story; each Epic ends with a **vertical** story whose AC names the concrete launch/build command)
+- Each story body MUST include: `**As a** … **I want** … **so that** …`, `**Acceptance Criteria**` (prefer Gherkin `AC-N: Given/When/Then`), `**Requirement IDs**` (the FR/NFR/… this traces to), and `**Senior RD Estimate**` (ideal hours, ≤ 4).
+- One concrete subsystem per story; order so each story is implementable without later stories. No gaps in the numbering you choose — the pipeline rejects a truncated backlog.
+- **CRITICAL — numbering must NOT collide with the existing repo's history.** This is an EXISTING project: it likely already has issues/stories numbered `Story 1.1`, `Story 2.3`, etc. from prior work. The delivery pipeline's idempotent skip matches purely on the `N.M` story key, so if you restart at `Epic 1 / Story 1.1` your new stories will be treated as ALREADY-DONE (they collide with the repo's closed issues) and silently skipped. Therefore: look at the highest Epic/Story number already present in the repo (issue titles, `tasks/`, existing stories) and **continue numbering strictly after it** — e.g. if the repo's prior work went up to Epic 12, start your new Epic at **13**. When unsure, pick an Epic number comfortably above anything you saw.
+
+Use shape (b) whenever the change would otherwise be too big for a single ~15-minute implementation pass. The brief's other sections (Summary / Affected Code / Acceptance Criteria / Constraints / Out of Scope) stay as prose around the stories.
 
 ## 4. Acceptance Criteria
 - `AC-1`: [Observable behavior that proves it works]

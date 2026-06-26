@@ -134,8 +134,23 @@ def add_issue_note(base: str, token: str, repo: str, issue_iid: int, body: str) 
         pass
 
 
+def _find_open_mr(base: str, token: str, repo: str, source_branch: str) -> str:
+    """撈該 source branch 已開的 MR web_url（重試安全 / 冪等用）。查不到回 ""。"""
+    pid = urllib.parse.quote(repo, safe="")
+    sb = urllib.parse.quote(source_branch, safe="")
+    url = f"{base}/api/v4/projects/{pid}/merge_requests?state=opened&source_branch={sb}"
+    try:
+        req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            items = json.loads(resp.read().decode("utf-8"))
+        return (items[0].get("web_url") or "") if items else ""
+    except Exception:                                # noqa: BLE001
+        return ""
+
+
 def _create_mr(base: str, token: str, repo: str, head: str, target: str, session_id: int,
-               issue_iid: Optional[int] = None, title: str = "") -> str:
+               issue_iid: Optional[int] = None, title: str = "",
+               *, attempts: int = 4, delay: float = 2.0) -> str:
     pid = urllib.parse.quote(repo, safe="")
     url = f"{base}/api/v4/projects/{pid}/merge_requests"
     description = "Automated implementation by Lodestar. Review before merge."
@@ -146,15 +161,39 @@ def _create_mr(base: str, token: str, repo: str, head: str, target: str, session
         "title": title or f"Lodestar implementation (session {session_id})",
         "description": description,
     }
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"), method="POST",
-        headers={**_gl_headers(token), "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    web = body.get("web_url")
-    if not web:
-        raise MrError("MR API 回應無 web_url")
-    return web
+    last: Optional[Exception] = None
+    for i in range(attempts):
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"), method="POST",
+            headers={**_gl_headers(token), "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            web = body.get("web_url")
+            if not web:
+                raise MrError("MR API 回應無 web_url")
+            return web
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8")[:300]
+            except Exception:                        # noqa: BLE001
+                pass
+            low = detail.lower()
+            # 已有同 source branch 的 open MR（前次嘗試其實成功了/重複）→ 撈回它，冪等不失敗
+            if exc.code in (409, 400) and "already exists" in low:
+                ex = _find_open_mr(base, token, repo, head)
+                if ex:
+                    return ex
+            # 自架 GitLab：push 後 branch 尚未可見 → 400 "source branch ... does not exist"；或 5xx → 重試
+            transient = exc.code >= 500 or (
+                exc.code == 400 and ("does not exist" in low or "source" in low or not detail))
+            last = MrError(f"MR create HTTP {exc.code}: {detail or exc.reason}")
+            if transient and i < attempts - 1:
+                time.sleep(delay)
+                continue
+            raise last from exc
+    raise last or MrError("MR create failed")
 
 
 def make_gitlab_mr_opener(*, get_token: Callable[[], str],
@@ -197,9 +236,13 @@ def make_gitlab_mr_opener(*, get_token: Callable[[], str],
             raise MrError("worktree 無變更，不開空 MR")
 
         remote = f"https://oauth2:{token}@{host}/{repo}.git"
-        push = subprocess.run(
-            ["git", "-C", str(wt), "push", remote, f"HEAD:{branch}", "--force"],
-            capture_output=True, text=True)
+        try:
+            # timeout：遠端不通時 push 不該無限卡（即使已 off-loop，也別綁死 worker thread）。
+            push = subprocess.run(
+                ["git", "-C", str(wt), "push", remote, f"HEAD:{branch}", "--force"],
+                capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            raise MrError("git push timed out (120s) — 遠端不可達？")
         if push.returncode != 0:
             raise MrError(f"git push failed (exit {push.returncode})")   # 不回顯 stderr（含 token url）
 

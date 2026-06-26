@@ -33,7 +33,7 @@ def test_validator_passes_complete_stories():
 ### Story 1.2 — Theme 基底
 
 **Acceptance Criteria**
-- ...
+- AC-1: Given `./gradlew connectedAndroidTest` runs, When the app launches, Then the theme is applied.
 
 **Senior RD Estimate**
 - 3
@@ -50,7 +50,7 @@ def test_validator_chinese_title_passes():
 ### Story 1.1 — 登入
 
 **Acceptance Criteria**
-- 驗收條件 1
+- AC-1: Given `python -m app` 啟動, When 使用者登入, Then 回首頁。
 
 **Senior RD Estimate**
 - 1

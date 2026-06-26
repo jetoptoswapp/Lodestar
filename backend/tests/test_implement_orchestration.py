@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -82,6 +83,35 @@ def test_happy_path_opens_pr(tmp_db):
     sess = impl_dal.get_session(sid)
     assert sess["status"] == "succeeded" and "MOCK" in sess["pr_url"]
     assert [r["status"] for r in impl_dal.list_runs(sid)] == ["succeeded"]
+
+
+def test_open_pr_offloaded_off_event_loop(tmp_db):
+    """回歸：open_pr（內含同步 git push）必須在 event loop thread 之外跑。
+
+    若直接在 loop thread 同步呼叫，遠端不可達時 push 阻塞會凍住整個後端（連 cancel 都失應答）——
+    這正是 live 跑 batch 時遇到的事故。修法是 `await asyncio.to_thread(open_pr, ...)`。
+    """
+    sid, cwd = _new_session()
+    seen: dict = {}
+
+    async def driver():
+        loop_thread = threading.get_ident()
+
+        def blocking_open_pr(session_id, target_repo, last_output):
+            seen["pr_thread"] = threading.get_ident()
+            time.sleep(0.05)                      # 模擬阻塞的 git push
+            return "https://example.test/mr/1"
+
+        res = await orchestrator.run_implementation(
+            session_id=sid, runner=FakeRunner([RunResult(0, "done")]),
+            story="x", cwd=cwd, target_repo="o/r", open_pr=blocking_open_pr)
+        return loop_thread, res
+
+    loop_thread, res = asyncio.run(driver())
+    assert res["status"] == "succeeded"
+    assert res["pr_url"] == "https://example.test/mr/1"
+    # 關鍵：open_pr 不在 event loop thread 執行（被 to_thread offload）
+    assert seen["pr_thread"] != loop_thread
 
 
 def test_fix_loop_hard_cap_three(tmp_db):

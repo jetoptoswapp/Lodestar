@@ -55,13 +55,13 @@ def test_endpoints(tmp_db):
         gh = next(i for i in integ if i["target"] == "github")
         assert "fields" in gh["config_schema"]
 
-        # default workflow = (prd, architecture, ui_design, stories)；新 thread → 四個 stage 全 draft
+        # default workflow = (prd, ui_design, architecture, stories)；新 thread → 四個 stage 全 draft
         tid = client.post("/api/projects", json={"name": "test"}).json()["thread_id"]
         statuses = client.get(f"/api/stage/statuses/{tid}").json()["statuses"]
         assert statuses == [
             {"stage_id": "prd", "status": "draft"},
-            {"stage_id": "architecture", "status": "draft"},
             {"stage_id": "ui_design", "status": "draft"},
+            {"stage_id": "architecture", "status": "draft"},
             {"stage_id": "stories", "status": "draft"},
         ]
 

@@ -94,6 +94,7 @@ def start_batch(
     runner_for: Optional[orchestrator.RunnerProvider] = None,
     merge_pr: Optional[Callable[[int], bool]] = None,
     skip_keys: Optional[set[str]] = None,
+    allow_renumbered: bool = False,
 ) -> dict:
     """解析 stories → 排序 → 對應 issue → 建 batch + 逐 story 的 session → 背景依序跑。
 
@@ -107,7 +108,8 @@ def start_batch(
     """
     # 擋掉「前段被截斷」的 stories（症狀：implement 默默從 Story 5.3 開始，缺 1.1–5.2）。
     # 完整 backlog 一定從 Story 1.1 起；首段遺失代表後段 story 失去其依賴前提，不可實作。
-    truncated = detect_truncated_stories(story_artifact)
+    # allow_renumbered：modify_existing brief 會接續既有號（非從 1 起），不可用「必為 1」判截斷。
+    truncated = detect_truncated_stories(story_artifact, allow_renumbered=allow_renumbered)
     if truncated:
         raise BatchError(f"{truncated}。請回 Stories 階段重新生成完整內容後再實作。")
 

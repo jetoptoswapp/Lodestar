@@ -7,9 +7,13 @@
 //   顯示寫入的檔清單 + repo 連結，或錯誤。手動觸發、可重發（CLAUDE.md 用 managed block 併入）。
 
 import { useEffect, useState } from "react";
+import { validateStagesMermaid, type DocMermaidResult } from "@/lib/mermaid";
 
 type SyncResult = { ok: boolean; target: string; repo: string; url: string; note: string; files: string[] };
 type Step = "confirm" | "syncing" | "result";
+
+// 同步前要驗 mermaid 的文件（含圖的）。
+const MERMAID_DOCS = [{ id: "architecture", label: "Architecture" }, { id: "prd", label: "PRD" }];
 
 export function SpecSyncModal({
   open, thread, apiBase, onClose,
@@ -23,15 +27,20 @@ export function SpecSyncModal({
   const [step, setStep] = useState<Step>("confirm");
   const [result, setResult] = useState<SyncResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mermaidBad, setMermaidBad] = useState<DocMermaidResult[]>([]);
+  const [override, setOverride] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setStep("confirm"); setResult(null); setError(null); setTarget("");
+    setMermaidBad([]); setOverride(false);
     if (thread) {
       fetch(`${apiBase}/api/projects/${thread}`)
         .then((r) => r.json())
         .then((p) => setTarget(p.delivery_target ?? ""))
         .catch(() => setTarget(""));
+      // 真 parser 守門：同步前驗 mermaid，有壞圖就擋下（規格進 repo 給實作 agent 讀，更不該帶壞圖）。
+      validateStagesMermaid(apiBase, thread, MERMAID_DOCS).then(setMermaidBad).catch(() => setMermaidBad([]));
     }
   }, [open, thread, apiBase]);
 
@@ -107,6 +116,26 @@ export function SpecSyncModal({
                   ⚠ 此專案尚未設定 delivery target（github / gitlab），請先到專案設定指定 repo。
                 </div>
               )}
+              {mermaidBad.length > 0 && (
+                <div className="border border-[#f47171]/40 bg-[#f47171]/10 px-3 py-2.5 font-[family-name:var(--font-mono)] text-[10.5px] leading-[1.7] text-[#f47171]">
+                  <div className="font-semibold uppercase tracking-[0.18em]">⚠ Mermaid 語法錯誤——同步已擋下</div>
+                  <ul className="mt-1.5 space-y-1">
+                    {mermaidBad.flatMap((d) =>
+                      d.issues.map((iss) => (
+                        <li key={`${d.stage}-${iss.index}`}>
+                          {d.label} · diagram {iss.index}：{iss.message}
+                        </li>
+                      )),
+                    )}
+                  </ul>
+                  <p className="mt-2 text-[var(--ink-muted)]">
+                    請先回該 stage 修好圖再同步（避免壞圖進 repo 給實作 agent 讀）。
+                    <button onClick={() => setOverride(true)} className="ml-1 text-[#f59e0b] underline hover:text-[#f59e0b]/80">
+                      仍要同步（忽略警告）
+                    </button>
+                  </p>
+                </div>
+              )}
             </>
           )}
 
@@ -161,7 +190,7 @@ export function SpecSyncModal({
             {step === "result" ? "完成" : "取消"}
           </button>
           {step === "confirm" && (
-            <button onClick={sync} disabled={!thread || !target}
+            <button onClick={sync} disabled={!thread || !target || (mermaidBad.length > 0 && !override)}
               className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-1.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.2em] text-white transition hover:bg-[var(--polaris-hi)] disabled:opacity-50">
               同步
             </button>

@@ -883,6 +883,27 @@ export default function Page() {
     }
   }, [thread, crImplementing, implActive, crArtifact]);
 
+  // 大改 brief（含 canonical Epic/Story）→ 走 batch：逐 story 各開一個 MR（後端 _delivery_story_artifact
+  // 會 fallback 讀 change_request 並 parse 出逐 story）。auto_merge=false：開 MR 但不自動合進 main，留人審。
+  const onImplementBatchChangeRequest = useCallback(async (autoMerge: boolean) => {
+    if (!thread || crImplementing || implActive || !crArtifact.trim()) return;
+    setErr(null);
+    setCrImplementing(true);
+    try {
+      await startBatch({ thread_id: thread, runner: "claude-cli", mode: "roles", auto_merge: autoMerge });
+      setImplReloadKey((k) => k + 1);
+    } catch (e) {
+      if (e instanceof ApiError && e.category === "impl_in_progress") {
+        setImplReloadKey((k) => k + 1);
+        setErr("已有實作在進行中，請見下方「實作狀態」查看或取消。");
+      } else {
+        setErr(`啟動 batch 失敗：${(e as Error).message}`);
+      }
+    } finally {
+      setCrImplementing(false);
+    }
+  }, [thread, crImplementing, implActive, crArtifact]);
+
   // 匯入既有 issue：列出 → 選一個 → 把 title+body 當討論起點（送進 change_request chat）
   const openIssuePicker = useCallback(async () => {
     if (!thread) return;
@@ -1238,6 +1259,7 @@ export default function Page() {
                       modelChoice={modelChoice}
                       onGenerate={onGenerateChangeRequest}
                       onImplement={onImplementChangeRequest}
+                      onImplementBatch={onImplementBatchChangeRequest}
                       onImportIssue={openIssuePicker}
                       onChatArtifact={setCrArtifact}
                     />
@@ -2123,6 +2145,8 @@ function ChangeImplementStatus({
 }) {
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [session, setSession] = useState<ImplementSession | null>(null);
+  const [batch, setBatch] = useState<ImplementBatch | null>(null);          // 大改 fan-out → 逐 story batch 進度
+  const [repoMeta, setRepoMeta] = useState<{ repo: string; target: string; base: string }>({ repo: "", target: "", base: "" });
   const [lines, setLines] = useState<ImplementLogLine[]>([]);
   const [logOpen, setLogOpen] = useState(false);
   const cursorRef = useRef(0);
@@ -2139,6 +2163,37 @@ function ChangeImplementStatus({
     return () => { on = false; };
   }, [thread]);
 
+  // 水合 + 輪詢最近一個 batch（大改 fan-out 後的逐 story 進度表；補 modify_existing 只看得到單一 session 的缺口）
+  useEffect(() => {
+    if (!thread) return;
+    let on = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    apiFetch<{ repo_full_name: string; delivery_target: string; base_url: string }>(`/api/projects/${thread}`)
+      .then((p) => { if (on) setRepoMeta({ repo: p.repo_full_name || "", target: p.delivery_target || "", base: p.base_url || "" }); })
+      .catch(() => {/* 靜默 */});
+    let errs = 0;
+    const tick = async () => {
+      try {
+        const batches = await fetchBatches(thread);
+        if (!on) return;
+        if (!batches.length) { setBatch(null); return; }
+        const b = await fetchBatch(batches[0].batch_id);
+        if (!on) return;
+        errs = 0;
+        setBatch(b);
+        const running = b.items.find((i) => i.status === "running");
+        if (running?.session_id) setSessionId(running.session_id);   // log 面板跟到處理中的 story
+        if (b.status === "running") timer = setTimeout(tick, 1000);
+      } catch {
+        // 單次 fetch 失敗（網路抖動 / 暫時 5xx）不該讓進度表永久凍結：有界退避續輪詢，
+        // 連續失敗到上限才停（避免端點永久錯誤如 batch 被刪時無限空轉）。
+        if (on && errs < 30) { errs += 1; timer = setTimeout(tick, 2000); }
+      }
+    };
+    tick();
+    return () => { on = false; if (timer) clearTimeout(timer); };
+  }, [thread]);
+
   // 輪詢 session 狀態 + log（running/pending 時遞迴 setTimeout，終局再補一次補尾）
   useEffect(() => {
     if (sessionId == null) return;
@@ -2152,23 +2207,29 @@ function ChangeImplementStatus({
         setLines((prev) => [...prev, ...log.lines]);
       }
     };
+    let errs = 0;
     const tick = async () => {
       try {
         const s = await fetchImplementSession(sessionId);
         if (!on) return;
+        errs = 0;
         setSession(s);
         await drainLog();
         if (!on) return;
         if (s.status === "running" || s.status === "pending") timer = setTimeout(tick, 700);
         else await drainLog();
-      } catch {/* 靜默；下次水合會再試 */}
+      } catch {
+        // 同 batch tick：單次失敗不凍結，有界退避續輪詢。
+        if (on && errs < 30) { errs += 1; timer = setTimeout(tick, 2000); }
+      }
     };
     tick();
     return () => { on = false; if (timer) clearTimeout(timer); };
   }, [sessionId]);
 
   const status = session?.status ?? "idle";
-  const active = status === "running" || status === "pending";
+  const batchRunning = batch?.status === "running";
+  const active = status === "running" || status === "pending" || !!batchRunning;
   useEffect(() => { onActiveChange(active); }, [active, onActiveChange]);
 
   // log 自動捲到底（只捲面板內的容器，不動整頁）
@@ -2177,12 +2238,14 @@ function ChangeImplementStatus({
   }, [lines, logOpen]);
 
   const cancel = async () => {
-    if (sessionId == null) return;
-    try { await cancelImplement(sessionId); } catch {/* 靜默：UI 會在下次輪詢反映 */}
+    try {
+      if (batchRunning && batch) await cancelBatch(batch.batch_id);   // 整批取消（逐 story fan-out）
+      else if (sessionId != null) await cancelImplement(sessionId);
+    } catch {/* 靜默：UI 會在下次輪詢反映 */}
   };
 
-  if (!session) return null;   // 從未跑過 → 不佔版面
-  const runs = session.runs ?? [];
+  if (!session && !batch) return null;   // 從未跑過 → 不佔版面
+  const runs = session?.runs ?? [];
 
   return (
     <div className="mt-4 border border-[var(--rule-dark)] bg-[var(--bg-elev)]/40">
@@ -2202,8 +2265,15 @@ function ChangeImplementStatus({
         </div>
       </div>
 
-      {session.pr_url ? <ImplPrBanner url={session.pr_url} /> : null}
-      {status === "failed" && session.error_message ? <ImplFailBanner msg={session.error_message} /> : null}
+      {batch && (
+        <div className="border-t border-[var(--rule)] px-4 py-3">
+          <ImplBatchProgress batch={batch} repo={repoMeta.repo} target={repoMeta.target} baseUrl={repoMeta.base}
+            selectedSessionId={sessionId} onSelect={(sid) => setSessionId(sid)} />
+        </div>
+      )}
+
+      {session?.pr_url ? <ImplPrBanner url={session.pr_url} /> : null}
+      {status === "failed" && session?.error_message ? <ImplFailBanner msg={session.error_message} /> : null}
 
       {lines.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em]">
@@ -2241,7 +2311,7 @@ function ChangeImplementStatus({
 // ============================== 修改既有專案：change_request workspace ==============================
 function ChangeRequestWorkspace({
   thread, artifact, status, busy, implementing, implActive, implReloadKey, modelChoice,
-  onGenerate, onImplement, onImplActiveChange, onImportIssue, onChatArtifact,
+  onGenerate, onImplement, onImplementBatch, onImplActiveChange, onImportIssue, onChatArtifact,
 }: {
   thread: string | null;
   artifact: string;
@@ -2253,11 +2323,19 @@ function ChangeRequestWorkspace({
   modelChoice: string;
   onGenerate: () => void;
   onImplement: () => void;
+  onImplementBatch: (autoMerge: boolean) => void;
   onImplActiveChange: (active: boolean) => void;
   onImportIssue: () => void;
   onChatArtifact: (content: string) => void;
 }) {
   const hasContent = artifact.trim().length > 0;
+  // brief 含 canonical Epic/Story（大改）→ 可 fan-out 成逐 story issue + batch MR；
+  // 否則（CH-N 小改）只走 single → 一個 PR。
+  const storyCount = useMemo(() => countStoriesAndEstimate(artifact).stories, [artifact]);
+  const canFanOut = storyCount >= 2;
+  // 相依型 backlog（後續 story 疊在 scaffold 上）必須 auto-merge：過 gate 即依序合進 main，
+  // 下個 story 才從更新後的 main 切、吃得到前面的成果（策略 A）。預設開，也是「專案完成=合進 main」的唯一 in-app 路徑。
+  const [autoMerge, setAutoMerge] = useState(true);
   return (
     <div className="flex min-h-0 flex-1">
       <section className="rise-4 flex min-w-0 flex-1 flex-col overflow-hidden px-10 py-6">
@@ -2299,9 +2377,25 @@ function ChangeRequestWorkspace({
           <ToolBtn onClick={onGenerate} disabled={!thread || !!busy}>
             {busy === "generate" ? "Generating…" : hasContent ? "重新生成" : "生成 brief"}
           </ToolBtn>
-          <ToolBtn primary onClick={onImplement} disabled={!thread || !hasContent || implementing || implActive}>
-            {implementing ? "啟動中…" : implActive ? "實作進行中…" : "Implement → PR"}
-          </ToolBtn>
+          {canFanOut ? (
+            <>
+              <label className="flex cursor-pointer items-center gap-1.5 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.14em] text-[var(--ink-muted)]"
+                title="過 QA gate 即依序 merge 進 main，後續 story 從更新後 main 切（相依型必開；也是專案『合進 main 完成』的路徑）">
+                <input type="checkbox" checked={autoMerge} onChange={(e) => setAutoMerge(e.target.checked)} />
+                auto-merge
+              </label>
+              <ToolBtn onClick={onImplement} disabled={!thread || !hasContent || implementing || implActive}>
+                {implementing ? "啟動中…" : "整包一個 PR"}
+              </ToolBtn>
+              <ToolBtn primary onClick={() => onImplementBatch(autoMerge)} disabled={!thread || !hasContent || implementing || implActive}>
+                {implementing ? "啟動中…" : implActive ? "實作進行中…" : `逐 story 實作 → ${storyCount} MR`}
+              </ToolBtn>
+            </>
+          ) : (
+            <ToolBtn primary onClick={onImplement} disabled={!thread || !hasContent || implementing || implActive}>
+              {implementing ? "啟動中…" : implActive ? "實作進行中…" : "Implement → PR"}
+            </ToolBtn>
+          )}
         </div>
       </section>
       <ChatPanel key={thread ?? "none"} thread={thread} stageId="change_request" stageLabel="Change Discussion"
@@ -3729,18 +3823,18 @@ function ImplPrBanner({ url }: { url: string }) {
   if (url.startsWith("local:")) {
     return (
       <div className="flex items-center gap-3 border-b border-[color-mix(in_oklab,var(--approved)_40%,transparent)] bg-[color-mix(in_oklab,var(--approved)_10%,transparent)] px-6 py-3">
-        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--approved)]">本機交付</span>
-        <code className="truncate text-[12px] text-[#cdd4df]">{url.replace(/^local:\s*/, "")}</code>
-        <span className="ml-auto whitespace-nowrap font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">diff 見 log ↓</span>
+        <span className="shrink-0 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--approved)]">本機交付</span>
+        <code className="min-w-0 flex-1 truncate text-[12px] text-[#cdd4df]">{url.replace(/^local:\s*/, "")}</code>
+        <span className="shrink-0 whitespace-nowrap font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">diff 見 log ↓</span>
       </div>
     );
   }
   return (
     <a href={url} target="_blank" rel="noreferrer"
       className="flex items-center gap-3 border-b border-[color-mix(in_oklab,var(--approved)_40%,transparent)] bg-[color-mix(in_oklab,var(--approved)_10%,transparent)] px-6 py-3 transition hover:bg-[color-mix(in_oklab,var(--approved)_18%,transparent)]">
-      <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--approved)]">PR opened</span>
-      <code className="truncate text-[12px] text-[#cdd4df]">{url}</code>
-      <span className="ml-auto font-[family-name:var(--font-mono)] text-[10px] text-[var(--approved)]">開啟 ↗</span>
+      <span className="shrink-0 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.2em] text-[var(--approved)]">PR opened</span>
+      <code className="min-w-0 flex-1 truncate text-[12px] text-[#cdd4df]">{url}</code>
+      <span className="shrink-0 font-[family-name:var(--font-mono)] text-[10px] text-[var(--approved)]">開啟 ↗</span>
     </a>
   );
 }
@@ -3778,19 +3872,22 @@ const BATCH_ROW_DOT: Record<string, string> = {
   cancelled: "var(--ink-muted)",
 };
 
-function issueUrlFor(repo: string, target: string, n: number): string | null {
+function issueUrlFor(repo: string, target: string, n: number, baseUrl = ""): string | null {
   if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
+  // self-hosted GitLab（如 gitlab.saikah.com）host 由後端 base_url 帶來；缺省才退回 gitlab.com。
+  const base = (baseUrl || "").replace(/\/+$/, "");
   return target === "gitlab"
-    ? `https://gitlab.com/${repo}/-/issues/${n}`
+    ? `${base || "https://gitlab.com"}/${repo}/-/issues/${n}`
     : `https://github.com/${repo}/issues/${n}`;
 }
 
 function ImplBatchProgress({
-  batch, repo, target, selectedSessionId, onSelect,
+  batch, repo, target, baseUrl = "", selectedSessionId, onSelect,
 }: {
   batch: ImplementBatch;
   repo: string;
   target: string;
+  baseUrl?: string;
   selectedSessionId: number | null;
   onSelect: (sessionId: number) => void;
 }) {
@@ -3844,7 +3941,7 @@ function ImplBatchProgress({
         {batch.items.map((it) => {
           const sel = it.session_id === selectedSessionId;
           const running = it.status === "running";
-          const iurl = it.issue_number != null ? issueUrlFor(repo, target, it.issue_number) : null;
+          const iurl = it.issue_number != null ? issueUrlFor(repo, target, it.issue_number, baseUrl) : null;
           return (
             <li key={it.session_id}
               className={`flex items-center gap-3 border-b border-[var(--rule)]/60 px-6 py-2 ${

@@ -7,9 +7,13 @@
 //   顯示結果（url + note）或錯誤。手動觸發、可重發（覆寫）。
 
 import { useEffect, useState } from "react";
+import { validateStagesMermaid, type DocMermaidResult } from "@/lib/mermaid";
 
 type DocsResult = { ok: boolean; target: string; repo: string; url: string; note: string };
 type Step = "confirm" | "publishing" | "result";
+
+// 發佈前要驗 mermaid 的文件（含圖的）。
+const MERMAID_DOCS = [{ id: "architecture", label: "Architecture" }, { id: "prd", label: "PRD" }];
 
 export function DocsPublishModal({
   open, thread, apiBase, onClose,
@@ -23,15 +27,20 @@ export function DocsPublishModal({
   const [step, setStep] = useState<Step>("confirm");
   const [result, setResult] = useState<DocsResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mermaidBad, setMermaidBad] = useState<DocMermaidResult[]>([]);
+  const [override, setOverride] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setStep("confirm"); setResult(null); setError(null); setTarget("");
+    setMermaidBad([]); setOverride(false);
     if (thread) {
       fetch(`${apiBase}/api/projects/${thread}`)
         .then((r) => r.json())
         .then((p) => setTarget(p.delivery_target ?? ""))
         .catch(() => setTarget(""));
+      // 真 parser 守門：發佈前驗 mermaid，有壞圖就擋下（不讓炸彈上 wiki）。
+      validateStagesMermaid(apiBase, thread, MERMAID_DOCS).then(setMermaidBad).catch(() => setMermaidBad([]));
     }
   }, [open, thread, apiBase]);
 
@@ -105,6 +114,26 @@ export function DocsPublishModal({
                   ⚠ 此專案尚未設定 delivery target（github / gitlab），請先到專案設定指定 repo。
                 </div>
               )}
+              {mermaidBad.length > 0 && (
+                <div className="border border-[#f47171]/40 bg-[#f47171]/10 px-3 py-2.5 font-[family-name:var(--font-mono)] text-[10.5px] leading-[1.7] text-[#f47171]">
+                  <div className="font-semibold uppercase tracking-[0.18em]">⚠ Mermaid 語法錯誤——發佈已擋下</div>
+                  <ul className="mt-1.5 space-y-1">
+                    {mermaidBad.flatMap((d) =>
+                      d.issues.map((iss) => (
+                        <li key={`${d.stage}-${iss.index}`}>
+                          {d.label} · diagram {iss.index}：{iss.message}
+                        </li>
+                      )),
+                    )}
+                  </ul>
+                  <p className="mt-2 text-[var(--ink-muted)]">
+                    請先回該 stage 修好圖再發佈（避免壞圖上 wiki）。
+                    <button onClick={() => setOverride(true)} className="ml-1 text-[#f59e0b] underline hover:text-[#f59e0b]/80">
+                      仍要發佈（忽略警告）
+                    </button>
+                  </p>
+                </div>
+              )}
             </>
           )}
 
@@ -149,7 +178,7 @@ export function DocsPublishModal({
             {step === "result" ? "完成" : "取消"}
           </button>
           {step === "confirm" && (
-            <button onClick={publish} disabled={!thread || !target}
+            <button onClick={publish} disabled={!thread || !target || (mermaidBad.length > 0 && !override)}
               className="border border-[var(--polaris)] bg-[var(--polaris)] px-4 py-1.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-[0.2em] text-white transition hover:bg-[var(--polaris-hi)] disabled:opacity-50">
               發佈
             </button>

@@ -152,15 +152,31 @@ def test_build_claude_md_block_content():
 # ============================================================
 #  README starter（照專案寫）
 # ============================================================
-def test_build_readme_starter_uses_project_and_prd():
-    prd = "# 訂便當 App — PRD\n\n這是一個給辦公室同仁團購便當的系統，支援瀏覽菜單與下單。\n\n## FR\n- FR-1 ..."
-    readme = spec_sync.build_readme_starter("訂便當 App", prd)
-    assert readme.startswith("# 訂便當 App")           # 專案名
-    assert "團購便當" in readme                          # PRD 概述被抽進來
-    assert ".lodestar/PRD.md" in readme                 # 指向規格
-    # PRD 為空 → 仍產出（只是沒概述段）
-    bare = spec_sync.build_readme_starter("X", "")
-    assert bare.startswith("# X") and ".lodestar/" in bare
+def test_build_readme_uses_project_prd_and_arch():
+    prd = ("# 訂便當 App — PRD\n\n這是一個給辦公室同仁團購便當的系統，支援瀏覽菜單與下單。\n\n"
+           "## 3. Functional Requirements\n"
+           "### FR-001 菜單瀏覽 **[P0]**\n- FR-1.1 ...\n"
+           "### FR-002 下單結帳 **[P0]**\n- FR-2.1 ...\n")
+    arch = ("**Project tier**: T1 — 小型 web app\n\n"
+            "## Tech Stack\n- Python / FastAPI\n- PostgreSQL\n")
+    readme = spec_sync.build_readme("訂便當 App", prd, arch)
+    assert "# 訂便當 App" in readme                       # 專案名
+    assert "團購便當" in readme                            # PRD 概述
+    assert "菜單瀏覽" in readme and "下單結帳" in readme    # 功能群從 FR 標題抽出
+    assert "T1" in readme and "FastAPI" in readme         # tier + 技術棧
+    assert ".lodestar/PRD.md" in readme                   # 指向規格
+    assert spec_sync._readme_is_managed(readme)           # 含 managed marker → 受管可升級
+    # PRD/arch 為空 → 仍產出（只是少了對應段落）
+    bare = spec_sync.build_readme("X", "")
+    assert "# X" in bare and ".lodestar/" in bare and spec_sync._readme_is_managed(bare)
+
+
+def test_readme_is_managed_recognises_stub_and_protects_real():
+    assert spec_sync._readme_is_managed("# AI-Council\n")          # host auto-init 空殼 → 可升級
+    assert spec_sync._readme_is_managed("\n#  StockTracker  \n\n")  # 含空行的單 H1 → 可升級
+    assert spec_sync._readme_is_managed("<!-- LODESTAR:BEGIN -->\n# X\n<!-- LODESTAR:END -->")
+    assert not spec_sync._readme_is_managed("# Proj\n\n## 安裝\n手動寫的內容\n")  # 有實質內容 → 受保護
+    assert not spec_sync._readme_is_managed("# A\n# B\n")           # 兩行 → 非空殼，受保護
 
 
 def test_sync_writes_readme_only_when_absent(tmp_db, monkeypatch):
@@ -186,9 +202,27 @@ def test_sync_does_not_clobber_existing_readme(tmp_db, monkeypatch):
     out = spec_sync.sync_specs("t8", _REMOTE, _FILES, web_url="x",
                                claude_md_block=_BLOCK, readme="# Lodestar starter\n")
     readme = (repo_workspace.project_dir("t8") / "spec_sync" / "README.md").read_text(encoding="utf-8")
-    assert "別動我" in readme                            # 既有 README 不被覆寫
+    assert "別動我" in readme                            # 既有（人工）README 不被覆寫
     assert "Lodestar starter" not in readme
     assert "README.md" not in out["files"]               # 沒寫 → 不列入
+
+
+def test_sync_upgrades_managed_readme(tmp_db, monkeypatch):
+    run, _ = _fake_git(seed_claude=None)
+    # clone 後預先放一個「仍受 Lodestar 管」的 README（含 marker）→ re-sync 應升級覆寫
+    def run_with_managed(cmd, **k):
+        r = run(cmd, **k)
+        if cmd[:2] == ["git", "clone"]:
+            (repo_workspace.project_dir("t9") / "spec_sync" / "README.md").write_text(
+                spec_sync.build_readme("舊版", "舊概述"), encoding="utf-8")
+        return r
+    monkeypatch.setattr(spec_sync.subprocess, "run", run_with_managed)
+    new_readme = spec_sync.build_readme("新版", "全新概述")
+    out = spec_sync.sync_specs("t9", _REMOTE, _FILES, web_url="x",
+                               claude_md_block=_BLOCK, readme=new_readme)
+    readme = (repo_workspace.project_dir("t9") / "spec_sync" / "README.md").read_text(encoding="utf-8")
+    assert "全新概述" in readme and "舊概述" not in readme   # 受管 README 被升級
+    assert "README.md" in out["files"]
 
 
 # ============================================================

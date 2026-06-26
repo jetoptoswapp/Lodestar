@@ -340,9 +340,13 @@ def make_github_pr_opener(*, get_token: Callable[[], str],
         if _git(wt, ["diff", "--quiet", f"origin/{base}", "HEAD"], check=False).returncode == 0:
             raise PrError("worktree 無變更，不開空 PR")
         remote = f"https://x-access-token:{token}@github.com/{repo}.git"
-        push = subprocess.run(
-            ["git", "-C", str(wt), "push", remote, f"HEAD:{branch}", "--force"],
-            capture_output=True, text=True)
+        try:
+            # timeout：遠端不通時 push 不該無限卡（即使已 off-loop，也別綁死 worker thread）。
+            push = subprocess.run(
+                ["git", "-C", str(wt), "push", remote, f"HEAD:{branch}", "--force"],
+                capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            raise PrError("git push timed out (120s) — 遠端不可達？")
         if push.returncode != 0:
             raise PrError(f"git push failed (exit {push.returncode})")   # 不回顯 stderr（含 token url）
 

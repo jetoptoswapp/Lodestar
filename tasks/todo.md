@@ -1,164 +1,185 @@
-# 第三階段：生成截斷根因修復（claude-cli stream-json）✅
+# 治本：跑批前對抗式稽核挖出的 5 個缺陷（已修）
 
-## 根因（用 RedmineCopy 真實 prompt 重現確認）
-- 大型輸出（完整 stories >50k 字）→ 模型回應超過單輪 max output tokens → claude-cli 自動續寫成**多個 assistant 輪次**（實測 4 輪）。
-- `--output-format text` 只回**最後一輪** → 前段（標題 + Epic 1-4 + Story 1.1-4.5）遺失、尾段完整。症狀：stories 變空 / implement 從 Story 5.3 開始。
-- 對照實驗：受控 49k 英文（單輪）不截斷；真實 42k prompt（text + tools / text 無 tools）都截斷；**stream-json 串接 4 輪 → 完整（標題 + Epic 1-10 + Story 1.1）**。
+「全程用 UI 跑到專案完成、lodestar 不出問題」→ 先用 workflow 對抗式稽核 modify_existing→batch→MR→merge，
+跑批前挖出剩餘雷（11 confirmed，歸併為 5）：
 
-## 修法
-- [x] `claude_cli.py`：`_build_cmd` 改 `--output-format stream-json --verbose`；新增 `_parse_stream_json` 串接所有 assistant 輪次的 text block（跳過 tool_use/result）；`_invoke` 改回串接結果。
-- [x] 單元測試 `test_agent_tools.py`：`_parse_stream_json` 多輪串接 + noise 容錯（不需真模型）。
-- [x] 全套 376 passed（2 failed 仍為使用者 stories WIP）。
-- [x] end-to-end live 確認：更新後 `_invoke` 跑真實 RedmineCopy prompt → 完整文件（開頭含標題 + Epic 1-9 + Story 1.1）✅
-- 防線保留：detect_truncated_stories（後端 batch + 前端橫幅）作為 belt-and-suspenders。
+- [x] **D5（BLOCKER）截斷守門誤殺 renumber**：`detect_truncated_stories` 寫死「從 Epic 1 起」，D4 把 brief 改成 Epic 13 → 誤判截斷 → `start_batch` raise → HTTP 400 → 0 MR。
+      修：`delivery_parser.detect_truncated_stories(allow_renumbered=)`——continuation 模式不要求起點=1，但仍抓「最低 story 非 .1（砍頭）」「epic 不連續」；`start_batch(allow_renumbered=)` + `implement_start_batch` 依「stories 為空→來自 change_request brief」傳旗標。greenfield 路徑不變（test_implement_batch 既有斷言仍綠）。test：`test_renumbered_brief_not_truncated_with_allow_renumbered` / `test_renumbered_head_loss_still_caught`。
+- [x] **D6（HIGH）相依 story + auto_merge off → 7 個壞 MR**：13.x 全疊在 13.1 scaffold 上，但 auto_merge off 時每個 story 從乾淨 origin/main 切、看不到 scaffold。
+      修：modify_existing 按鈕加 auto-merge toggle（預設開）→ 策略 A 過 gate 即依序 merge、下個 story 從更新後 main 切。`onImplementBatch(autoMerge)` + `startBatch({auto_merge})`。
+- [x] **D7（HIGH）全程無「合進 main」入口 → 專案無法完成**：同 D6 的 auto-merge toggle 解（過 gate 即 merge 進 main = 專案完成路徑）。
+- [x] **D8（MED）batch 輪詢遇單次 fetch 失敗永久凍結**：`ChangeImplementStatus` 兩個 tick 的 catch 不重排 → 加有界退避續輪詢（errs<30）。
+- [x] **D9（MED）issue 連結寫死 gitlab.com**：self-hosted gitlab.saikah.com 連結 404。修：`ProjectResponse.base_url`（get_project 由 keystore 帶出）→ 前端 `issueUrlFor(…, baseUrl)` / `ImplBatchProgress baseUrl`。
 
----
-
-# 第二階段：Stories 空白容錯 + 規格同步到 code repo ✅
-
-計畫：`~/.claude/plans/atomic-dreaming-catmull.md`（第二階段）
-
-## 問題 1：Stories 變空（RedmineCopy）
-- [x] 診斷：artifact 仍在（4717 字）但 claude-cli 吐壞輸出（開頭截斷、用 `### Task` 非 `## Epic`/`### Story`）；其他同類專案正常 → 一次性生成異常。真 bug 是前端缺容錯。
-- [x] 修：StoriesWorkspace `hasContent && epics.length===0` → 顯示琥珀警告 + 原始 markdown（不再空白）
-- [x] 驗證：tsc 乾淨 + 隔離環境（複製真實 DB）截圖確認 FR-42/Cross-Cutting Tasks 都顯示
-
-## 問題 2：規格同步到 code repo（給實作 agent 讀）
-- [x] 後端 `spec_sync.py`：clone code repo → 寫 `.lodestar/{PRD,ARCHITECTURE,UI-DESIGN}.md` + 根 `CLAUDE.md`（managed block 不蓋既有）→ commit → push default branch；SpecSyncError 不洩 token
-- [x] 端點 `POST /api/specs/{tid}/sync`（比照 docs_publish；缺 prd/arch → 400 specs_not_ready）
-- [x] `build_impl_prompt` 加指引：先讀根 CLAUDE.md、UI 對齊 `.lodestar/UI-DESIGN.md`
-- [x] `api_models.SpecSyncResponse`
-- [x] 前端 `SpecSyncModal.tsx`（clone DocsPublishModal）+ Stories「同步規格到 repo…」按鈕 + 接線
-- [x] 測試 `test_spec_sync.py` 13 案（managed block / fake git / 端點 / build_impl_prompt）全過
-- [x] 驗證：隔離後端煙囪測（無 repo→400、無 prd→400）；前端截圖確認按鈕+modal+無 target 警告
-
-## 狀態
-- 本階段測試全綠；全套 `pytest backend` = **372 passed, 2 failed**。
-- **2 個 failed 是使用者自己未 commit 的 stories WIP**（`_check_vertical_stories` validator vs 舊 test sample 缺 launch 指令），**與本階段無關**（phase 2 未碰 stories）。
-- 尚未 commit（等使用者指示）。commit 時只加本階段檔案，不掃進使用者的 stories WIP。
+## 驗證
+- [x] 後端 pytest 439 全綠；前端 `tsc --noEmit` 乾淨。
+- [ ] 重啟後端載入 → 全程 UI 跑 13.1–13.7（auto-merge on）到 7 MR 合進 main = 專案完成。
 
 ---
 
-# UI Designer Agent + ui_design stage ✅
+# 治本：modify_existing live 跑出來的三個缺陷（已修）
 
-計畫：`~/.claude/plans/atomic-dreaming-catmull.md`
-目標：新增 ui_design stage（depends_on=prd，與 architecture 平行）+ UI Designer agent（frontend-design 設計原則 persona），產出每畫面自包含 HTML 的設計稿；stories 接 UI 上游（strip HTML）。
+起因：對 JetBook 跑 batch（7-story fan-out）時，GitLab 當下不通，暴露三問題。
 
-## Backend
-- [x] ui_design_stage.py（StageSpec + 3 handlers + warn-only validator ×5 + 繁中 persona）
-- [x] prompts：ui_design_system / ui_design_chat / ui_design_refine / ui_design_amendment_prefix（sentinel [UI_READY]）
-- [x] _shared.py：strip_html_prototypes helper
-- [x] stories_stage.py：depends_on=("architecture","ui_design")、_upstream 三元組、UI_DESIGN_BRIEF
-- [x] stories prompts：三檔加 {{UI_DESIGN_BRIEF}} + UI alignment HARD RULE
-- [x] register.py：register stage + validators + default/requirements_panel workflow 改四 stage
-- [x] builtin_agents/register.py：seed_ui_designer（system_prompt 空 = stage default persona）+ 兩個 plugin.toml contributes
-- [x] project_summary.py：_PRE_IMPL_STAGES 加 ui_design + operation-aware 歸戶（design 共用問題）
-- [x] docs publish：app.py 撈 ui_design（選配不擋 400）、docs_publisher loop docs dict、DocsPublishModal 文案
+- [x] **D1（最致命）阻塞 git push 凍死後端**：`orchestrator.run_implementation` / `run_implementation_roles`
+      的 `open_pr(...)` 是同步呼叫，遠端不通時 push 阻塞 → 凍住整個 event loop（cancel/所有 API 失應答）。
+      修：兩處改 `await asyncio.to_thread(open_pr, ...)`；`gitlab_mr.py`/`github_pr.py` 的 push 加 `timeout=120`。
+      測：`test_implement_orchestration.py::test_open_pr_offloaded_off_event_loop`（open_pr 不在 loop thread 跑）。
+- [x] **D2 batch 沒先發 issue**：modify_existing brief 無「stories→issues publish」步驟 → PR 不帶 `Closes #issue`。
+      修：`app._ensure_batch_issues_published`（parse → 跳過既有 → 冪等 publish），在 `implement_start_batch`
+      的 `list_issues` 前呼叫；best-effort（列/發失敗只 warn 不中止）。stories 路徑因冪等不受影響。
+- [x] **D3 modify_existing 看不到 batch 進度**：`ChangeImplementStatus` 只顯示單一 session。
+      修：加 batch 水合+輪詢，有 batch 時 render 既有 `ImplBatchProgress`（逐 story 進度表、點列看該 session log），
+      cancel 改為整批取消；render 對 session=null 做 null-safe。
 
-## Frontend
-- [x] lib/parse.ts：parseUiDesign（sections + screens，缺 html → null 容錯）
-- [x] page.tsx：state/refresh/handlers/StageHeader/UiDesignWorkspace（document/preview/code 三 view + 畫面 tabs + sandboxed iframe）/Stories gating（archReady && uiReady）
+- [x] **D4 故事編號撞既有 repo 歷史**（live batch 39 暴露）：fan-out brief 從 Story 1.1 重起編，
+      與既有 repo 已 closed 的 Story 1.x issue 撞號 → `_batch_skip_keys`（只比對 N.M 編號）誤判「已完成」
+      → 靜默跳過 1.1–1.5（只跑了沒撞的 1.6/1.7）。
+      修：`change_request_system.md` 加「編號必須接續既有 repo 最大號、不從 Epic 1 重起」；
+      JetBook 這份 brief 已就地 renumber 成 Epic 13（13.1–13.7）避開後端 1–12。
 
-## 測試
-- [x] 既有測試連鎖：test_dual_vocab / test_plugin_distribution / test_workflow_engine / test_api
-- [x] 新檔 test_ui_design_stage.py（10 案）+ test_docs_publisher 加 UI-Design 案例
-- [x] pytest backend 全綠：**361 passed**（原 349 + 新 12，零回歸）；前端 `tsc --noEmit` 乾淨
+## 驗證
+- [x] 後端 pytest `tests/` 436 全綠（含新 offload 回歸測試）。
+- [x] 前端 `tsc --noEmit` 乾淨。
+- [x] live：batch 39 經 UI 跑成功（D1 不凍/D2 發 issue/D3 進度 + 2 真實 MR !69/!70），並據此抓出 D4。
+- [ ] 未在執行中的後端生效（需重啟載入）；未對 JetBook 真實重跑（且 GitLab 當時不通）。
 
 ## Review
-**驗證**：
-- pytest 361 passed；tsc 乾淨。
-- 隔離後端（8725 + 暫存 DB）API 煙囪測：`/api/stages` ui_design item（depends_on=[prd]、downstream=[stories]、design/palette）✓；default workflow 四 stage ✓；新 thread statuses 四筆 draft ✓；無 PRD generate → 400 missing_prd ✓；有 PRD+架構缺 UI → stories 400 missing_ui_design ✓。
-- 隔離前端（/tmp 副本 + next dev --webpack + rewrites 代理，已清理）瀏覽器實測：stepper 03 UI Design（狀態徽章正確）、iframe sandbox="allow-scripts" 正常渲染原型（含 Google Fonts/CSS 動效）、畫面 tabs 切換、document/preview/code 三 view、Stories 顯示 depends_on architecture + ui_design 且上游齊才 enabled。console 零錯誤。
-- **注意**：使用者執行中的後端（8723）是舊 code，需重啟 start.sh 才會載入新 stage（嘗試代為重啟被權限擋下，留給使用者）。
-
-**已知行為**：舊 default thread 重跑 stories 會 400「'ui_design' 必須先完成」（同缺 PRD 跑架構的語意；補生成 UI 設計即可）。
+D1 是真 bug（同步阻塞凍 event loop），最該修、影響所有 implement 路徑——已 off-loop + timeout 雙保險。
+D2/D3 是 modify_existing 這條路的完整性缺口。三項皆向後相容、不破既有 stories/single 路徑。
 
 ---
 
-# RCA PoC todo（已完成，存檔）
+# 治本：modify_existing 支援多 story fan-out（per-story issues + batch MR）
 
-計畫全文：`~/.claude/plans/ai-rca-memoized-bengio.md`
-做法：與既有需求工程領域**並存**的 `rca_domain` plugin；核心引擎零修改承載模式 1/2/3。
+## 根因
+`modify_existing` 只產 `change_request` brief（`CH-N` 條列、非 canonical），而 publish / implement-batch / 前端 ImplementWorkspace 都只吃 `stories` artifact 的 canonical heading（`## Epic N:` / `### Story N.M —`）。
+→ 大型新增（如補整個前端）只能走 single implement（整份 brief = 1 story = 1 PR），塞不進 10–15 分鐘預算、做不完；也無法 per-story 各開 MR。
+（已查證：前端 `app/page.tsx:864` 註解明寫 batch/ImplementWorkspace「以 stories 為前提鎖死」；`implement_start_batch`/`stories_publish`/`preview-delivery` 都 `get_artifact(tid,"stories")`。）
 
-## 指令更新（使用者）
-完整實作 1→4 全部（含 RCA-4）+ 完整測試 + 前端真實整合（不走 mock-gate），最後用結果討論。
+## 設計（向後相容）
+小改維持 `CH-N` → single PR（現狀不動）；**大改改用 canonical Epic/Story** → 交付端偵測到就 fan-out 成 issues + batch MR。
 
-## RCA-1 — 單代理薄垂直切片（基本完成；live generate 驗證中）
-- [x] `backend/plugins/rca_domain/` 骨架：`__init__.py`、`plugin.toml`、`register.py`、`_shared.py`
-- [x] `intake_stage.py`（rca_intake：generate + chat）
-- [x] `analysis_stage.py`（rca_analysis：generate + refine + chat）+ validators（candidate causes / copilot disclaimer）
-- [x] prompts：`intake.md`、`intake_chat.md`、`rca_single.md`、`rca_refine.md`、`rca_chat.md`
-- [x] agents：`rca_intake_helper`(role rca_intake)、`rca_assistant`(role rca_analysis)
-- [x] workflow：`rca_single`（rca_intake → rca_analysis）
-- [x] fixtures：`fixtures/yield_drop/{scenario.md, yield_by_lot.csv}`
-- [x] `backend/scripts/seed_rca.py`（seed yield_drop，idempotent）
-- [x] test：`backend/tests/test_rca_stage.py` 7 passed；全套 162 passed（零回歸）
-- [x] 驗證：`/api/stages` 含 rca_*、`/api/workflows` 含 rca_single、seed 後 thread 綁定就緒、依賴擋關
-- [x] live generate（真 claude-cli 讀 CSV）— 正確抓出 ETCH-03 / L2231 步階訊號，產 4 候選根因含證據+下一步，validators 無觸發
-- [ ] 前端（RCA-1 標記為可選）— 延後，見下方前端區塊
+- [x] **A 生成端**：`change_request_system.md` §3 Changes 分流：小改 `CH-N`、大改 canonical `## Epic N:` + `### Story N.M —`（同 user_stories 契約）；`change_request_refine.md` 保留不降級。
+- [x] **B 交付端**：`app._delivery_story_artifact(tid) = stories ∥ change_request`，套用 preview-delivery / stories_publish / implement_start_batch / implement_start。brief 無 canonical story → parse 0 筆 → 不誤觸 fan-out。
+- [x] **C 測試**：`tests/test_modify_existing_fanout.py` — canonical brief→2 story、CH-N→0、fallback 正確。
+- [x] **D（Phase 2，前端）**：`ChangeRequestWorkspace` 偵測 brief 含 ≥2 canonical story（`countStoriesAndEstimate`）→ 顯示「逐 story 實作 → N MR」按鈕（`startBatch`, `auto_merge:false`）+「整包一個 PR」並列；CH-N 小改維持單一 Implement 按鈕。讀過 Next 16 docs、改動比照既有 pattern。
 
-## RCA-2 — 多代理鏈 ✅（後端完成）
-- [x] `chain_stages.py`：4 specialist stage（工廠函式）+ agents + 9 prompts；workflow `rca_chain`；causal-graph validator
-- [x] fixtures `param_drift`、`signal_anomaly`（背景 agent 生成）；seed 擴三情境
-- [x] test_rca_chain.py（catalog/依賴/缺上游/mock 端到端/causal validator/下游 reset）
+## 驗證
+- [x] 後端 pytest：`tests/` 435 全綠（delivery/batch/publish 既有不破 + 新 fallback + fan-out 新測試）。
+- [x] 前端 `tsc --noEmit` 乾淨；gating 用既有對稱 parser（canonical→≥2、CH-N→0），與後端測試一致。
+- [ ] 互動 render 未做（需隔離 stack + canonical-brief thread，不擾動使用者 8724）。
+- [ ] 對 JetBook 真實重生 brief → publish 7 issues → batch per-story MR：**未做**。需 (1) 重啟 Lodestar 後端載入新 prompt+code（render_prompt 快取），(2) 跑 ~2hr batch。auto_merge 預設關，不自動合進 main。
 
-## RCA-3 — Agentic planner ✅（後端完成）
-- [x] `planner_stage.py`（rca_plan + parse_plan + plan-shape validator）+ planner prompts + agent `rca_planner` + workflow `rca_planner`
-- [x] `POST /api/projects/{tid}/rca/apply-plan`（重用 `_save_workflow` + `set_project_workflow`；未含 intake 自動前置）
-- [x] test_rca_planner.py（catalog/parse/validator/mock generate/apply-plan 流程/409/壞 stage 400）
+## Review
+**缺口**：modify_existing 只會「brief → 1 PR（single）」，大型新增（如補整個前端）塞不進單次預算、也無法 per-story 各開 MR。
+**修法（向後相容）**：
+- 生成端：change_request brief 大改改用 canonical Epic/Story（小改維持 CH-N）。
+- 交付端：`_delivery_story_artifact` 讓 publish/implement 在無 stories 時 fallback 讀 change_request；無 canonical story → parse 0 筆 → 不誤觸 fan-out。
+- 前端：modify_existing 面板偵測到多 story 時，開放 batch 入口（auto_merge 關）。
+**影響面**：後端 change_request_system.md / change_request_refine.md / app.py(+helper, 4 讀取點) + 新測試；前端 page.tsx（handler + ChangeRequestWorkspace 按鈕）。全 warn/可選，不破既有 single 路徑。
+**已知限制**：未在使用者執行中的 instance 生效（需重啟）；未跑真實端到端；前端未互動 render。auto_merge 刻意關閉，避免自動合未審 AI code。
 
-## RCA-4 — 真 collab 執行 ✅（後端完成，唯一動核心）
-- [x] `backend/collab_coordinator.py`：resolve_agent（GAP A）+ per-agent prompt（GAP B）+ discussion（sync）+ dispatch（ThreadPoolExecutor 平行）
-- [x] `workflow_engine.dispatch()` 加 collab_mode 分支（僅 mode≠single 且 binding>1 觸發；single 不受影響）
-- [x] 示範 workflow `rca_panel`（discussion）/ `rca_dispatch`（dispatch）
-- [x] test_collab.py（resolve+DB fallback/discussion/dispatch/single 不受影響）
+---
 
-## 後端整體 ✅ 178 passed；seed 3 情境；catalog 7 stage / 5 workflow / 7 agent，load_error None
+# 治本：交付面契約 —— 讓「含 UI 的完整專案」不再被砍成純後端
 
-## 前端整合 ✅（真實整合，非 mock）
-- [x] Next 16.2.6 / React 19.2.4；遵 frontend/AGENTS.md（沿用既有 page.tsx 模式、未引入新 Next API）
-- [x] `components/RcaWorkspace.tsx`：自足 catalog-driven RCA 工作區（workflow 切換器 + stepper + 通用 generate/refine/approve）
-- [x] `RcaArtifactView`：候選根因表 + 信心色階 chip + 護欄帶 + 每列 Confirm/Reject/Needs-more-data（local 諮詢）；自帶輕量 markdown renderer；causal 用既有 Mermaid；rca_plan 顯示提案 stages + 「核准並套用」
-- [x] page.tsx 最小接線（3 處）：import、`isRcaThread` 分支渲染 RcaWorkspace、WorkflowsView availableStages 改 catalog-driven
-- [x] lib/api.ts：通用 stage helpers + `applyRcaPlan`
-- [x] 驗證：`tsc --noEmit` 乾淨；既有 dev server（8724）回 200 無錯誤 overlay（已 hot-reload 我的改動）
-- 註：為不干擾使用者正在跑的 start.sh，未另起會搶 .next 的第二 dev server；可在 8724 選 RCA thread 直接看
+## 根因（已用 JetBook 實際 artifact 證實）
+前端在整條契約鏈裡**沒有任何結構性錨點**：
+1. **PRD 無「交付面」宣告** —— `sa_system.md` PRD 格式只有 Overview/FR/NFR/OPS，
+   「要不要前端」只能藏在 FR 描述裡，不是第一級、會往下傳的契約。
+2. **架構這關是斷點** —— `_arch_generate` 只餵 `PRD_DRAFT`、看不到 UI 設計；
+   `architect.md` 的 tier 框架 100% Android/Gradle（單一 app 心智模型），
+   面對 fullstack PRD 時模型自行「鎖定單一領域」並用 `cwd=backend` 當藉口砍掉前端。
+   （JetBook arch 開頭明寫「我以 Backend 為目標領域」，ADR 有 `Target Domain: Backend`。）
+3. **故事 UI 規則是軟的** —— stories 已收到 UI 設計 brief，但只「reference if provided」，
+   無「前端 epic 必須存在 / 每個 Screen 必須有 story」的硬閘門；架構說後端就跟著後端。
+4. 證據：JetBook ui_design = 48KB / 5 個畫面（完整產出），stories = 58KB 但前端關鍵字命中 1 次 ≈ 零前端。
+   → 5 個設計畫面全成孤兒，實作純後端。前一輪「by design 沒前端」判斷有誤。
 
-## 最後：live demo（真模型）✅ 全數成功
-- [x] RCA-2 鏈（param_drift）：baseline 精準抓 ETCH-03 chamber_pressure 線性漂移破 spec → causal（Mermaid 7 假設）→ knowledge（已知失效模式對照）→ synthesis（合併排序候選表 + 須先排除 manometer 假象）
-- [x] RCA-3 planner：產出合法 plan JSON（完整鏈 + rationale + 每 stage why）
-- [x] RCA-4 panel discussion：2 peer 發言寫入 stage_messages → lead 合成候選表（含否證條件）
-- [x] docs/RCA.md；結果已寫入 rca-param-drift / demo-planner / demo-panel，8724 可看
+## A. PRD：加「交付面 / Delivery Surface」第一級宣告（源頭釘死）
+- [x] `sa_system.md`：Rules 加「2b. 必須釘死交付面」+ PRD format 插入 `## 2. Delivery Surface`（FR→4、NFR→5…重編號）。
+- [x] `prd_refine.md`：保留並可修訂此節；refine 不得默默砍層；legacy PRD 自動補。
+- [x] `prd_stage.py`：warn-only validator `prd.has_delivery_surface`。
 
-## 全部完成 ✅ — 後端 178 測試、前端編譯驗證、三模式真模型 live 驗證
+## B. 架構：殺單一領域陷阱 + 平台泛化 + 看得到 UI
+- [x] `architect.md`：新增 Step 0「Cover the full delivery surface」HARD RULE —— 覆蓋每個 In-scope 觸面、
+      禁止以 cwd/工作目錄為由縮成單一領域；多觸面→fullstack（各層 stack + layout + API 契約）。
+- [x] `architect.md`：tier 框架去 Android 化（platform-neutral）+「Default layout by platform」
+      （fullstack-web / backend-service / mobile / CLI）；Gradle/NIA 降為 mobile 範例。anti-patterns 泛化。
+- [x] `architect.md` + `_arch_generate`：`{{UI_DESIGN_BRIEF}}` 餵進架構（strip HTML，缺則 fallback 文字）。
+- [x] 軟依賴機制：`StageSpec.soft_depends_on`（新欄位）+ `workflow_engine.run_stage` 有就餵、缺不擋、不參與 gating/拓樸。
+      `architecture` 加 `soft_depends_on=("ui_design",)`；register 顯示序改 `prd → ui_design → architecture → stories`。
+      → 純後端專案（無 ui_design）不被誤殺（已驗證）。
 
-## UX 改進 2（使用者回饋：plugin 看不懂 / 太多很像）✅
-- [x] 刪除沒用的範例 plugin `example_notes`（刪目錄 + 清 DB contributions）；`test_plugin_distribution.py` 改用 rca_domain 證明同樣機制（178 測試維持綠）
-- [x] Plugins 頁重組：分「你的功能」（提供 stage/流程：RCA / 需求工程 / 自動實作）與可收合的「系統零件」（agent / 模型 / 交付，預設收起、標明平常不用管）；標題改「Plugins · 擴充功能」+ 手機 App 比喻
-- 註：後端需重啟才會讓 example_notes 從清單消失（Python 無 hot-reload）
+## C. 故事：UI 覆蓋從「軟引用」升級為「硬閘門」
+- [x] `user_stories.md`：「UI alignment」改寫為「Frontend & delivery-surface coverage」HARD RULE ——
+      交付面含 UI → 必須有前端 Epic（含 scaffold + vertical story）；每個 `## Screen` 必須對應 story。
+- [x] `stories_stage.py`：`_stories_coverage_validator`（warn-only）抽 ui_design 畫面清單 vs stories 引用，
+      列出未覆蓋畫面；畫面清單由 handler 經 `metadata['ui_screens']` 傳入。
 
-## UX 改進 1（使用者回饋）✅
-- [x] Stage 用途說明：StageSpec 加 `description` 欄位 + `_build_catalog` 帶出；填了 11 個 stage（7 RCA + prd/arch/stories/implement）；Workflows 編輯器每個 stage 列顯示 label + 用途，加 stage 選單 hover 顯示用途
-- [x] Plugins 頁說明改白話（plugin = 功能套件，提供 stages/agents/workflows，停用即移除）
-- [x] 驗證：後端 178 測試綠、前端 tsc 乾淨、catalog 確認帶出描述
-- 註：後端需重啟（Python 無 hot-reload）才會在 API 看到新 description；前端已 hot-reload
+## D.（follow-up，不混入本次）DX 收尾覆蓋
+- README / docker-compose / .env.example 確定性生成 —— 獨立 task（與上一個 spec_sync task 合流）。
 
-## 收尾（使用者要求）✅
-- [x] 清除測試資料：`scripts/reset_rca_demo.py` 刪 5 個 RCA 示範 thread（含 artifacts/對話/附件/上傳檔）；使用者既有 10 個舊 thread 與 workflow 完全未動
-- [x] 使用者快速上手教學：`docs/RCA_QUICKSTART.md`（產線工程師導向：啟動→3 分鐘首次分析→三模式選擇→載入範例→重點提醒）
-- [x] README 加 RCA Copilot 指引連結
+## 驗證（全部通過）
+- [x] 後端 pytest：`tests/` 432 全綠（修了 5 處因刻意契約變更的斷言 + 2 處上一個 task 留下的 vertical-launch fixture 債）。
+- [x] coverage validator 打 JetBook 舊 artifact：抓到 5 畫面中 3 個（Document Editor/Publish & Revisions/AI Knowledge Assistant）零對應。
+      （Dashboard/Search 因後端同名 endpoint 字串被當已覆蓋 —— warn-only 可接受誤放；新流程帶 `Reference: Screen:` 標記會精準命中）。
+- [x] 架構 generate prompt 端到端：Step 0 規則 + cwd 禁令 + fullstack 範式 + UI 畫面餵入(HTML strip) 全部到位。
+- [x] 軟依賴缺不擋：純後端 PRD（Human Web UI: Out）無 ui_design → 架構照跑、error_code 空。
+- [ ] （未做，需真模型）拿 JetBook PRD 真實重跑架構，驗證模型不再砍前端 —— 待使用者要時再跑（會燒 claude-cli 配額）。
 
-## 前端（RCA-1 — 進行中）
-- [x] 靜態 mock：`frontend/mocks/rca-analysis.html`（frontend-design skill；貼合 Industrial Cobalt 主題、用真實 live 資料、ETCH-03 良率折線、護欄帶、信心色階、Confirm/Reject 諮詢鈕）→ 已 preview 驗證渲染正確
-- [ ] 等使用者確認方向後：整合進 Next app（`page.tsx` 依 active workflow 偵測 RCA thread 走通用 stage 面板 + `RcaArtifactView`）+ 接 `/api/stage/rca_analysis/*`（先讀 `node_modules/next/dist/docs/` 遵守 frontend/AGENTS.md）
-- [ ] 每列 Confirm/Reject/Needs-more-data 寫 `stage_comments`
+## Review
+**根因（JetBook 實證）**：前端在契約鏈無錨點。UI 設計（48KB/5畫面）有產出，但架構只收 PRD、被 Android 單一 app 框架逼著「鎖定單一領域」、用 cwd=backend 砍掉前端；故事跟著架構走 → 純後端，5 畫面全孤兒。前一輪「by design 沒前端」判斷有誤。
 
-## Review — RCA-1（完成）
-**做了什麼**：新增 `backend/plugins/rca_domain/`（與需求工程並存、非 builtin、可開關），含 rca_intake / rca_analysis 兩 stage、兩 agent、rca_single workflow、5 個 prompt（copilot-not-judge 框架）、2 個 warn-only validator（候選根因 / 免責聲明）、yield_drop 合成 fixture、`scripts/seed_rca.py`、`tests/test_rca_stage.py`。**核心引擎零修改**（plugin 自動探索）。
+**修法（治本，跨 PRD/架構/故事 + 軟依賴 + 覆蓋閘門）**：
+1. PRD 釘「交付面」第一級契約，往下傳。
+2. 架構強制覆蓋每個 In-scope 觸面、去 Android 化、看得到 UI 設計。
+3. 故事 UI 覆蓋升為硬閘門 + warn validator 當最後防線。
+4. 新 `soft_depends_on`：架構能參考 UI 設計，又不誤殺純後端專案。
 
-**驗證**：
-- pytest：新測 7 passed；全套 162 passed（零回歸）
-- 真實 app：rca_domain 乾淨載入、`/api/stages` 含 rca_*、`/api/workflows` 含 rca_single、seed thread 綁定就緒、依賴擋關（缺 intake → 4xx）
-- live generate（真 claude-cli）：讀 CSV、正確抓 ETCH-03 / 05-21(L2231) 步階訊號、產 4 候選根因（信心+證據+下一步），validators 無觸發
+**影響面**：8 個檔（sa_system/prd_refine/prd_stage/architect/architecture_stage/register/user_stories/stories_stage）+ engine 2 檔（plugin_api/stage、workflow_engine）+ 7 個測試同步。warn-only、不阻斷既有流程。
 
-**後續**：前端（RcaArtifactView + 通用 stage 面板）RCA-1 標記可選、延後；接著可走 RCA-2（多代理鏈）或先補前端讓使用者看到 UI。
+**已知限制**：coverage validator 用 substring 比對，舊 stories 會有同名 endpoint 誤放（warn-only，安全方向）。真模型重跑驗證待使用者觸發。
+
+---
+
+# 治本：mermaid 語法防線 + README 確定性生成
+
+起因：JetBook arch diagram 2 因 sequence 訊息標籤含 `;`（mermaid 語句分隔符）語法錯誤；
+AI chat「修正」誤診兩次都沒中，且第二次只回片段沒寫回 artifact，壞圖還上了 wiki。
+
+決策（已與使用者確認）：
+- 驗證守門：前端真 parser 擋發佈
+- 修正端：回寫修復 + 改完先驗證
+- README：最後加確定性 README 生成步驟
+
+## A. 生成端（降低發生率）
+- [x] `prompts/architect.md` / `arch_chat.md` 加 mermaid 撰寫約束：sequence 訊息標籤禁用 `;`（用「，」或 `then`）、避免裸 `<`/`>`。
+
+## B. 前端真 parser 守門（防壞圖上 wiki）
+- [x] `frontend/lib/mermaid.ts`：`validateMermaidMarkdown` / `validateStagesMermaid` 抽 ```mermaid 逐塊 `mermaid.parse()`。
+- [x] `DocsPublishModal` / `SpecSyncModal`：confirm 前驗 PRD+architecture，有壞圖就擋下、列出哪張圖+錯誤，附「仍要發佈（忽略警告）」逃生口。
+
+## C. 修正端（chat 改圖治本）
+- [x] `arch_chat.md`：任何修改請求（含「只改 X / 只生成 X」）都必須回**完整文件**包 marker，絕不回裸片段。
+- [x] `_shared.py`：`lint_mermaid` / `autofix_mermaid`（旗艦規則：sequence 訊息標籤含 `;`，flowchart 不誤報）。
+- [x] `_arch_chat`：產出 updated 後跑 autofix；確定性修正並透明告知；無法自動修不謊報、如實警示。
+
+## D. README 確定性生成（治本）
+- [x] `spec_sync.build_readme(name, prd, arch)`：抽概述/FR 功能群/tier+技術棧/規格指引/開發，內容豐富不留樣板。
+- [x] managed marker：re-sync 升級 Lodestar 受管 README（含舊 stub 簽名），人工/agent 充實過（無 marker）絕不覆寫。
+
+## 驗證
+- [x] 後端 pytest：test_arch_stage（含 3 個新 mermaid lint 測）+ test_spec_sync（含 README 升級測）+ docs_publisher 全綠。
+- [x] `lint_mermaid` 對 JetBook 壞版本抓到、autofix 後乾淨、flowchart 分號不誤報。
+- [x] 前端 `validateMermaidMarkdown` 對 JetBook arch：BAD→diagram 2 flagged、GOOD→diagram 2 pass；抽塊正確（3 塊）。tsc 通過。
+- [x] 治標：JetBook arch artifact 的 `;` 已改，重新發佈即更新 wiki。
+
+備註：test_stories_stage 2 筆失敗為**本 session 前既有**（未提交的 stories `vertical_no_launch_cmd` validator，與本次無關）。
+
+## Review
+- 三層防線一次補齊：生成端 prompt 約束（降發生率）+ 前端真 parser 發佈/同步守門（權威攔截）+ chat 改完 autofix 驗證（不再謊報已修正）。
+- 架構決策：後端 Python 不跑 JS mermaid parser（需 jsdom 跨 runtime 又脆，flowchart/state 在 node 會炸 DOMPurify）；真 parser 守門放前端（真 DOM）；後端只做確定性 focused lint。
+- README 從「靠 implement agent、常留一行 stub」改為確定性生成 + managed-marker 可升級；不覆寫人工成果。
+- 未做：後端發佈 API 的伺服器端 backstop（依使用者決策以前端守門為主，從略）；可日後加。

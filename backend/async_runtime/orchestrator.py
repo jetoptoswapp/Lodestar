@@ -280,7 +280,9 @@ async def run_implementation(
                 return {"status": "awaiting_approval", "attempts": attempt}
             pr_url = ""
             try:
-                pr_url = open_pr(session_id, target_repo, result.last_output)
+                # open_pr 內含同步 git push / API 呼叫；用 to_thread 移出 event loop thread，
+                # 否則遠端不通時 push 阻塞會凍住整個後端（連 cancel 都失應答）。
+                pr_url = await asyncio.to_thread(open_pr, session_id, target_repo, result.last_output)
             except Exception as exc:  # noqa: BLE001 - PR 失敗不該炸掉整個 run
                 impl_dal.append_message(run_id, kind="system", content=f"[pr] open failed: {exc}")
                 impl_dal.update_session(session_id, status="failed",
@@ -537,7 +539,8 @@ async def run_implementation_roles(
                     impl_dal.update_session(session_id, status="awaiting_approval")
                     _log.info("session %s (roles) awaiting approval on attempt %s", session_id, attempt)
                     return {"status": "awaiting_approval", "attempts": attempt, "mode": "roles"}
-                pr_url = open_pr(session_id, target_repo, rd_res.last_output)
+                # 同上：blocking push 移出 event loop thread。
+                pr_url = await asyncio.to_thread(open_pr, session_id, target_repo, rd_res.last_output)
                 impl_dal.update_session(session_id, status="succeeded", pr_url=pr_url)
                 _log.info("session %s (roles) approved on attempt %s → %s", session_id, attempt, pr_url)
                 return {"status": "succeeded", "attempts": attempt, "pr_url": pr_url, "mode": "roles"}
