@@ -1,0 +1,252 @@
+{
+  "_note": "Lodestar workflow 定義快照（含 seed 進 DB 的 builtin，可編輯）。",
+  "workflows": [
+    {
+      "id": "SWF",
+      "label": "SW_Factory",
+      "description": "用來產出",
+      "source_plugin": "user",
+      "created_at": 1780275014.0,
+      "stages": [
+        {
+          "stage_id": "prd",
+          "depends_on": [],
+          "agent_bindings": [
+            {
+              "agent_id": "seed_prd",
+              "role": "lead"
+            },
+            {
+              "agent_id": "ecommerce_sa",
+              "role": "peer"
+            }
+          ],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "architecture",
+          "depends_on": [
+            "prd"
+          ],
+          "agent_bindings": [
+            {
+              "agent_id": "seed_architect",
+              "role": "lead"
+            }
+          ],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "ui_design",
+          "depends_on": [],
+          "agent_bindings": [
+            {
+              "agent_id": "seed_ui_designer",
+              "role": "lead"
+            }
+          ],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "stories",
+          "depends_on": [
+            "architecture",
+            "prd"
+          ],
+          "agent_bindings": [
+            {
+              "agent_id": "seed_pm",
+              "role": "lead"
+            }
+          ],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "implement",
+          "depends_on": [
+            "stories"
+          ],
+          "agent_bindings": [
+            {
+              "agent_id": "orches",
+              "role": "lead"
+            },
+            {
+              "agent_id": "domain_impl",
+              "role": "rd"
+            },
+            {
+              "agent_id": "review_agent",
+              "role": "reviewer"
+            },
+            {
+              "agent_id": "ac_tester",
+              "role": "tester"
+            }
+          ],
+          "collab_mode": "single"
+        }
+      ]
+    },
+    {
+      "id": "default",
+      "label": "Standard Pipeline",
+      "description": "Lodestar default：想法 → PRD → 架構 ∥ UI 設計 → 使用者故事",
+      "source_plugin": "builtin_core_stages",
+      "created_at": 1781854549.0,
+      "stages": [
+        {
+          "stage_id": "prd",
+          "depends_on": [],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "architecture",
+          "depends_on": [
+            "prd"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "ui_design",
+          "depends_on": [
+            "prd"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "stories",
+          "depends_on": [
+            "architecture",
+            "ui_design"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        }
+      ]
+    },
+    {
+      "id": "requirements_panel",
+      "label": "Requirements Panel（討論）",
+      "description": "PRD 多 agent 討論：SA 主筆 + PM／資安 peer 評論後彙整；架構、UI 設計、故事維持單一 agent。",
+      "source_plugin": "builtin_core_stages",
+      "created_at": 1781854549.0,
+      "stages": [
+        {
+          "stage_id": "prd",
+          "depends_on": [],
+          "agent_bindings": [
+            {
+              "agent_id": "seed_prd",
+              "role": "lead"
+            },
+            {
+              "agent_id": "seed_prd_pm",
+              "role": "peer"
+            },
+            {
+              "agent_id": "seed_prd_security",
+              "role": "peer"
+            }
+          ],
+          "collab_mode": "discussion"
+        },
+        {
+          "stage_id": "architecture",
+          "depends_on": [
+            "prd"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "ui_design",
+          "depends_on": [
+            "prd"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "stories",
+          "depends_on": [
+            "architecture",
+            "ui_design"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        }
+      ]
+    },
+    {
+      "id": "modify_existing",
+      "label": "修改既有專案",
+      "description": "既有 repo → 讀碼 → 談變更 → implement → build_verify 驗編譯",
+      "source_plugin": "user",
+      "created_at": 1781854549.0,
+      "stages": [
+        {
+          "stage_id": "change_request",
+          "depends_on": [],
+          "agent_bindings": [
+            {
+              "agent_id": "change_planner",
+              "role": "lead"
+            }
+          ],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "build_verify",
+          "depends_on": [
+            "change_request"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        }
+      ]
+    },
+    {
+      "id": "delivery_pipeline",
+      "label": "Delivery Pipeline",
+      "description": "完整流程：PRD → 架構 → 使用者故事 → 自動實作",
+      "source_plugin": "builtin_implement",
+      "created_at": 1781854549.0,
+      "stages": [
+        {
+          "stage_id": "prd",
+          "depends_on": [],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "architecture",
+          "depends_on": [
+            "prd"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "stories",
+          "depends_on": [
+            "architecture"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        },
+        {
+          "stage_id": "implement",
+          "depends_on": [
+            "stories"
+          ],
+          "agent_bindings": [],
+          "collab_mode": "single"
+        }
+      ]
+    }
+  ]
+}
